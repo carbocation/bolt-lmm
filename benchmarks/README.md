@@ -61,11 +61,54 @@ The CUDA build described in `BUILD.md` uses the GPU automatically for Stage 1.
 Pass `--no-cuda` to benchmark its CPU path instead. The legacy `--cuda` flag is
 still accepted.
 
-On an NVIDIA A100-SXM4-40GB, the workload above took 3.3 seconds versus 111.8
-seconds for the portable single-thread oneMKL build, a 33.69x speedup. Reported
-heritability, cross-validation choice, prediction errors, convergence
-trajectories, and association summaries matched the CPU run at their displayed
-precision.
+## End-to-end Stage 1 comparison
+
+The first split-Stage-1 commit, `a58e7c3d2f3ca651ba16a39063f25b8e449087e0`,
+provides the original baseline. It is essentially upstream BOLT-LMM v2.5 with
+the Stage 1/2 boundary already present, so its timing includes the same model
+fit and Stage 1 artifact write as the current code.
+
+The original baseline and current CPU-only and CUDA binaries were built with
+GCC 11.4, `-O3 -march=native`, LP64 sequential oneMKL, and one analysis thread.
+The current CPU build disabled OpenMP; the original OpenMP build was restricted
+to one thread. The CUDA build targeted compute capability 8.0 and used the same
+native host settings. Three repetitions of each binary were interleaved and
+pinned to the same vCPU on the Xeon/A100 VM. All used the 32,768-sample by
+16,384-SNP BED fixture and the runtime arguments above, including default
+LINREG.
+
+| Stage 1 implementation | Median wall time | Speedup vs original | Time reduction |
+| --- | ---: | ---: | ---: |
+| Original split baseline (`a58e7c3`) | 129.06 s | 1.00x | — |
+| Current CPU-only (`f337b92`) | 112.67 s | 1.15x | 12.7% |
+| Current CUDA (`f337b92`) | 3.55 s | 36.35x | 97.2% |
+
+CUDA was 31.74x faster than the optimized CPU-only build. Median phase times
+show where the end-to-end changes came from. The nine raw measurements are in
+`results/a100_stage1_headline.tsv`.
+
+| Phase | Original | Current CPU | Current CUDA |
+| --- | ---: | ---: | ---: |
+| Genotype input/QC | 3.730 s | 0.683 s | 0.654 s |
+| Marker/covariate initialization | 2.921 s | 2.581 s | 0.457 s |
+| LINREG | 1.040 s | 0.911 s | 0.010 s |
+| Variance fitting | 37.524 s | 28.266 s | 0.444 s |
+| Infinitesimal association scoring | 44.418 s | 41.294 s | 0.426 s |
+| Mixture estimation | 24.304 s | 24.413 s | 0.586 s |
+| Bayesian association scoring | 14.955 s | 14.506 s | 0.526 s |
+
+All three runs followed identical convergence paths: the variance estimate
+used two secant steps, the infinitesimal solve used 10 CG iterations, CV used
+9 iterations, and final Bayesian scoring used 6 iterations. Loading each model
+with the same Stage 2 binary produced byte-identical statistics files,
+including `P_BOLT_LMM`.
+
+This deterministic synthetic workload is small enough to fit completely in GPU
+memory. It is useful for an end-to-end compute comparison but does not model
+the difficulty of variance fitting in real biobank phenotypes or the I/O costs
+of 500,000 samples by one million SNPs. The target-scale sections below report
+those storage and streaming constraints separately without extrapolating this
+36.35x figure to them.
 
 A larger 131,072-sample, 16,384-variant fixture took 8.4 seconds with CUDA.
 Moving the two SNP normalization/projection passes for the main and CV-fold

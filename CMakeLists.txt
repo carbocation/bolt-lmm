@@ -409,6 +409,31 @@ if(BUILD_TESTING)
   add_test(NAME pgen_stage1_hardcall_parity
     COMMAND pgen_stage1_parity_test
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity")
+
+  set(BOLT_STAGE2_TEST_SOURCES ${BOLT_SOURCES})
+  list(REMOVE_ITEM BOLT_STAGE2_TEST_SOURCES
+    src/BoltMain.cpp
+    src/BoltParams.cpp)
+  add_executable(pgen_stage2_parity_test
+    tests/PgenStage2Parity.cpp
+    ${BOLT_STAGE2_TEST_SOURCES})
+  target_include_directories(pgen_stage2_parity_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(pgen_stage2_parity_test PRIVATE
+    bolt_build_options
+    bolt_pgenlib
+    bolt_linear_algebra
+    bolt_nlopt
+    bolt_openmp
+    bolt_zstd
+    Boost::iostreams
+    ZLIB::ZLIB
+    Threads::Threads
+    ${CMAKE_DL_LIBS})
+  add_test(NAME pgen_stage2_hardcall_parity
+    COMMAND pgen_stage2_parity_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity"
+      "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 
 message(STATUS "BOLT platform: ${CMAKE_SYSTEM_NAME}/${BOLT_TARGET_PROCESSOR}")

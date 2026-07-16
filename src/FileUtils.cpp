@@ -176,14 +176,15 @@ namespace FileUtils {
   /***** AutoGzIfstream class implementation *****/
 
   void AutoGzIfstream::openOrExit(const std::string &file, std::ios_base::openmode mode) {
+    static const std::streamsize bufferSize = 256 * 1024;
     fin.open(file.c_str(), mode);
     if (!fin) {
       cerr << "ERROR: Unable to open file: " << file << endl;
       exit(1);
     }
     if ((int) file.length() > 3 && file.substr(file.length()-3) == ".gz")
-      boost_in.push(boost::iostreams::gzip_decompressor());
-    boost_in.push(fin);
+      boost_in.push(boost::iostreams::gzip_decompressor(), bufferSize);
+    boost_in.push(fin, bufferSize);
   }
 
   void AutoGzIfstream::close() {

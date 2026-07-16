@@ -102,7 +102,10 @@ The CUDA backend uses otherwise-free device memory to cache a shared prefix of
 the packed genotype matrix. It reserves one additional decoded SNP block plus
 4 GiB for a simultaneous cross-validation fold and working buffers. Main and
 fold-specific `Bolt` instances share the packed cache while retaining their own
-sample masks and covariate projections.
+sample masks and covariate projections. The cache is populated as part of the
+main marker-initialization scan, and fold marker initialization reads cached
+blocks directly on the device; neither operation performs a redundant host or
+scratch-disk scan of the cached prefix.
 
 For an NVIDIA A100 (compute capability 8.0):
 

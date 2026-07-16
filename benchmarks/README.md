@@ -58,3 +58,10 @@ single-threaded input setup. Fusing packed-code conversion, QC statistics, and
 missing-sample collection reduced median `SnpData` setup time from 2.947 to
 1.320 seconds across three pinned runs (55.2%). Stage 1 model artifacts from all
 baseline and optimized runs were byte-identical.
+
+Populating the shared device hardcall cache during the main marker-
+initialization scan, and reusing it during fold initialization, reduced median
+main initialization from 0.926 to 0.799 seconds (13.7%) and the one-fold
+mixture-parameter phase from 1.022 to 0.907 seconds (11.2%) on that fixture.
+This also avoids redundant scratch-disk reads when the packed host matrix is
+file-backed and larger than RAM. Model artifacts again remained byte-identical.

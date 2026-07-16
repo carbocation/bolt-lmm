@@ -35,6 +35,14 @@ namespace LMM {
 
     SharedPackedGenotypeCache sharedPackedCache;
 
+    bool sharedCacheMatches(const uchar *hostGenotypes, uint64 M,
+                            uint64 bytesPerSnp) {
+      return sharedPackedCache.deviceGenotypes != nullptr &&
+             sharedPackedCache.hostGenotypes == hostGenotypes &&
+             sharedPackedCache.M == M &&
+             sharedPackedCache.bytesPerSnp == bytesPerSnp;
+    }
+
     void checkCuda(cudaError_t status, const char *operation) {
       if (status != cudaSuccess) {
         std::ostringstream msg;
@@ -209,6 +217,52 @@ namespace LMM {
       return static_cast<unsigned int>((count + threads - 1) / threads);
     }
 
+    bool allocateSharedPackedCache(const uchar *hostGenotypes, uint64 M,
+                                   uint64 bytesPerSnp, uint64 snpsPerBlock,
+                                   uint64 NCstride) {
+      if (sharedCacheMatches(hostGenotypes, M, bytesPerSnp))
+        return false;
+      if (sharedPackedCache.deviceGenotypes != nullptr) {
+        if (sharedPackedCache.references)
+          return false;
+        cudaFree(sharedPackedCache.deviceGenotypes);
+        sharedPackedCache = SharedPackedGenotypeCache();
+      }
+
+      size_t freeBytes = 0, totalBytes = 0;
+      if (cudaMemGetInfo(&freeBytes, &totalBytes) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+      }
+      const uint64 decodedBlockBytes = snpsPerBlock * NCstride * sizeof(double);
+      const uint64 reserveBytes = decodedBlockBytes + (4ULL << 30);
+      if (freeBytes <= reserveBytes)
+        return false;
+
+      uint64 candidateSnps = std::min<uint64>(M, (freeBytes - reserveBytes) /
+                                                  bytesPerSnp);
+      if (candidateSnps < M)
+        candidateSnps -= candidateSnps % snpsPerBlock;
+      if (!candidateSnps)
+        return false;
+
+      uchar *deviceCache = nullptr;
+      const uint64 cacheBytes = candidateSnps * bytesPerSnp;
+      cudaError_t status = cudaMalloc(reinterpret_cast<void **>(&deviceCache), cacheBytes);
+      if (status != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+      }
+
+      sharedPackedCache.hostGenotypes = hostGenotypes;
+      sharedPackedCache.deviceGenotypes = deviceCache;
+      sharedPackedCache.M = M;
+      sharedPackedCache.bytesPerSnp = bytesPerSnp;
+      sharedPackedCache.cachedSnps = candidateSnps;
+      sharedPackedCache.references = 0;
+      return true;
+    }
+
   }
 
   struct CudaStep1::Impl {
@@ -309,9 +363,7 @@ namespace LMM {
     }
 
     void attachPackedCache() {
-      if (sharedPackedCache.deviceGenotypes != nullptr &&
-          sharedPackedCache.hostGenotypes == hostGenotypes &&
-          sharedPackedCache.M == M && sharedPackedCache.bytesPerSnp == bytesPerSnp) {
+      if (sharedCacheMatches(hostGenotypes, M, bytesPerSnp)) {
         cachedPackedGenotypes = sharedPackedCache.deviceGenotypes;
         cachedSnps = sharedPackedCache.cachedSnps;
         sharedPackedCache.references++;
@@ -323,44 +375,23 @@ namespace LMM {
       if (sharedPackedCache.deviceGenotypes != nullptr)
         return;
 
-      size_t freeBytes = 0, totalBytes = 0;
-      if (cudaMemGetInfo(&freeBytes, &totalBytes) != cudaSuccess) {
-        cudaGetLastError();
-        return;
-      }
-      const uint64 decodedBlockBytes = snpsPerBlock * NCstride * sizeof(*snpBlock);
-      const uint64 reserveBytes = decodedBlockBytes + (4ULL << 30);
-      if (freeBytes <= reserveBytes)
+      if (!allocateSharedPackedCache(hostGenotypes, M, bytesPerSnp, snpsPerBlock,
+                                    NCstride))
         return;
 
-      uint64 candidateSnps = std::min<uint64>(M, (freeBytes - reserveBytes) / bytesPerSnp);
-      if (candidateSnps < M)
-        candidateSnps -= candidateSnps % snpsPerBlock;
-      if (!candidateSnps)
-        return;
-
-      const uint64 cacheBytes = candidateSnps * bytesPerSnp;
-      uchar *deviceCache = nullptr;
-      cudaError_t status = cudaMalloc(reinterpret_cast<void **>(&deviceCache), cacheBytes);
+      const uint64 cacheBytes = sharedPackedCache.cachedSnps * bytesPerSnp;
+      cudaError_t status = cudaMemcpy(sharedPackedCache.deviceGenotypes, hostGenotypes,
+                                      cacheBytes, cudaMemcpyHostToDevice);
       if (status != cudaSuccess) {
-        cudaGetLastError();
-        return;
-      }
-      status = cudaMemcpy(deviceCache, hostGenotypes, cacheBytes, cudaMemcpyHostToDevice);
-      if (status != cudaSuccess) {
-        cudaFree(deviceCache);
+        cudaFree(sharedPackedCache.deviceGenotypes);
+        sharedPackedCache = SharedPackedGenotypeCache();
         cudaGetLastError();
         return;
       }
 
-      sharedPackedCache.hostGenotypes = hostGenotypes;
-      sharedPackedCache.deviceGenotypes = deviceCache;
-      sharedPackedCache.M = M;
-      sharedPackedCache.bytesPerSnp = bytesPerSnp;
-      sharedPackedCache.cachedSnps = candidateSnps;
       sharedPackedCache.references = 1;
-      cachedPackedGenotypes = deviceCache;
-      cachedSnps = candidateSnps;
+      cachedPackedGenotypes = sharedPackedCache.deviceGenotypes;
+      cachedSnps = sharedPackedCache.cachedSnps;
       packedCacheAttached = true;
       std::cout << "CUDA packed genotype cache: " << cachedSnps << "/" << M
                 << " SNPs (" << cacheBytes / static_cast<double>(1ULL << 30)
@@ -674,19 +705,41 @@ namespace LMM {
     checkCuda(cudaMemset(Xnorm2s, 0, M * sizeof(*Xnorm2s)),
               "clear marker initialization SNP norms");
 
+    const bool populateSharedCache =
+      allocateSharedPackedCache(hostGenotypes, M, bytesPerSnp, snpsPerBlock, NCstride);
+    const bool useSharedCache = sharedCacheMatches(hostGenotypes, M, bytesPerSnp);
+    if (populateSharedCache) {
+      const uint64 cacheBytes = sharedPackedCache.cachedSnps * bytesPerSnp;
+      std::cout << "CUDA packed genotype cache: " << sharedPackedCache.cachedSnps
+                << "/" << M << " SNPs ("
+                << cacheBytes / static_cast<double>(1ULL << 30)
+                << " GiB), populated during marker initialization" << std::endl;
+    }
+
     const unsigned int threads = 256;
     const double one = 1.0, zero = 0.0;
     for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
       const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
-      checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
-                           blockSize * bytesPerSnp * sizeof(*packedBlock),
-                           cudaMemcpyHostToDevice),
-                "copy packed genotypes for marker initialization");
+      const uint64 blockBytes = blockSize * bytesPerSnp * sizeof(*packedBlock);
+      const bool blockCached = useSharedCache &&
+                               m0 + blockSize <= sharedPackedCache.cachedSnps;
+      uchar *packedInput = packedBlock;
+      if (blockCached) {
+        packedInput = sharedPackedCache.deviceGenotypes + m0 * bytesPerSnp;
+        if (populateSharedCache)
+          checkCuda(cudaMemcpy(packedInput, hostGenotypes + m0 * bytesPerSnp,
+                               blockBytes, cudaMemcpyHostToDevice),
+                    "populate CUDA packed genotype cache during marker initialization");
+      }
+      else
+        checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
+                             blockBytes, cudaMemcpyHostToDevice),
+                  "copy packed genotypes for marker initialization");
       computeMarkerLookup<<<static_cast<unsigned int>(blockSize), threads>>>
-        (packedBlock, maskIndivs, lookup, projMaskSnps, m0, blockSize, Nstride, Nused);
+        (packedInput, maskIndivs, lookup, projMaskSnps, m0, blockSize, Nstride, Nused);
       checkCuda(cudaGetLastError(), "launch marker lookup initialization");
       decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
-        (snpBlock, packedBlock, maskIndivs, lookup, negCovComps, projMaskSnps,
+        (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
          nullptr, m0, blockSize, Nstride, Cstride);
       checkCuda(cudaGetLastError(), "launch marker initialization decoder");
       if (Cindep)

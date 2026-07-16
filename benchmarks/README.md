@@ -39,8 +39,8 @@ MKL_NUM_THREADS=1 taskset -c 0 build/step1-mkl/bolt \
 Use a fresh model output path for each timed repetition.
 
 For the CUDA build described in `BUILD.md`, add `--cuda` to the same command.
-On an NVIDIA A100-SXM4-40GB, the workload above took 9.6 seconds versus 111.8
-seconds for the portable single-thread oneMKL build, an 11.62x speedup. Reported
+On an NVIDIA A100-SXM4-40GB, the workload above took 7.6 seconds versus 111.8
+seconds for the portable single-thread oneMKL build, a 14.79x speedup. Reported
 heritability, cross-validation choice, prediction errors, convergence
 trajectories, and association summaries matched the CPU run at their displayed
 precision.

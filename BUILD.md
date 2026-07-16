@@ -85,6 +85,12 @@ variance estimation, LINREG, and retrospective association scoring are also
 computed on the GPU. Packed 2-bit genotypes are transferred to the device and
 decoded there; expanded genotype matrices do not cross PCIe.
 
+The CUDA backend uses otherwise-free device memory to cache a shared prefix of
+the packed genotype matrix. It reserves one additional decoded SNP block plus
+4 GiB for a simultaneous cross-validation fold and working buffers. Main and
+fold-specific `Bolt` instances share the packed cache while retaining their own
+sample masks and covariate projections.
+
 For an NVIDIA A100 (compute capability 8.0):
 
 ```sh

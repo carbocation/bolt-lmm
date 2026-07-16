@@ -24,6 +24,17 @@ namespace LMM {
 
   namespace {
 
+    struct SharedPackedGenotypeCache {
+      const uchar *hostGenotypes;
+      uchar *deviceGenotypes;
+      uint64 M, bytesPerSnp, cachedSnps, references;
+
+      SharedPackedGenotypeCache() : hostGenotypes(nullptr), deviceGenotypes(nullptr),
+        M(0), bytesPerSnp(0), cachedSnps(0), references(0) {}
+    };
+
+    SharedPackedGenotypeCache sharedPackedCache;
+
     void checkCuda(cudaError_t status, const char *operation) {
       if (status != cudaSuccess) {
         std::ostringstream msg;
@@ -116,6 +127,9 @@ namespace LMM {
     double *Xtrans;
     double *bayesGram;
     uint64 gramCapacity;
+    const uchar *cachedPackedGenotypes;
+    uint64 cachedSnps;
+    bool packedCacheAttached;
 
     Impl(const uchar hostGenotypesIn[], const double maskIndivsIn[],
          const double (*lookupIn)[4], const double negCovCompsIn[],
@@ -126,7 +140,8 @@ namespace LMM {
       packedBlock(nullptr), snpBlock(nullptr), maskIndivs(nullptr), lookup(nullptr),
       negCovComps(nullptr), projMaskSnps(nullptr), activeMaskSnps(nullptr),
       batchMaskSnps(nullptr), inCovCompVecs(nullptr), outCovCompVecs(nullptr),
-      Xtrans(nullptr), bayesGram(nullptr), gramCapacity(0) {
+      Xtrans(nullptr), bayesGram(nullptr), gramCapacity(0),
+      cachedPackedGenotypes(nullptr), cachedSnps(0), packedCacheAttached(false) {
 
       if (!hostGenotypes || !M || (Nstride & 3))
         throw std::runtime_error("Invalid packed genotype dimensions for CUDA Step 1");
@@ -165,6 +180,8 @@ namespace LMM {
       checkCuda(cudaMemcpy(projMaskSnps, projMaskSnpsIn, M * sizeof(*projMaskSnps),
                            cudaMemcpyHostToDevice), "copy SNP mask to CUDA");
 
+      attachPackedCache();
+
       std::cout << "CUDA Step 1 enabled on " << properties.name
                 << " (compute capability " << properties.major << "." << properties.minor
                 << ", " << snpsPerBlock << " SNPs per GPU block)" << std::endl;
@@ -183,8 +200,89 @@ namespace LMM {
       cudaFree(maskIndivs);
       cudaFree(snpBlock);
       cudaFree(packedBlock);
+      releasePackedCache();
       if (cublas)
         cublasDestroy(cublas);
+    }
+
+    void attachPackedCache() {
+      if (sharedPackedCache.deviceGenotypes != nullptr &&
+          sharedPackedCache.hostGenotypes == hostGenotypes &&
+          sharedPackedCache.M == M && sharedPackedCache.bytesPerSnp == bytesPerSnp) {
+        cachedPackedGenotypes = sharedPackedCache.deviceGenotypes;
+        cachedSnps = sharedPackedCache.cachedSnps;
+        sharedPackedCache.references++;
+        packedCacheAttached = true;
+        std::cout << "Reusing CUDA packed genotype cache (" << cachedSnps << "/" << M
+                  << " SNPs)" << std::endl;
+        return;
+      }
+      if (sharedPackedCache.deviceGenotypes != nullptr)
+        return;
+
+      size_t freeBytes = 0, totalBytes = 0;
+      if (cudaMemGetInfo(&freeBytes, &totalBytes) != cudaSuccess) {
+        cudaGetLastError();
+        return;
+      }
+      const uint64 decodedBlockBytes = snpsPerBlock * NCstride * sizeof(*snpBlock);
+      const uint64 reserveBytes = decodedBlockBytes + (4ULL << 30);
+      if (freeBytes <= reserveBytes)
+        return;
+
+      uint64 candidateSnps = std::min<uint64>(M, (freeBytes - reserveBytes) / bytesPerSnp);
+      if (candidateSnps < M)
+        candidateSnps -= candidateSnps % snpsPerBlock;
+      if (!candidateSnps)
+        return;
+
+      const uint64 cacheBytes = candidateSnps * bytesPerSnp;
+      uchar *deviceCache = nullptr;
+      cudaError_t status = cudaMalloc(reinterpret_cast<void **>(&deviceCache), cacheBytes);
+      if (status != cudaSuccess) {
+        cudaGetLastError();
+        return;
+      }
+      status = cudaMemcpy(deviceCache, hostGenotypes, cacheBytes, cudaMemcpyHostToDevice);
+      if (status != cudaSuccess) {
+        cudaFree(deviceCache);
+        cudaGetLastError();
+        return;
+      }
+
+      sharedPackedCache.hostGenotypes = hostGenotypes;
+      sharedPackedCache.deviceGenotypes = deviceCache;
+      sharedPackedCache.M = M;
+      sharedPackedCache.bytesPerSnp = bytesPerSnp;
+      sharedPackedCache.cachedSnps = candidateSnps;
+      sharedPackedCache.references = 1;
+      cachedPackedGenotypes = deviceCache;
+      cachedSnps = candidateSnps;
+      packedCacheAttached = true;
+      std::cout << "CUDA packed genotype cache: " << cachedSnps << "/" << M
+                << " SNPs (" << cacheBytes / static_cast<double>(1ULL << 30)
+                << " GiB)" << std::endl;
+    }
+
+    void releasePackedCache() {
+      if (!packedCacheAttached)
+        return;
+      if (--sharedPackedCache.references == 0) {
+        cudaFree(sharedPackedCache.deviceGenotypes);
+        sharedPackedCache = SharedPackedGenotypeCache();
+      }
+      cachedPackedGenotypes = nullptr;
+      cachedSnps = 0;
+      packedCacheAttached = false;
+    }
+
+    const uchar *preparePackedBlock(uint64 m0, uint64 blockSize) {
+      if (m0 + blockSize <= cachedSnps)
+        return cachedPackedGenotypes + m0 * bytesPerSnp;
+      checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
+                           blockSize * bytesPerSnp * sizeof(*packedBlock),
+                           cudaMemcpyHostToDevice), "copy packed genotype block to CUDA");
+      return packedBlock;
     }
 
     void ensureBatchCapacity(uint64 B) {
@@ -224,12 +322,10 @@ namespace LMM {
       const double one = 1.0, zero = 0.0;
       for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
         const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
-        checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
-                             blockSize * bytesPerSnp * sizeof(*packedBlock),
-                             cudaMemcpyHostToDevice), "copy packed genotype block to CUDA");
+        const uchar *packedInput = preparePackedBlock(m0, blockSize);
 
         decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
-          (snpBlock, packedBlock, maskIndivs, lookup, negCovComps, projMaskSnps,
+          (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
            nullptr, m0, blockSize, Nstride, Cstride);
         checkCuda(cudaGetLastError(), "launch CUDA genotype decoder");
 
@@ -272,15 +368,13 @@ namespace LMM {
       const double one = 1.0;
       for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
         const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
-        checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
-                             blockSize * bytesPerSnp * sizeof(*packedBlock),
-                             cudaMemcpyHostToDevice), "copy packed X beta block to CUDA");
+        const uchar *packedInput = preparePackedBlock(m0, blockSize);
         checkCuda(cudaMemcpy(Xtrans, hostCoefficients + m0 * B,
                              blockSize * B * sizeof(*Xtrans), cudaMemcpyHostToDevice),
                   "copy X beta coefficients to CUDA");
 
         decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
-          (snpBlock, packedBlock, applyIndivMask ? maskIndivs : nullptr, lookup,
+          (snpBlock, packedInput, applyIndivMask ? maskIndivs : nullptr, lookup,
            negCovComps, projMaskSnps, nullptr, m0, blockSize, Nstride, Cstride);
         checkCuda(cudaGetLastError(), "launch CUDA X beta genotype decoder");
         if (positiveCovariateComponents && Cstride) {
@@ -311,13 +405,10 @@ namespace LMM {
       const double one = 1.0, zero = 0.0;
       for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
         const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
-        checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
-                             blockSize * bytesPerSnp * sizeof(*packedBlock),
-                             cudaMemcpyHostToDevice),
-                  "copy packed X transpose block to CUDA");
+        const uchar *packedInput = preparePackedBlock(m0, blockSize);
 
         decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
-          (snpBlock, packedBlock, maskIndivs, lookup, negCovComps, projMaskSnps,
+          (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
            nullptr, m0, blockSize, Nstride, Cstride);
         checkCuda(cudaGetLastError(), "launch CUDA X transpose genotype decoder");
 
@@ -347,12 +438,10 @@ namespace LMM {
       if (blockSize > snpsPerBlock)
         throw std::runtime_error("CUDA Bayesian block exceeds allocated SNP block");
 
-      checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
-                           blockSize * bytesPerSnp * sizeof(*packedBlock),
-                           cudaMemcpyHostToDevice), "copy Bayesian genotype block to CUDA");
+      const uchar *packedInput = preparePackedBlock(m0, blockSize);
       const unsigned int threads = 256;
       decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
-        (snpBlock, packedBlock, maskIndivs, lookup, negCovComps, projMaskSnps,
+        (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
          activeMaskSnps, m0, blockSize, Nstride, Cstride);
       checkCuda(cudaGetLastError(), "launch Bayesian CUDA genotype decoder");
 

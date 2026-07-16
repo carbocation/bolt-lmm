@@ -268,6 +268,12 @@ if(BOLT_BLAS_SELECTED STREQUAL "MKL")
     message(FATAL_ERROR "The MKL backend is supported only on x86 processors")
   endif()
   set(mkl_hints "${BOLT_MKL_ROOT}" "$ENV{MKLROOT}")
+  # BOLT's Fortran BLAS/LAPACK declarations use 32-bit integers.  Recent
+  # oneMKL CMake packages default to ILP64, so select the matching ABI unless
+  # the caller explicitly requested an interface.
+  if(NOT DEFINED MKL_INTERFACE AND NOT DEFINED MKL_INTERFACE_FULL)
+    set(MKL_INTERFACE "lp64")
+  endif()
   find_package(MKL CONFIG QUIET HINTS ${mkl_hints}
     PATH_SUFFIXES lib/cmake/mkl)
   if(TARGET MKL::MKL)

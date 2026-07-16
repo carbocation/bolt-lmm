@@ -1,2 +1,3 @@
 tables/
 /build*/
+__pycache__/

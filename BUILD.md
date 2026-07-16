@@ -7,6 +7,7 @@ legacy Intel/Linux release environments.
 ## Dependencies
 
 - A C++14 compiler and CMake 3.18 or newer
+- The bundled pgenlib sources (no separate PLINK 2 installation is required)
 - Boost.Program_options and Boost.Iostreams
 - zlib and zstd
 - NLopt, including its C++ header (`nlopt.hpp`)

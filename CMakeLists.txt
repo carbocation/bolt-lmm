@@ -157,6 +157,24 @@ find_package(Threads REQUIRED)
 find_package(Boost 1.58 REQUIRED COMPONENTS program_options iostreams)
 find_package(ZLIB REQUIRED)
 
+set(BOLT_PGENLIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pgenlib")
+add_library(bolt_pgenlib STATIC
+  ${BOLT_PGENLIB_ROOT}/pgenlibr.cpp
+  ${BOLT_PGENLIB_ROOT}/pgenlib_ffi_support.cpp
+  ${BOLT_PGENLIB_ROOT}/pvar_ffi_support.cc
+  ${BOLT_PGENLIB_ROOT}/include/pgenlib_misc.cc
+  ${BOLT_PGENLIB_ROOT}/include/pgenlib_read.cc
+  ${BOLT_PGENLIB_ROOT}/include/plink2_base.cc
+  ${BOLT_PGENLIB_ROOT}/include/plink2_bits.cc)
+target_compile_features(bolt_pgenlib PUBLIC cxx_std_11)
+target_include_directories(bolt_pgenlib PUBLIC
+  "${BOLT_PGENLIB_ROOT}"
+  "${BOLT_PGENLIB_ROOT}/include"
+  "${BOLT_PGENLIB_ROOT}/simde")
+# pgenlib is vendored third-party code and has its own warning policy.
+target_compile_options(bolt_pgenlib PRIVATE
+  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-w>)
+
 add_library(bolt_zstd INTERFACE)
 find_package(zstd CONFIG QUIET)
 if(TARGET zstd::libzstd_shared)
@@ -344,6 +362,7 @@ add_executable(bolt ${BOLT_SOURCES})
 target_include_directories(bolt PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(bolt PRIVATE
   bolt_build_options
+  bolt_pgenlib
   bolt_linear_algebra
   bolt_nlopt
   bolt_openmp

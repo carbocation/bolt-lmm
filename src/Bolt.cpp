@@ -2404,7 +2404,29 @@ namespace LMM {
     // compute components along cov basis vectors and put in [Nstride..Nstride+Cstride)
     // no need to zero out components after Cindep: workVec already 0-initialized
     covBasis.computeCindepComponents(workVec + Nstride, workVec);
-    double projNorm2 = computeProjNorm2(workVec);
+    const uint64 numStats = retroData.size();
+    int chunks[4] = {0, 0, 0, 0};
+    const double *resids[4] = {NULL, NULL, NULL, NULL};
+    double dotProds[4] = {0, 0, 0, 0};
+    double rawNorm2 = 0;
+    if (numStats <= 4) {
+      for (uint64 s = 0; s < numStats; s++) {
+	chunks[s] = findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
+	resids[s] = &retroData[s].calibratedResids[chunks[s]][0];
+      }
+      for (uint64 n = 0; n < Nstride; n++) {
+	const double x = workVec[n];
+	rawNorm2 += x*x;
+	if (numStats >= 1) dotProds[0] += x*resids[0][n];
+	if (numStats >= 2) dotProds[1] += x*resids[1][n];
+	if (numStats >= 3) dotProds[2] += x*resids[2][n];
+	if (numStats >= 4) dotProds[3] += x*resids[3][n];
+      }
+    }
+    else {
+      rawNorm2 = NumericUtils::norm2(workVec, Nstride);
+    }
+    const double projNorm2 = rawNorm2 - NumericUtils::norm2(workVec + Nstride, Cstride);
     double invNorm2 = 1 / projNorm2;
     double dotProd, stat;
 
@@ -2413,10 +2435,10 @@ namespace LMM {
     // compute and output assoc stats
     bool beta_printed = false;
     for (uint s = 0; s < retroData.size(); s++) {
-      int chunk = findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
-
-      const vector <double> &calibratedResidsChunk = retroData[s].calibratedResids[chunk];
-      dotProd = NumericUtils::dot(workVec, &calibratedResidsChunk[0], Nstride);
+      const int chunk = numStats <= 4 ? chunks[s] :
+	findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
+      dotProd = numStats <= 4 ? dotProds[s] :
+	NumericUtils::dot(workVec, &retroData[s].calibratedResids[chunk][0], Nstride);
       stat = BAD_SNP_STAT; double pValue = 1;
       if (!(projNorm2 < 0.1)) {
 	stat = invNorm2 * NumericUtils::sq(dotProd);

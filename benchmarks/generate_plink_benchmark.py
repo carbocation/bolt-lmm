@@ -16,6 +16,11 @@ def parse_args():
     parser.add_argument("--heritability", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=20260716)
     parser.add_argument("--batch-variants", type=int, default=256)
+    parser.add_argument("--template-variants", type=int, default=0,
+                        help="generate this many variant rows and reuse sample-block rotations "
+                             "to create a large I/O benchmark (0 = generate every row)")
+    parser.add_argument("--min-maf", type=float, default=0.1,
+                        help="minimum MAF for uniformly generated template variants")
     return parser.parse_args()
 
 
@@ -27,6 +32,12 @@ def main():
         raise SystemExit("--causal-variants must be >= 1")
     if args.batch_variants < 1:
         raise SystemExit("--batch-variants must be >= 1")
+    if args.template_variants < 0:
+        raise SystemExit("--template-variants must be nonnegative")
+    if args.template_variants and args.samples % 4:
+        raise SystemExit("--template-variants requires --samples divisible by 4")
+    if not 0 < args.min_maf < 0.5:
+        raise SystemExit("--min-maf must be between 0 and 0.5")
     if not 0 < args.heritability < 1:
         raise SystemExit("--heritability must be between 0 and 1")
 
@@ -36,15 +47,19 @@ def main():
     samples_padded = (args.samples + 3) & ~3
     bytes_per_variant = samples_padded // 4
     genetic_score = np.zeros(args.samples, dtype=np.float64)
-    causal = min(args.causal_variants, args.variants)
+    generated_variants = (min(args.template_variants, args.variants)
+                          if args.template_variants else args.variants)
+    causal = min(args.causal_variants, generated_variants)
     effects = rng.normal(size=causal)
     effects /= np.linalg.norm(effects)
 
+    packed_templates = (np.empty((generated_variants, bytes_per_variant), dtype=np.uint8)
+                        if args.template_variants else None)
     with prefix.with_suffix(".bed").open("wb") as bed:
         bed.write(b"\x6c\x1b\x01")
-        for first in range(0, args.variants, args.batch_variants):
-            count = min(args.batch_variants, args.variants - first)
-            maf = rng.uniform(0.1, 0.5, size=(count, 1))
+        for first in range(0, generated_variants, args.batch_variants):
+            count = min(args.batch_variants, generated_variants - first)
+            maf = rng.uniform(args.min_maf, 0.5, size=(count, 1))
             geno = rng.binomial(2, maf, size=(count, args.samples)).astype(np.uint8)
 
             causal_count = max(0, min(first + count, causal) - first)
@@ -60,7 +75,27 @@ def main():
             packed = (code[:, 0::4] | (code[:, 1::4] << 2) |
                       (code[:, 2::4] << 4) | (code[:, 3::4] << 6))
             assert packed.shape == (count, bytes_per_variant)
-            bed.write(packed.tobytes())
+            if packed_templates is None:
+                packed.tofile(bed)
+            else:
+                packed_templates[first:first + count] = packed
+
+        if packed_templates is not None:
+            for first in range(0, args.variants, generated_variants):
+                count = min(generated_variants, args.variants - first)
+                cycle = first // generated_variants
+                byte_offset = (cycle * 104729) % bytes_per_variant
+                for template_first in range(0, count, args.batch_variants):
+                    template_count = min(args.batch_variants, count - template_first)
+                    block = packed_templates[template_first:template_first + template_count]
+                    if byte_offset:
+                        rotated = np.empty_like(block)
+                        split = bytes_per_variant - byte_offset
+                        rotated[:, :split] = block[:, byte_offset:]
+                        rotated[:, split:] = block[:, :byte_offset]
+                        rotated.tofile(bed)
+                    else:
+                        block.tofile(bed)
 
     with prefix.with_suffix(".bim").open("w") as bim:
         for variant in range(args.variants):
@@ -86,7 +121,9 @@ def main():
             pheno.write(f"F{sample + 1}\tI{sample + 1}\t{value:.12g}\n")
 
     gib = (3 + args.variants * bytes_per_variant) / (1024 ** 3)
-    print(f"Wrote {prefix} ({args.samples} samples, {args.variants} variants, "
+    template_text = (f", {generated_variants} rotated template variants"
+                     if packed_templates is not None else "")
+    print(f"Wrote {prefix} ({args.samples} samples, {args.variants} variants{template_text}, "
           f"{gib:.3f} GiB BED)")
 
 

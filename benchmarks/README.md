@@ -3,6 +3,25 @@
 `generate_plink_benchmark.py` creates a deterministic PLINK 1 dataset with a
 polygenic quantitative phenotype. It requires Python 3 and NumPy.
 
+For storage and streaming measurements at the intended 500,000-sample by
+1,000,000-variant scale, template mode avoids drawing 500 billion genotypes in
+Python while preserving the exact packed-matrix dimensions:
+
+```sh
+python3 benchmarks/generate_plink_benchmark.py /tmp/bolt-target \
+  --samples 500000 --variants 1000000 --template-variants 2048 \
+  --causal-variants 256 --batch-variants 32 --min-maf 0.01
+
+plink2 --bfile /tmp/bolt-target --make-pgen --out /tmp/bolt-target-pgen \
+  --threads 6
+```
+
+Each template is independently generated, and subsequent copies rotate packed
+four-sample blocks. This is an exact physical-scale I/O and memory benchmark,
+not a simulation of one million independent markers. The command above wrote a
+116.415 GiB BED in 5:15 on the A100 VM. PLINK 2 converted it to a 93.466 GiB
+PGEN in 7:30.
+
 The x86 benchmark used for the `perf/x86` audit was generated with:
 
 ```sh

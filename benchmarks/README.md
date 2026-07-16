@@ -52,3 +52,9 @@ A larger 131,072-sample, 16,384-variant fixture took 8.4 seconds with CUDA.
 Moving the two SNP normalization/projection passes for the main and CV-fold
 models to the GPU reduced that fixture from 26.2 seconds with the otherwise
 same CUDA backend.
+
+The same 131,072-sample fixture converted to hardcall PGEN was used to measure
+single-threaded input setup. Fusing packed-code conversion, QC statistics, and
+missing-sample collection reduced median `SnpData` setup time from 2.947 to
+1.320 seconds across three pinned runs (55.2%). Stage 1 model artifacts from all
+baseline and optimized runs were byte-identical.

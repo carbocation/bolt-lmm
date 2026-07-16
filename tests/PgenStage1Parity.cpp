@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "PgenUtils.hpp"
 #include "SnpData.hpp"
 
 namespace {
@@ -17,6 +18,19 @@ namespace {
 
 int main(int argc, char **argv) {
   if (argc != 2) return fail("expected fixture directory argument");
+
+  const uchar packedInput[2] = {0xe4, 0x0e};
+  const uchar expectedBed[2] = {0x4b, 0x34};
+  uchar convertedBed[2] = {};
+  std::vector<uint32_t> missingIndices;
+  const LMM::PgenUtils::PackedHardcallStats packedStats =
+    LMM::PgenUtils::packedPgenToBedAndCollectMissing(
+      convertedBed, packedInput, 7, 8, missingIndices);
+  const std::vector<uint32_t> expectedMissing = {3, 5};
+  if (std::memcmp(convertedBed, expectedBed, sizeof(expectedBed)) != 0 ||
+      packedStats.alleleSum != 5 || packedStats.numMissing != 2 ||
+      missingIndices != expectedMissing)
+    return fail("fused packed hardcall conversion/statistics mismatch");
 
   const std::string dir = argv[1];
   const std::string prefix = dir + "/example";

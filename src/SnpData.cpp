@@ -115,8 +115,11 @@ namespace LMM {
       return tmpDir && *tmpDir ? tmpDir : "/tmp";
     }
 
-    double bytesToGiB(uint64 bytes) {
-      return bytes / static_cast<double>(1ULL << 30);
+    string formatGiB(uint64 bytes) {
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(1)
+	  << bytes / static_cast<double>(1ULL << 30);
+      return out.str();
     }
 
   }
@@ -1064,8 +1067,8 @@ namespace LMM {
     }
     const uint64 freeBytes = static_cast<uint64>(fsInfo.f_bavail) * fsInfo.f_frsize;
     if (freeBytes < bytes) {
-      cerr << "ERROR: PGEN Stage 1 cache requires " << std::fixed << std::setprecision(1)
-	   << bytesToGiB(bytes) << " GiB, but only " << bytesToGiB(freeBytes)
+      cerr << "ERROR: PGEN Stage 1 cache requires " << formatGiB(bytes)
+	   << " GiB, but only " << formatGiB(freeBytes)
 	   << " GiB is available in " << cacheDir << endl;
       exit(1);
     }
@@ -1083,7 +1086,7 @@ namespace LMM {
     }
 
     cout << "Using file-backed PGEN Stage 1 cache in " << cacheDir << " ("
-	 << std::fixed << std::setprecision(1) << bytesToGiB(bytes) << " GiB; "
+	 << formatGiB(bytes) << " GiB; "
 	 << (forceFileBacked ? "requested by --pgenCacheDir" :
 	     "packed genotypes exceed half of physical RAM") << ")" << endl;
     if (unlink(cachePath.data()) != 0) {
@@ -1183,7 +1186,7 @@ namespace LMM {
     cout << "Reading PGEN hardcalls and performing QC filtering on snps and indivs..." << endl;
     const uint64 packedBytes = (N+3)>>2;
     vector <uchar> pgenLine(packedBytes);
-    vector <uchar> bedLine(Nstride/4);
+    vector <uint32_t> missingIndices;
     vector <int> numMissingPerIndiv(N);
     uchar *bedLineOut = genotypes;
     int numSnpsFailedQC = 0;
@@ -1191,14 +1194,15 @@ namespace LMM {
       if (bedSnpToGrmIndex[mbed] == -2) continue;
 
       pgenReader.ReadHardcallsPacked(pgenLine.data(), packedBytes, N, 0, mbed, 1);
-      PgenUtils::packedPgenToBed(bedLine.data(), pgenLine.data(), N, Nstride);
-      double snpMissing;
-      const double alleleFreq = computeIdentityBedAlleleFreqAndMissing(bedLine.data(),
-							       &snpMissing);
+      const PgenUtils::PackedHardcallStats stats =
+	PgenUtils::packedPgenToBedAndCollectMissing(bedLineOut, pgenLine.data(), N,
+						   Nstride, missingIndices);
+      const double snpMissing = static_cast<double>(stats.numMissing) / N;
+      const double alleleFreq = 0.5 * stats.alleleSum / (N-stats.numMissing);
       if (snpMissing <= maxMissingPerSnp) {
 	if (bedSnpToGrmIndex[mbed] >= 0) {
-	  storeIdentityBedLineAndCountMissing(bedLineOut, bedLine.data(),
-					       numMissingPerIndiv.data());
+	  for (uint32_t n : missingIndices)
+	    numMissingPerIndiv[n]++;
 	  bedLineOut += Nstride>>2;
 	  bedSnpToGrmIndex[mbed] = snps.size();
 	  snps.push_back(bedSnps[mbed]);

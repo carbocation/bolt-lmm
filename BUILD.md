@@ -40,6 +40,9 @@ Use `--pgenCacheDir DIR` to choose local scratch storage explicitly; specifying
 the option also forces file-backed storage, which is useful for testing and for
 leaving RAM available to operating-system and model working sets. BOLT reports
 the required cache size and checks available scratch space before loading.
+Packed-code conversion, allele/missingness accumulation, sample-missingness
+tracking, and the final cache write are fused into one host pass during PGEN
+ingestion.
 
 ## macOS on Apple Silicon
 

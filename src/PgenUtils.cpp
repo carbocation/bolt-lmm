@@ -125,18 +125,39 @@ namespace LMM {
         return sample;
       }
 
+      // pgenlib: 00 = 0 ALT, 01 = 1 ALT, 10 = 2 ALT, 11 = missing.
+      // PLINK 1: 11 = 0 A1, 10 = 1 A1, 00 = 2 A1, 01 = missing.
+      const uchar PGEN_CODE_TO_BED[4] = {3, 2, 0, 1};
+
       std::array<uchar, 256> makePgenToBedLookup() {
-        // pgenlib: 00 = 0 ALT, 01 = 1 ALT, 10 = 2 ALT, 11 = missing.
-        // PLINK 1: 11 = 0 A1, 10 = 1 A1, 00 = 2 A1, 01 = missing.
-        const uchar pgenCodeToBed[4] = {3, 2, 0, 1};
         std::array<uchar, 256> lookup = {};
         for (uint byte = 0; byte < lookup.size(); byte++)
           for (uint offset = 0; offset < 4; offset++)
-            lookup[byte] |= pgenCodeToBed[(byte >> (2*offset)) & 3] << (2*offset);
+            lookup[byte] |= PGEN_CODE_TO_BED[(byte >> (2*offset)) & 3] << (2*offset);
         return lookup;
       }
 
       const std::array<uchar, 256> PGEN_TO_BED_LOOKUP = makePgenToBedLookup();
+
+      struct PackedByteStats {
+	uchar alleleSum;
+	uchar numMissing;
+      };
+
+      std::array<PackedByteStats, 256> makePackedByteStats() {
+	std::array<PackedByteStats, 256> stats = {};
+	for (uint byte = 0; byte < stats.size(); byte++)
+	  for (uint offset = 0; offset < 4; offset++) {
+	    const uchar genotype = (byte >> (2*offset)) & 3;
+	    if (genotype == 3)
+	      stats[byte].numMissing++;
+	    else
+	      stats[byte].alleleSum += genotype;
+	  }
+	return stats;
+      }
+
+      const std::array<PackedByteStats, 256> PACKED_BYTE_STATS = makePackedByteStats();
 
     }
 
@@ -330,6 +351,43 @@ namespace LMM {
       if (N&3)
         out[packedBytes-1] &= (1U << (2*(N&3))) - 1;
       memset(out + packedBytes, 0, (Nstride/4-packedBytes) * sizeof(out[0]));
+    }
+
+    PackedHardcallStats packedPgenToBedAndCollectMissing(
+      uchar out[], const uchar in[], uint64 N, uint64 Nstride,
+      vector<uint32_t> &missingIndices) {
+      PackedHardcallStats stats = {0, 0};
+      missingIndices.clear();
+      const uint64 fullBytes = N >> 2;
+      for (uint64 byte = 0; byte < fullBytes; byte++) {
+	const uchar packed = in[byte];
+	out[byte] = PGEN_TO_BED_LOOKUP[packed];
+	stats.alleleSum += PACKED_BYTE_STATS[packed].alleleSum;
+	stats.numMissing += PACKED_BYTE_STATS[packed].numMissing;
+	if (PACKED_BYTE_STATS[packed].numMissing)
+	  for (uint32_t offset = 0; offset < 4; offset++)
+	    if (((packed >> (2*offset)) & 3) == 3)
+	      missingIndices.push_back(static_cast<uint32_t>((byte << 2) + offset));
+      }
+
+      const uint64 packedBytes = (N+3) >> 2;
+      if (fullBytes != packedBytes) {
+	const uchar packed = in[fullBytes];
+	uchar converted = 0;
+	for (uint32_t offset = 0; offset < (N&3); offset++) {
+	  const uchar genotype = (packed >> (2*offset)) & 3;
+	  converted |= PGEN_CODE_TO_BED[genotype] << (2*offset);
+	  if (genotype == 3) {
+	    stats.numMissing++;
+	    missingIndices.push_back(static_cast<uint32_t>((fullBytes << 2) + offset));
+	  }
+	  else
+	    stats.alleleSum += genotype;
+	}
+	out[fullBytes] = converted;
+      }
+      memset(out + packedBytes, 0, (Nstride/4-packedBytes) * sizeof(out[0]));
+      return stats;
     }
 
     void packedPgenToGeno(uchar out[], const uchar in[],

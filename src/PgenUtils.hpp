@@ -36,6 +36,11 @@ namespace LMM {
       double pheno;
     };
 
+    struct PackedHardcallStats {
+      uint64 alleleSum;
+      uint64 numMissing;
+    };
+
     FileSet resolvePrefix(const std::string &prefix);
 
     std::vector<SampleInfo> readPsamFile(const std::string &psamFile);
@@ -47,6 +52,12 @@ namespace LMM {
     // Converts pgenlib allele-count codes (0, 1, 2, missing) to the PLINK 1
     // BED bit encoding used by SnpData. out has Nstride/4 bytes.
     void packedPgenToBed(uchar out[], const uchar in[], uint64 N, uint64 Nstride);
+
+    // Converts packed hardcalls while collecting the statistics needed by
+    // Stage 1 QC. missingIndices is cleared before being populated.
+    PackedHardcallStats packedPgenToBedAndCollectMissing(
+      uchar out[], const uchar in[], uint64 N, uint64 Nstride,
+      std::vector<uint32_t> &missingIndices);
 
     // Expands pgenlib codes and scatters source-order samples into model order.
     // sourceToTarget contains one target index for each packed input sample.

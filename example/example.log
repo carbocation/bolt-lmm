@@ -1,0 +1,623 @@
+                      +-----------------------------+
+                      |                       ___   |
+                      |   BOLT-LMM, v2.5     /_ /   |
+                      |   June 21, 2025       /_/   |
+                      |   Po-Ru Loh            //   |
+                      |                        /    |
+                      +-----------------------------+
+
+Copyright (C) 2014-2025 Harvard University.
+Distributed under the GNU GPLv3 open source license.
+
+Compiled with USE_SSE: fast aligned memory access
+Compiled with USE_MKL: Intel Math Kernel Library linear algebra
+Boost version: 1_58
+
+Command line options:
+
+../bolt \
+    --bfile=EUR_subset \
+    --remove=EUR_subset.remove \
+    --exclude=EUR_subset.exclude \
+    --exclude=EUR_subset.exclude2 \
+    --phenoFile=EUR_subset.pheno2.covars \
+    --phenoCol=PHENO \
+    --covarFile=EUR_subset.pheno2.covars \
+    --covarCol=CAT_COV \
+    --qCovarCol=QCOV{1:2} \
+    --modelSnps=EUR_subset.modelSnps \
+    --lmm \
+    --LDscoresFile=../tables/LDSCORE.1000G_EUR.GRCh38.tab.gz \
+    --numThreads=2 \
+    --statsFile=example.stats \
+    --dosageFile=EUR_subset.dosage.chr17first100 \
+    --dosageFile=EUR_subset.dosage.chr22last100.gz \
+    --dosageFidIidFile=EUR_subset.dosage.indivs \
+    --statsFileDosageSnps=example.dosageSnps.stats \
+    --impute2FileList=EUR_subset.impute2FileList.txt \
+    --impute2FidIidFile=EUR_subset.impute2.indivs \
+    --statsFileImpute2Snps=example.impute2Snps.stats \
+    --dosage2FileList=EUR_subset.dosage2FileList.txt \
+    --statsFileDosage2Snps=example.dosage2Snps.stats 
+
+Verifying contents of --dosage2FileList: EUR_subset.dosage2FileList.txt
+Checking map file EUR_subset.dosage2.chr17first100.map and 2-dosage genotype file EUR_subset.dosage2.chr17first100.gz
+Checking map file EUR_subset.dosage2.chr17second100.map and 2-dosage genotype file EUR_subset.dosage2.chr17second100
+Checking map file EUR_subset.dosage2.chr22last100.map and 2-dosage genotype file EUR_subset.dosage2.chr22last100.gz
+
+Setting number of threads to 2
+fam: EUR_subset.fam
+bim(s): EUR_subset.bim
+bed(s): EUR_subset.bed
+
+=== Reading genotype data ===
+
+Total indivs in PLINK data: Nbed = 379
+Reading remove file (indivs to remove): EUR_subset.remove
+Removed 6 individual(s)
+Total indivs stored in memory: N = 373
+First-pass reading exclude file (SNPs to exclude): EUR_subset.exclude
+First-pass reading exclude file (SNPs to exclude): EUR_subset.exclude2
+Reading bim file #1: EUR_subset.bim
+    Read 54051 snps
+Total snps in PLINK data: Mbed = 54051
+Reading exclude file (SNPs to exclude): EUR_subset.exclude
+Excluded 5405 SNP(s)
+Reading exclude file (SNPs to exclude): EUR_subset.exclude2
+Excluded 43171 SNP(s)
+Reading list of SNPs to include in model (i.e., GRM): EUR_subset.modelSnps
+WARNING: SNP has been excluded: rs1882989
+WARNING: SNP has been excluded: rs112221137
+WARNING: SNP has been excluded: rs35840960
+WARNING: SNP has been excluded: rs62057022
+WARNING: SNP has been excluded: rs1882990
+Included 2431 SNP(s) in model in 1 variance component(s)
+WARNING: 24594 SNP(s) had been excluded
+
+Breakdown of SNP pre-filtering results:
+  2431 SNPs to include in model (i.e., GRM)
+  3044 additional non-GRM SNPs loaded
+  48576 excluded SNPs
+Allocating 2431 x 376/4 bytes to store genotypes
+Reading genotypes and performing QC filtering on snps and indivs...
+Reading bed file #1: EUR_subset.bed
+    Expecting 5134845 (+3) bytes for 379 indivs, 54051 snps
+Total indivs after QC: 373
+Total post-QC SNPs: M = 2431
+  Variance component 1: 2431 post-QC SNPs (name: 'modelSnps')
+Time for SnpData setup = 0.277052 sec
+
+=== Reading phenotype and covariate data ===
+
+Read data for 373 indivs (ignored 0 without genotypes) from:
+  EUR_subset.pheno2.covars
+Read data for 373 indivs (ignored 0 without genotypes) from:
+  EUR_subset.pheno2.covars
+Number of indivs with no missing phenotype(s) to use: 369
+NOTE: Using all-1s vector (constant term) in addition to specified covariates
+    Using categorical covariate: CAT_COV (adding level A)
+    Using categorical covariate: CAT_COV (adding level B)
+    Using quantitative covariate: QCOV1
+    Using quantitative covariate: QCOV2
+    Using quantitative covariate: CONST_ALL_ONES
+WARNING: 3 of 369 samples passing previous QC have missing covariates
+  --covarUseMissingIndic is not set, so these samples will be removed
+Number of individuals used in analysis: Nused = 366
+Singular values of covariate matrix:
+    S[0] = 39.4151
+    S[1] = 13.5249
+    S[2] = 6.56744
+    S[3] = 4.65936
+    S[4] = 8.20339e-15
+Total covariate vectors: C = 5
+Total independent covariate vectors: Cindep = 4
+
+=== Initializing Bolt object: projecting and normalizing SNPs ===
+
+Number of chroms with >= 1 good SNP: 6
+Average norm of projected SNPs:           362.015344
+Dimension of all-1s proj space (Nused-1): 365
+Time for covariate data setup + Bolt initialization = 0.0208812 sec
+
+Phenotype 1:   N = 366   mean = 0.00450586   std = 1.0273
+
+=== Computing linear regression (LINREG) stats ===
+
+Time for computing LINREG stats = 0.00174093 sec
+
+=== Estimating variance parameters ===
+
+Using CGtol of 0.005 for this step
+Using default number of random trials: 15 (for Nused = 366)
+
+Estimating MC scaling f_REML at log(delta) = 1.09865, h2 = 0.25...
+  Batch-solving 16 systems of equations using conjugate gradient iteration
+  iter 1:  time=0.01  rNorms/orig: (0.1,0.1)  res2s: 767.193..199.099
+  iter 2:  time=0.01  rNorms/orig: (0.01,0.03)  res2s: 791.087..208.371
+  iter 3:  time=0.01  rNorms/orig: (0.002,0.004)  res2s: 791.958..209.121
+  Converged at iter 3: rNorms/orig all < CGtol=0.005
+  Time breakdown: dgemm = 23.8%, memory/overhead = 76.2%
+  MCscaling: logDelta = 1.10, h2 = 0.250, f = 0.0583786
+
+Estimating MC scaling f_REML at log(delta) = 4.23869e-05, h2 = 0.5...
+  Batch-solving 16 systems of equations using conjugate gradient iteration
+  iter 1:  time=0.01  rNorms/orig: (0.2,0.3)  res2s: 157.403..82.5002
+  iter 2:  time=0.01  rNorms/orig: (0.04,0.1)  res2s: 176.427..94.685
+  iter 3:  time=0.01  rNorms/orig: (0.01,0.02)  res2s: 178.429..97.6069
+  iter 4:  time=0.01  rNorms/orig: (0.004,0.005)  res2s: 178.791..97.8407
+  Converged at iter 4: rNorms/orig all < CGtol=0.005
+  Time breakdown: dgemm = 23.8%, memory/overhead = 76.2%
+  MCscaling: logDelta = 0.00, h2 = 0.500, f = 0.00362986
+
+Estimating MC scaling f_REML at log(delta) = -0.0727959, h2 = 0.518202...
+  Batch-solving 16 systems of equations using conjugate gradient iteration
+  iter 1:  time=0.01  rNorms/orig: (0.2,0.3)  res2s: 140.004..76.2204
+  iter 2:  time=0.01  rNorms/orig: (0.04,0.1)  res2s: 158.154..88.1446
+  iter 3:  time=0.01  rNorms/orig: (0.01,0.03)  res2s: 160.162..91.1652
+  iter 4:  time=0.01  rNorms/orig: (0.004,0.006)  res2s: 160.548..91.4234
+  iter 5:  time=0.01  rNorms/orig: (0.0008,0.001)  res2s: 160.575..91.4401
+  Converged at iter 5: rNorms/orig all < CGtol=0.005
+  Time breakdown: dgemm = 24.5%, memory/overhead = 75.5%
+  MCscaling: logDelta = -0.07, h2 = 0.518, f = -0.000114364
+
+Secant iteration for h2 estimation converged in 1 steps
+Estimated (pseudo-)heritability: h2g = 0.518
+To more precisely estimate variance parameters and estimate s.e., use --reml
+Variance params: sigma^2_K = 0.539611, logDelta = -0.072796, f = -0.000114364
+
+Time for fitting variance components = 0.0761909 sec
+
+=== Computing mixed model assoc stats (inf. model) ===
+
+Selected 30 SNPs for computation of prospective stat
+Tried 30; threw out 0 with GRAMMAR chisq > 5
+Assigning SNPs to 6 chunks for leave-out analysis
+Each chunk is excluded when testing SNPs belonging to the chunk
+  Batch-solving 36 systems of equations using conjugate gradient iteration
+  iter 1:  time=0.01  rNorms/orig: (0.2,0.3)  res2s: 77.2766..87.3902
+  iter 2:  time=0.01  rNorms/orig: (0.05,0.1)  res2s: 91.4012..100.112
+  iter 3:  time=0.01  rNorms/orig: (0.01,0.03)  res2s: 94.9553..101.227
+  iter 4:  time=0.01  rNorms/orig: (0.003,0.008)  res2s: 95.3511..101.387
+  iter 5:  time=0.01  rNorms/orig: (0.0008,0.002)  res2s: 95.3793..101.413
+  iter 6:  time=0.01  rNorms/orig: (0.0003,0.0004)  res2s: 95.381..101.415
+  Converged at iter 6: rNorms/orig all < CGtol=0.0005
+  Time breakdown: dgemm = 39.8%, memory/overhead = 60.2%
+
+AvgPro: 1.016   AvgRetro: 0.998   Calibration: 1.018 (0.008)   (30 SNPs)
+Ratio of medians: 1.020   Median of ratios: 1.015
+
+Time for computing infinitesimal model assoc stats = 0.0464129 sec
+
+=== Estimating chip LD Scores using 400 indivs ===
+
+WARNING: Only 373 indivs available; using all
+Reducing sample size to 368 for memory alignment
+
+Time for estimating chip LD Scores = 0.00619602 sec
+
+=== Reading LD Scores for calibration of Bayesian assoc stats ===
+
+Looking up LD Scores...
+  Looking for column header 'SNP': column number = 1
+  Looking for column header 'LDSCORE': column number = 5
+Found LD Scores for 2425/2431 SNPs
+
+Estimating inflation of LINREG chisq stats using MLMe as reference...
+Filtering to SNPs with chisq stats, LD Scores, and MAF > 0.01
+# of SNPs passing filters before outlier removal: 2421/2431
+Masking windows around outlier snps (chisq > 20.0)
+# of SNPs remaining after outlier window removal: 2403/2421
+Intercept of LD Score regression for ref stats:   1.040 (0.048)
+Estimated attenuation: 0.418 (0.413)
+Intercept of LD Score regression for cur stats: 1.094 (0.048)
+Calibration factor (ref/cur) to multiply by:      0.951 (0.018)
+LINREG intercept inflation = 1.05188
+
+=== Estimating mixture parameters by cross-validation ===
+
+Setting maximum number of iterations to 250 for this step
+Max CV folds to compute = 5 (to have > 10000 samples)
+
+====> Starting CV fold 1 <====
+
+NOTE: Using all-1s vector (constant term) in addition to specified covariates
+    Using categorical covariate: CAT_COV (adding level A)
+    Using categorical covariate: CAT_COV (adding level B)
+    Using quantitative covariate: QCOV1
+    Using quantitative covariate: QCOV2
+    Using quantitative covariate: CONST_ALL_ONES
+Number of individuals used in analysis: Nused = 292
+Singular values of covariate matrix:
+    S[0] = 35.2135
+    S[1] = 12.0776
+    S[2] = 5.84295
+    S[3] = 4.11065
+    S[4] = 1.21328e-14
+Total covariate vectors: C = 5
+Total independent covariate vectors: Cindep = 4
+
+=== Initializing Bolt object: projecting and normalizing SNPs ===
+
+Number of chroms with >= 1 good SNP: 6
+Average norm of projected SNPs:           288.024349
+Dimension of all-1s proj space (Nused-1): 291
+  Beginning variational Bayes
+  iter 1:  time=0.02 for 18 active reps
+  iter 2:  time=0.01 for 18 active reps  approxLL diffs: (14.01,24.97)
+  iter 3:  time=0.01 for 18 active reps  approxLL diffs: (0.54,2.37)
+  iter 4:  time=0.01 for 18 active reps  approxLL diffs: (0.08,0.82)
+  iter 5:  time=0.01 for 18 active reps  approxLL diffs: (0.01,0.62)
+  iter 6:  time=0.01 for 11 active reps  approxLL diffs: (0.00,0.71)
+  iter 7:  time=0.01 for  7 active reps  approxLL diffs: (0.00,0.59)
+  iter 8:  time=0.01 for  6 active reps  approxLL diffs: (0.00,0.30)
+  iter 9:  time=0.00 for  4 active reps  approxLL diffs: (0.01,0.17)
+  iter 10:  time=0.00 for  3 active reps  approxLL diffs: (0.00,0.09)
+  iter 11:  time=0.00 for  2 active reps  approxLL diffs: (0.02,0.04)
+  iter 12:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.02)
+  iter 13:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  iter 14:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  Converged at iter 14: approxLL diffs each have been < LLtol=0.01
+  Time breakdown: dgemm = 43.5%, memory/overhead = 56.5%
+Computing predictions on left-out cross-validation fold
+Time for computing predictions = 0.00443792 sec
+
+Average PVEs obtained by param pairs tested (high to low):
+ f2=0.3, p=0.01: 0.126476
+ f2=0.5, p=0.01: 0.115832
+ f2=0.3, p=0.02: 0.114885
+            ...
+ f2=0.1, p=0.01: 0.061449
+
+Detailed CV fold results:
+  Absolute prediction MSE baseline (covariates only): 1.19142
+  Absolute prediction MSE using standard LMM:         1.11233
+  Absolute prediction MSE, fold-best f2=0.3, p=0.01:  1.04074
+    Absolute pred MSE using   f2=0.5, p=0.5: 1.112334
+    Absolute pred MSE using   f2=0.5, p=0.2: 1.110853
+    Absolute pred MSE using   f2=0.5, p=0.1: 1.107629
+    Absolute pred MSE using  f2=0.5, p=0.05: 1.100541
+    Absolute pred MSE using  f2=0.5, p=0.02: 1.061305
+    Absolute pred MSE using  f2=0.5, p=0.01: 1.053418
+    Absolute pred MSE using   f2=0.3, p=0.5: 1.111904
+    Absolute pred MSE using   f2=0.3, p=0.2: 1.107901
+    Absolute pred MSE using   f2=0.3, p=0.1: 1.099884
+    Absolute pred MSE using  f2=0.3, p=0.05: 1.078278
+    Absolute pred MSE using  f2=0.3, p=0.02: 1.054545
+    Absolute pred MSE using  f2=0.3, p=0.01: 1.040736
+    Absolute pred MSE using   f2=0.1, p=0.5: 1.110527
+    Absolute pred MSE using   f2=0.1, p=0.2: 1.102852
+    Absolute pred MSE using   f2=0.1, p=0.1: 1.087635
+    Absolute pred MSE using  f2=0.1, p=0.05: 1.068055
+    Absolute pred MSE using  f2=0.1, p=0.02: 1.077632
+    Absolute pred MSE using  f2=0.1, p=0.01: 1.118211
+
+====> End CV fold 1: 18 remaining param pair(s) <====
+
+Estimated proportion of variance explained using inf model: 0.066
+Relative improvement in prediction MSE using non-inf model: 0.064
+
+====> Starting CV fold 2 <====
+
+NOTE: Using all-1s vector (constant term) in addition to specified covariates
+    Using categorical covariate: CAT_COV (adding level A)
+    Using categorical covariate: CAT_COV (adding level B)
+    Using quantitative covariate: QCOV1
+    Using quantitative covariate: QCOV2
+    Using quantitative covariate: CONST_ALL_ONES
+Number of individuals used in analysis: Nused = 293
+Singular values of covariate matrix:
+    S[0] = 35.5041
+    S[1] = 12.0959
+    S[2] = 5.91229
+    S[3] = 4.11948
+    S[4] = 1.1044e-14
+Total covariate vectors: C = 5
+Total independent covariate vectors: Cindep = 4
+
+=== Initializing Bolt object: projecting and normalizing SNPs ===
+
+Number of chroms with >= 1 good SNP: 6
+Average norm of projected SNPs:           289.038063
+Dimension of all-1s proj space (Nused-1): 292
+  Beginning variational Bayes
+  iter 1:  time=0.02 for 18 active reps
+  iter 2:  time=0.01 for 18 active reps  approxLL diffs: (13.23,27.41)
+  iter 3:  time=0.01 for 18 active reps  approxLL diffs: (0.70,2.19)
+  iter 4:  time=0.01 for 18 active reps  approxLL diffs: (0.10,0.68)
+  iter 5:  time=0.01 for 18 active reps  approxLL diffs: (0.01,0.31)
+  iter 6:  time=0.01 for 16 active reps  approxLL diffs: (0.00,0.16)
+  iter 7:  time=0.01 for  5 active reps  approxLL diffs: (0.00,0.10)
+  iter 8:  time=0.00 for  3 active reps  approxLL diffs: (0.03,0.10)
+  iter 9:  time=0.00 for  3 active reps  approxLL diffs: (0.02,0.09)
+  iter 10:  time=0.00 for  3 active reps  approxLL diffs: (0.01,0.07)
+  iter 11:  time=0.00 for  3 active reps  approxLL diffs: (0.01,0.05)
+  iter 12:  time=0.00 for  2 active reps  approxLL diffs: (0.02,0.04)
+  iter 13:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.03)
+  iter 14:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.03)
+  iter 15:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.05)
+  iter 16:  time=0.00 for  1 active reps  approxLL diffs: (0.06,0.06)
+  iter 17:  time=0.00 for  1 active reps  approxLL diffs: (0.09,0.09)
+  iter 18:  time=0.00 for  1 active reps  approxLL diffs: (0.12,0.12)
+  iter 19:  time=0.00 for  1 active reps  approxLL diffs: (0.13,0.13)
+  iter 20:  time=0.00 for  1 active reps  approxLL diffs: (0.10,0.10)
+  iter 21:  time=0.00 for  1 active reps  approxLL diffs: (0.05,0.05)
+  iter 22:  time=0.00 for  1 active reps  approxLL diffs: (0.02,0.02)
+  iter 23:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  Converged at iter 23: approxLL diffs each have been < LLtol=0.01
+  Time breakdown: dgemm = 36.9%, memory/overhead = 63.1%
+Computing predictions on left-out cross-validation fold
+Time for computing predictions = 0.00441313 sec
+
+Average PVEs obtained by param pairs tested (high to low):
+ f2=0.3, p=0.01: 0.110938
+ f2=0.3, p=0.02: 0.099200
+ f2=0.5, p=0.01: 0.094056
+            ...
+ f2=0.1, p=0.01: 0.033146
+
+Detailed CV fold results:
+  Absolute prediction MSE baseline (covariates only): 1.01771
+  Absolute prediction MSE using standard LMM:         0.996793
+  Absolute prediction MSE, fold-best f2=0.3, p=0.01:  0.920624
+    Absolute pred MSE using   f2=0.5, p=0.5: 0.996793
+    Absolute pred MSE using   f2=0.5, p=0.2: 0.994311
+    Absolute pred MSE using   f2=0.5, p=0.1: 0.987578
+    Absolute pred MSE using  f2=0.5, p=0.05: 0.966183
+    Absolute pred MSE using  f2=0.5, p=0.02: 0.946617
+    Absolute pred MSE using  f2=0.5, p=0.01: 0.944153
+    Absolute pred MSE using   f2=0.3, p=0.5: 0.996126
+    Absolute pred MSE using   f2=0.3, p=0.2: 0.989325
+    Absolute pred MSE using   f2=0.3, p=0.1: 0.972973
+    Absolute pred MSE using  f2=0.3, p=0.05: 0.951707
+    Absolute pred MSE using  f2=0.3, p=0.02: 0.932719
+    Absolute pred MSE using  f2=0.3, p=0.01: 0.920624
+    Absolute pred MSE using   f2=0.1, p=0.5: 0.994079
+    Absolute pred MSE using   f2=0.1, p=0.2: 0.981505
+    Absolute pred MSE using   f2=0.1, p=0.1: 0.961207
+    Absolute pred MSE using  f2=0.1, p=0.05: 0.940671
+    Absolute pred MSE using  f2=0.1, p=0.02: 0.935037
+    Absolute pred MSE using  f2=0.1, p=0.01: 1.012784
+
+====> End CV fold 2: 3 remaining param pair(s) <====
+
+====> Starting CV fold 3 <====
+
+NOTE: Using all-1s vector (constant term) in addition to specified covariates
+    Using categorical covariate: CAT_COV (adding level A)
+    Using categorical covariate: CAT_COV (adding level B)
+    Using quantitative covariate: QCOV1
+    Using quantitative covariate: QCOV2
+    Using quantitative covariate: CONST_ALL_ONES
+Number of individuals used in analysis: Nused = 293
+Singular values of covariate matrix:
+    S[0] = 35.1358
+    S[1] = 12.1017
+    S[2] = 5.88329
+    S[3] = 4.16419
+    S[4] = 1.06319e-14
+Total covariate vectors: C = 5
+Total independent covariate vectors: Cindep = 4
+
+=== Initializing Bolt object: projecting and normalizing SNPs ===
+
+Number of chroms with >= 1 good SNP: 6
+Average norm of projected SNPs:           288.977885
+Dimension of all-1s proj space (Nused-1): 292
+  Beginning variational Bayes
+  iter 1:  time=0.01 for  3 active reps
+  iter 2:  time=0.00 for  3 active reps  approxLL diffs: (16.59,19.92)
+  iter 3:  time=0.00 for  3 active reps  approxLL diffs: (1.28,3.38)
+  iter 4:  time=0.00 for  3 active reps  approxLL diffs: (0.21,1.69)
+  iter 5:  time=0.00 for  3 active reps  approxLL diffs: (0.02,0.54)
+  iter 6:  time=0.00 for  3 active reps  approxLL diffs: (0.00,0.22)
+  iter 7:  time=0.00 for  2 active reps  approxLL diffs: (0.02,0.14)
+  iter 8:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.07)
+  iter 9:  time=0.00 for  1 active reps  approxLL diffs: (0.03,0.03)
+  iter 10:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  Converged at iter 10: approxLL diffs each have been < LLtol=0.01
+  Time breakdown: dgemm = 19.8%, memory/overhead = 80.2%
+Computing predictions on left-out cross-validation fold
+Time for computing predictions = 0.00178194 sec
+
+Average PVEs obtained by param pairs tested (high to low):
+ f2=0.5, p=0.01: 0.090904
+ f2=0.3, p=0.01: 0.065602
+ f2=0.1, p=0.02: 0.049509
+
+Detailed CV fold results:
+  Absolute prediction MSE baseline (covariates only): 1.13673
+  Absolute prediction MSE, fold-best f2=0.5, p=0.01:  1.04056
+    Absolute pred MSE using  f2=0.5, p=0.01: 1.040557
+    Absolute pred MSE using  f2=0.3, p=0.01: 1.165222
+    Absolute pred MSE using  f2=0.1, p=0.02: 1.168803
+
+====> End CV fold 3: 3 remaining param pair(s) <====
+
+====> Starting CV fold 4 <====
+
+NOTE: Using all-1s vector (constant term) in addition to specified covariates
+    Using categorical covariate: CAT_COV (adding level A)
+    Using categorical covariate: CAT_COV (adding level B)
+    Using quantitative covariate: QCOV1
+    Using quantitative covariate: QCOV2
+    Using quantitative covariate: CONST_ALL_ONES
+Number of individuals used in analysis: Nused = 293
+Singular values of covariate matrix:
+    S[0] = 35.366
+    S[1] = 12.1033
+    S[2] = 5.89805
+    S[3] = 4.20734
+    S[4] = 1.84369e-14
+Total covariate vectors: C = 5
+Total independent covariate vectors: Cindep = 4
+
+=== Initializing Bolt object: projecting and normalizing SNPs ===
+
+Number of chroms with >= 1 good SNP: 6
+Average norm of projected SNPs:           289.016478
+Dimension of all-1s proj space (Nused-1): 292
+  Beginning variational Bayes
+  iter 1:  time=0.01 for  3 active reps
+  iter 2:  time=0.00 for  3 active reps  approxLL diffs: (19.58,23.11)
+  iter 3:  time=0.00 for  3 active reps  approxLL diffs: (3.37,4.20)
+  iter 4:  time=0.00 for  3 active reps  approxLL diffs: (1.00,1.95)
+  iter 5:  time=0.00 for  3 active reps  approxLL diffs: (0.58,0.94)
+  iter 6:  time=0.00 for  3 active reps  approxLL diffs: (0.28,0.59)
+  iter 7:  time=0.00 for  3 active reps  approxLL diffs: (0.30,0.44)
+  iter 8:  time=0.00 for  3 active reps  approxLL diffs: (0.19,0.25)
+  iter 9:  time=0.00 for  3 active reps  approxLL diffs: (0.03,0.29)
+  iter 10:  time=0.00 for  3 active reps  approxLL diffs: (0.00,0.38)
+  iter 11:  time=0.00 for  2 active reps  approxLL diffs: (0.06,0.38)
+  iter 12:  time=0.00 for  2 active reps  approxLL diffs: (0.05,0.26)
+  iter 13:  time=0.00 for  2 active reps  approxLL diffs: (0.05,0.14)
+  iter 14:  time=0.00 for  2 active reps  approxLL diffs: (0.05,0.08)
+  iter 15:  time=0.00 for  2 active reps  approxLL diffs: (0.03,0.05)
+  iter 16:  time=0.00 for  2 active reps  approxLL diffs: (0.02,0.04)
+  iter 17:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.04)
+  iter 18:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.04)
+  iter 19:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.06)
+  iter 20:  time=0.00 for  2 active reps  approxLL diffs: (0.02,0.08)
+  iter 21:  time=0.00 for  2 active reps  approxLL diffs: (0.02,0.11)
+  iter 22:  time=0.00 for  2 active reps  approxLL diffs: (0.03,0.14)
+  iter 23:  time=0.00 for  2 active reps  approxLL diffs: (0.03,0.15)
+  iter 24:  time=0.00 for  2 active reps  approxLL diffs: (0.03,0.14)
+  iter 25:  time=0.00 for  2 active reps  approxLL diffs: (0.02,0.11)
+  iter 26:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.07)
+  iter 27:  time=0.00 for  2 active reps  approxLL diffs: (0.01,0.04)
+  iter 28:  time=0.00 for  1 active reps  approxLL diffs: (0.03,0.03)
+  iter 29:  time=0.00 for  1 active reps  approxLL diffs: (0.02,0.02)
+  iter 30:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  iter 31:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  Converged at iter 31: approxLL diffs each have been < LLtol=0.01
+  Time breakdown: dgemm = 15.1%, memory/overhead = 84.9%
+Computing predictions on left-out cross-validation fold
+Time for computing predictions = 0.00171709 sec
+
+Average PVEs obtained by param pairs tested (high to low):
+ f2=0.5, p=0.01: 0.087902
+ f2=0.3, p=0.01: 0.050466
+ f2=0.1, p=0.02: 0.023887
+
+Detailed CV fold results:
+  Absolute prediction MSE baseline (covariates only): 0.941491
+  Absolute prediction MSE, fold-best f2=0.5, p=0.01:  0.867212
+    Absolute pred MSE using  f2=0.5, p=0.01: 0.867212
+    Absolute pred MSE using  f2=0.3, p=0.01: 0.936730
+    Absolute pred MSE using  f2=0.1, p=0.02: 0.991367
+
+====> End CV fold 4: 3 remaining param pair(s) <====
+
+====> Starting CV fold 5 <====
+
+NOTE: Using all-1s vector (constant term) in addition to specified covariates
+    Using categorical covariate: CAT_COV (adding level A)
+    Using categorical covariate: CAT_COV (adding level B)
+    Using quantitative covariate: QCOV1
+    Using quantitative covariate: QCOV2
+    Using quantitative covariate: CONST_ALL_ONES
+Number of individuals used in analysis: Nused = 293
+Singular values of covariate matrix:
+    S[0] = 35.0554
+    S[1] = 12.1063
+    S[2] = 5.808
+    S[3] = 4.21359
+    S[4] = 1.5525e-14
+Total covariate vectors: C = 5
+Total independent covariate vectors: Cindep = 4
+
+=== Initializing Bolt object: projecting and normalizing SNPs ===
+
+Number of chroms with >= 1 good SNP: 6
+Average norm of projected SNPs:           288.978200
+Dimension of all-1s proj space (Nused-1): 292
+  Beginning variational Bayes
+  iter 1:  time=0.01 for  3 active reps
+  iter 2:  time=0.00 for  3 active reps  approxLL diffs: (25.07,26.60)
+  iter 3:  time=0.00 for  3 active reps  approxLL diffs: (3.20,5.69)
+  iter 4:  time=0.00 for  3 active reps  approxLL diffs: (0.73,1.08)
+  iter 5:  time=0.00 for  3 active reps  approxLL diffs: (0.10,0.20)
+  iter 6:  time=0.00 for  3 active reps  approxLL diffs: (0.01,0.11)
+  iter 7:  time=0.00 for  3 active reps  approxLL diffs: (0.00,0.06)
+  iter 8:  time=0.00 for  1 active reps  approxLL diffs: (0.02,0.02)
+  iter 9:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  Converged at iter 9: approxLL diffs each have been < LLtol=0.01
+  Time breakdown: dgemm = 20.3%, memory/overhead = 79.7%
+Computing predictions on left-out cross-validation fold
+Time for computing predictions = 0.0017662 sec
+
+Average PVEs obtained by param pairs tested (high to low):
+ f2=0.5, p=0.01: 0.056417
+ f2=0.3, p=0.01: 0.014181
+ f2=0.1, p=0.02: -0.003485
+
+Detailed CV fold results:
+  Absolute prediction MSE baseline (covariates only): 0.99199
+  Absolute prediction MSE, fold-best f2=0.5, p=0.01:  1.06096
+    Absolute pred MSE using  f2=0.5, p=0.01: 1.060956
+    Absolute pred MSE using  f2=0.3, p=0.01: 1.121899
+    Absolute pred MSE using  f2=0.1, p=0.02: 1.104061
+
+====> End CV fold 5: 3 remaining param pair(s) <====
+
+Optimal mixture parameters according to CV: f2 = 0.5, p = 0.01
+
+Time for estimating mixture parameters = 18.0909 sec
+
+=== Computing Bayesian mixed model assoc stats with mixture prior ===
+
+Assigning SNPs to 6 chunks for leave-out analysis
+Each chunk is excluded when testing SNPs belonging to the chunk
+  Beginning variational Bayes
+  iter 1:  time=0.01 for  6 active reps
+  iter 2:  time=0.01 for  6 active reps  approxLL diffs: (22.70,28.54)
+  iter 3:  time=0.01 for  6 active reps  approxLL diffs: (1.57,2.82)
+  iter 4:  time=0.01 for  6 active reps  approxLL diffs: (0.18,0.58)
+  iter 5:  time=0.01 for  6 active reps  approxLL diffs: (0.01,0.18)
+  iter 6:  time=0.00 for  5 active reps  approxLL diffs: (0.02,0.06)
+  iter 7:  time=0.00 for  5 active reps  approxLL diffs: (0.00,0.05)
+  iter 8:  time=0.00 for  1 active reps  approxLL diffs: (0.06,0.06)
+  iter 9:  time=0.00 for  1 active reps  approxLL diffs: (0.07,0.07)
+  iter 10:  time=0.00 for  1 active reps  approxLL diffs: (0.07,0.07)
+  iter 11:  time=0.00 for  1 active reps  approxLL diffs: (0.05,0.05)
+  iter 12:  time=0.00 for  1 active reps  approxLL diffs: (0.02,0.02)
+  iter 13:  time=0.00 for  1 active reps  approxLL diffs: (0.01,0.01)
+  Converged at iter 13: approxLL diffs each have been < LLtol=0.01
+  Time breakdown: dgemm = 39.8%, memory/overhead = 60.2%
+Filtering to SNPs with chisq stats, LD Scores, and MAF > 0.01
+# of SNPs passing filters before outlier removal: 2421/2431
+Masking windows around outlier snps (chisq > 20.0)
+# of SNPs remaining after outlier window removal: 2403/2421
+Intercept of LD Score regression for ref stats:   1.040 (0.048)
+Estimated attenuation: 0.418 (0.413)
+Intercept of LD Score regression for cur stats: 1.036 (0.043)
+Calibration factor (ref/cur) to multiply by:      1.004 (0.016)
+
+Time for computing Bayesian mixed model assoc stats = 0.0692451 sec
+
+Calibration stats: mean and lambdaGC (over SNPs used in GRM)
+  (note that both should be >1 because of polygenicity)
+Mean BOLT_LMM_INF: 1.09877 (2431 good SNPs)   lambdaGC: 1.10376
+Mean BOLT_LMM: 1.09668 (2431 good SNPs)   lambdaGC: 1.07041
+
+=== Streaming genotypes to compute and write assoc stats at all SNPs ===
+
+Time for streaming genotypes and writing output = 0.212122 sec
+
+
+=== Streaming genotypes to compute and write assoc stats at dosage SNPs ===
+
+Time for streaming dosage genotypes and writing output = 0.014998 sec
+
+
+=== Streaming genotypes to compute and write assoc stats at IMPUTE2 SNPs ===
+
+Read 379 indivs; using 373 in filtered PLINK data
+
+Time for streaming IMPUTE2 genotypes and writing output = 0.0406189 sec
+
+
+=== Streaming genotypes to compute and write assoc stats at dosage2 SNPs ===
+
+Time for streaming dosage2 genotypes and writing output = 0.0320652 sec
+
+Total elapsed time for analysis = 18.8884 sec

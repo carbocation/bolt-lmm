@@ -1,0 +1,3 @@
+17	EUR_subset.impute2.chr17first100.gz
+17	EUR_subset.impute2.chr17second100
+22	EUR_subset.impute2.chr22last100.gz

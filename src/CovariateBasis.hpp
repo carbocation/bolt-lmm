@@ -48,6 +48,11 @@ namespace LMM {
 		   const std::vector < std::pair <std::string, DataMatrix::ValueType> > &covars,
 		   int covarMaxLevels, bool covarUseMissingIndic);
 
+    // Restore the exact projection state written by Stage 1.
+    CovariateBasis(uint64 _Nstride, uint64 _Cindep,
+		   const std::vector <double> &_maskIndivs,
+		   const std::vector <double> &_basis);
+
     /**
      * input:
      * - covarDataT is assumed to contain the all-1s vector as its first row (indexed 0)

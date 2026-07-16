@@ -1,4 +1,6 @@
 ../bolt \
+    --stage=1 \
+    --stage1Model=example.stage1.model \
     --bfile=EUR_subset \
     --remove=EUR_subset.remove \
     --exclude=EUR_subset.exclude \
@@ -12,6 +14,15 @@
     --lmm \
     --LDscoresFile=../tables/LDSCORE.1000G_EUR.GRCh38.tab.gz \
     --numThreads=2 \
+    2>&1 | tee example.stage1.log
+
+../bolt \
+    --stage=2 \
+    --stage1Model=example.stage1.model \
+    --bfile=EUR_subset \
+    --exclude=EUR_subset.exclude \
+    --exclude=EUR_subset.exclude2 \
+    --numThreads=2 \
     --statsFile=example.stats \
     --dosageFile=EUR_subset.dosage.chr17first100 \
     --dosageFile=EUR_subset.dosage.chr22last100.gz \
@@ -22,9 +33,11 @@
     --statsFileImpute2Snps=example.impute2Snps.stats \
     --dosage2FileList=EUR_subset.dosage2FileList.txt \
     --statsFileDosage2Snps=example.dosage2Snps.stats \
-    2>&1 | tee example.log # log output written to stdout and stderr
+    2>&1 | tee example.stage2.log
 
 # basic args:
+# --stage: run model fitting (1) or association readout (2), never both
+# --stage1Model: Stage 1 output artifact and Stage 2 input artifact
 # --bfile: prefix of PLINK genotype files (bed/bim/fam)
 # --remove: list of individuals to remove (FID IID)
 # --exclude: list of SNPs to exclude (rs###)

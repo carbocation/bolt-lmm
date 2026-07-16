@@ -36,6 +36,9 @@ namespace LMM {
 
     static const double MIX_PARAM_ESTIMATE_FLAG; // flag for estimating mixture params using CV
 
+    int stage; // exactly one of 1 (fit) or 2 (association readout)
+    std::string stage1Model; // Stage 1 output / Stage 2 input
+
     // main input files
     std::string famFile;
     std::vector <std::string> bimFiles, bedFiles; // possibly multiple files and/or range templates

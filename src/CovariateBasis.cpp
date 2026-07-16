@@ -61,6 +61,24 @@ namespace LMM {
     init(covarDataT, _maskIndivs, covars, covarMaxLevels, covarUseMissingIndic);
   }
 
+  CovariateBasis::CovariateBasis(uint64 _Nstride, uint64 _Cindep,
+				 const vector <double> &_maskIndivs,
+				 const vector <double> &_basis) :
+    C(_Cindep), Cindep(_Cindep), Nstride(_Nstride), Nused(0) {
+    if (_maskIndivs.size() != Nstride || _basis.size() != Cindep*Nstride) {
+      cerr << "ERROR: Invalid covariate projection dimensions in Stage 1 model" << endl;
+      exit(1);
+    }
+    maskIndivs = ALIGNED_MALLOC_DOUBLES(Nstride);
+    basis = ALIGNED_MALLOC_DOUBLES(Cindep*Nstride);
+    basisExtAllIndivs = NULL; // only needed for Stage 1 out-of-sample prediction
+    memcpy(maskIndivs, &_maskIndivs[0], Nstride*sizeof(maskIndivs[0]));
+    if (Cindep != 0) {
+      memcpy(basis, &_basis[0], Cindep*Nstride*sizeof(basis[0]));
+    }
+    for (uint64 n = 0; n < Nstride; n++) Nused += maskIndivs[n] != 0;
+  }
+
   /**
    * input:
    * - covarDataT is assumed to contain the all-1s vector as its first row (indexed 0)
@@ -289,9 +307,9 @@ namespace LMM {
   }
 
   CovariateBasis::~CovariateBasis() {
-    ALIGNED_FREE(maskIndivs);
-    ALIGNED_FREE(basis);
-    ALIGNED_FREE(basisExtAllIndivs);
+    if (maskIndivs != NULL) ALIGNED_FREE(maskIndivs);
+    if (basis != NULL) ALIGNED_FREE(basis);
+    if (basisExtAllIndivs != NULL) ALIGNED_FREE(basisExtAllIndivs);
   }
 
   //uint64 getC(void) const { return C; } -- don't expose this!

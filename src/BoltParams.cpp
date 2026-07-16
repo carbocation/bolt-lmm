@@ -136,6 +136,9 @@ namespace LMM {
     typical.add_options()
       ("help,h", "print help message with typical options")
       ("helpFull", "print help message with full option list")
+      ("stage", po::value<int>(&stage), "run exactly one stage: 1 (fit model) or 2 (association readout)")
+      ("stage1Model", po::value<string>(&stage1Model),
+       "Stage 1 model artifact (output in Stage 1; input in Stage 2)")
 
       // genotype data parameters
       ("bfile", po::value<string>(), "prefix of PLINK .fam, .bim, .bed files")
@@ -363,15 +366,19 @@ namespace LMM {
       
       po::notify(vm); // throws an error if there are any problems
 
-      if (vm.count("bfile") +
-	  vm.count("bfilegz") +
-	  (vm.count("fam") || vm.count("bim") || vm.count("bed")) != 1) {
-	cerr << "ERROR: Use exactly one of the --bfile, --bfilegz, or --fam,bim,bed input formats"
-	     << endl;
-	if (!dosageFileTemplates.empty() || !impute2FileList.empty() || !bgenFileTemplates.empty())
-	  cerr  << "       (even when analyzing imputed data, a plink file is needed for model-"
-		<< "        fitting using a subset of SNPs, typically those directly genotyped)"
-		<< endl;
+      if (!vm.count("stage") || (stage != 1 && stage != 2)) {
+	cerr << "ERROR: --stage must be specified as either 1 or 2" << endl;
+	return false;
+      }
+      if (stage1Model.empty() && !(stage == 1 && vm.count("reml"))) {
+	cerr << "ERROR: --stage1Model is required (output for Stage 1; input for Stage 2)" << endl;
+	return false;
+      }
+      int numPlinkFormats = vm.count("bfile") + vm.count("bfilegz") +
+	(vm.count("fam") || vm.count("bim") || vm.count("bed"));
+      if ((stage == 1 && numPlinkFormats != 1) || (stage == 2 && numPlinkFormats > 1)) {
+	cerr << "ERROR: Use one of --bfile, --bfilegz, or --fam,--bim,--bed"
+	     << (stage == 2 ? " (PLINK input is optional in Stage 2)" : "") << endl;
 	return false;
       }
 
@@ -424,22 +431,42 @@ namespace LMM {
 	return false;
       }
 
-      if (famFile.empty()) {
+      if (stage == 1 &&
+	  (!statsFile.empty() || !dosageFileTemplates.empty() || !dosageFidIidFile.empty() ||
+	   !statsFileDosageSnps.empty() || !impute2FileList.empty() || !impute2FidIidFile.empty() ||
+	   !statsFileImpute2Snps.empty() || !bgenFileTemplates.empty() || !sampleFile1.empty() ||
+	   !bgenSampleFileList.empty() || !statsFileBgenSnps.empty() || !dosage2FileList.empty() ||
+	   !statsFileDosage2Snps.empty())) {
+	cerr << "ERROR: Association genotype/output options are Stage 2 options" << endl;
+	return false;
+      }
+      if (stage == 2 &&
+	  (vm.count("phenoFile") || vm.count("phenoCol") || phenoUseFam || vm.count("covarFile") ||
+	   vm.count("covarCol") || vm.count("qCovarCol") || vm.count("modelSnps") ||
+	   vm.count("remove") || reml || lmmInf || vm.count("predBetasFile") ||
+	   vm.count("snpInfoFile"))) {
+	cerr << "ERROR: Phenotype, covariate, model-fitting, and prediction options are Stage 1 options"
+	     << endl;
+	return false;
+      }
+
+      if (stage == 1 && famFile.empty()) {
 	cerr << "ERROR: fam file must be specified either using --fam or --bfile"
 	     << endl;
 	return false;
       }
-      if (bimFileTemplates.empty()) {
+      if (stage == 1 && bimFileTemplates.empty()) {
 	cerr << "ERROR: bim file(s) must be specified either using --bim or --bfile"
 	     << endl;
 	return false;
       }
-      if (bedFileTemplates.empty()) {
+      if (stage == 1 && bedFileTemplates.empty()) {
 	cerr << "ERROR: bed file(s) must be specified either using --bed or --bfile"
 	     << endl;
 	return false;
       }
-      if (bimFileTemplates.size() != bedFileTemplates.size()) {
+      if (bimFileTemplates.empty() != bedFileTemplates.empty() ||
+	  bimFileTemplates.size() != bedFileTemplates.size()) {
 	cerr << "ERROR: Numbers of bim files and bed files must match" << endl;
 	return false;
       }
@@ -452,6 +479,7 @@ namespace LMM {
       removeFiles = StringUtils::expandRangeTemplates(removeFileTemplates);
       excludeFiles = StringUtils::expandRangeTemplates(excludeFileTemplates);
       modelSnpsFiles = StringUtils::expandRangeTemplates(modelSnpsFileTemplates);
+      if (stage == 1) {
       if (phenoFile.empty() != phenoCols.empty()) {
 	cerr << "ERROR: --phenoFile and --phenoCol" << endl
 	     << "       must either be both specified or both unspecified"
@@ -510,10 +538,6 @@ namespace LMM {
 	cerr << "ERROR: Only one --phenoCol may be specified for association analysis" << endl;
 	return false;
       }
-      if (lmmInf && statsFile.empty()) {
-	cerr << "ERROR: --statsFile must be specified for association output" << endl;
-	return false;
-      }
       if (vm.count("predBetasFile") && !lmmInf) {
 	cerr << "ERROR: --predBetasFile requires specifying one of the --lmm* options" << endl;
 	return false;
@@ -548,6 +572,7 @@ namespace LMM {
 	cerr << "ERROR: --h2gGuess must be between 0 and 1" << endl;
 	return false;
       }
+      }
 
       // expand and error-check dosage files (simple dosage format)
       int numDosageParams =
@@ -557,27 +582,29 @@ namespace LMM {
 	return false;
       }
       if (numDosageParams) {
-	vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
 	vector < std::pair <string, string> > dosageIDs = FileUtils::readFidIids(dosageFidIidFile);
-	sort(plinkIDs.begin(), plinkIDs.end());
-	sort(dosageIDs.begin(), dosageIDs.end());
-	vector < std::pair <string, string> > isectIDs;
-	std::set_intersection(plinkIDs.begin(), plinkIDs.end(),
-			      dosageIDs.begin(), dosageIDs.end(), std::back_inserter(isectIDs));
-	if (isectIDs.size() < plinkIDs.size()) {
-	  cerr << "ERROR: Some samples in --famFile/bfile are missing in --dosageFidIidFile"
-	       << endl;
-	  writeMissingIndivs(plinkIDs, dosageIDs);
-	  return false;
-	}
-	if (!checkOverlap(famFile, dosageIDs)) {
-	  if (noDosageIDcheck)
-	    cerr << "WARNING: Overlap between --dosageFidIidFile and --famFile is < 50%" << endl;
-	  else {
-	    cerr << "ERROR: Overlap between --dosageFidIidFile and --famFile is < 50%" << endl;
-	    cerr << "       (to override and perform the analysis anyway, set --noDosageIDcheck)"
+	if (stage == 1) {
+	  vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
+	  sort(plinkIDs.begin(), plinkIDs.end());
+	  sort(dosageIDs.begin(), dosageIDs.end());
+	  vector < std::pair <string, string> > isectIDs;
+	  std::set_intersection(plinkIDs.begin(), plinkIDs.end(), dosageIDs.begin(), dosageIDs.end(),
+				std::back_inserter(isectIDs));
+	  if (isectIDs.size() < plinkIDs.size()) {
+	    cerr << "ERROR: Some samples in --famFile/bfile are missing in --dosageFidIidFile"
 		 << endl;
+	    writeMissingIndivs(plinkIDs, dosageIDs);
 	    return false;
+	  }
+	  if (!checkOverlap(famFile, dosageIDs)) {
+	    if (noDosageIDcheck)
+	      cerr << "WARNING: Overlap between --dosageFidIidFile and --famFile is < 50%" << endl;
+	    else {
+	      cerr << "ERROR: Overlap between --dosageFidIidFile and --famFile is < 50%" << endl;
+	      cerr << "       (to override and perform the analysis anyway, set --noDosageIDcheck)"
+		   << endl;
+	      return false;
+	    }
 	  }
 	}
 	int Ndosage = dosageIDs.size();
@@ -626,28 +653,30 @@ namespace LMM {
 	return false;
       }
       if (numImpute2Params) {
-	vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
 	vector < std::pair <string, string> > impute2IDs =
 	  FileUtils::readFidIids(impute2FidIidFile);
-	sort(plinkIDs.begin(), plinkIDs.end());
-	sort(impute2IDs.begin(), impute2IDs.end());
-	vector < std::pair <string, string> > isectIDs;
-	std::set_intersection(plinkIDs.begin(), plinkIDs.end(),
-			      impute2IDs.begin(), impute2IDs.end(), std::back_inserter(isectIDs));
-	if (isectIDs.size() < plinkIDs.size()) {
-	  cerr << "ERROR: Some samples in --famFile/bfile are missing in --impute2FidIidFile"
-	       << endl;
-	  writeMissingIndivs(plinkIDs, impute2IDs);
-	  return false;
-	}
-	if (!checkOverlap(famFile, impute2IDs)) {
-	  if (noImpute2IDcheck)
-	    cerr << "WARNING: Overlap between --impute2FidIidFile and --famFile is < 50%" << endl;
-	  else {
-	    cerr << "ERROR: Overlap between --impute2FidIidFile and --famFile is < 50%" << endl;
-	    cerr << "       (to override and perform the analysis anyway, set --noImpute2IDcheck)"
+	if (stage == 1) {
+	  vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
+	  sort(plinkIDs.begin(), plinkIDs.end());
+	  sort(impute2IDs.begin(), impute2IDs.end());
+	  vector < std::pair <string, string> > isectIDs;
+	  std::set_intersection(plinkIDs.begin(), plinkIDs.end(), impute2IDs.begin(), impute2IDs.end(),
+				std::back_inserter(isectIDs));
+	  if (isectIDs.size() < plinkIDs.size()) {
+	    cerr << "ERROR: Some samples in --famFile/bfile are missing in --impute2FidIidFile"
 		 << endl;
+	    writeMissingIndivs(plinkIDs, impute2IDs);
 	    return false;
+	  }
+	  if (!checkOverlap(famFile, impute2IDs)) {
+	    if (noImpute2IDcheck)
+	      cerr << "WARNING: Overlap between --impute2FidIidFile and --famFile is < 50%" << endl;
+	    else {
+	      cerr << "ERROR: Overlap between --impute2FidIidFile and --famFile is < 50%" << endl;
+	      cerr << "       (to override and perform the analysis anyway, set --noImpute2IDcheck)"
+		   << endl;
+	      return false;
+	    }
 	  }
 	}
 	int Nimpute2 = impute2IDs.size();
@@ -740,32 +769,34 @@ namespace LMM {
 	  bgenVariantsToTest = readBgenVariantsToTest(bgenVariantsToTestFile);
 
 	// error-check each bgen/sample file pair; save layouts
-	vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
-	sort(plinkIDs.begin(), plinkIDs.end());
 	bgenLayouts.resize(bgenFiles.size());
 	for (uint64 f = 0; f < bgenFiles.size(); f++) {
 	  string sampleFile = sampleFiles[f];
 	  vector < std::pair <string, string> > sampleIDs = FileUtils::readSampleIDs(sampleFile);
 	  sort(sampleIDs.begin(), sampleIDs.end());
-	  vector < std::pair <string, string> > isectIDs;
-	  std::set_intersection(plinkIDs.begin(), plinkIDs.end(),
-				sampleIDs.begin(), sampleIDs.end(), std::back_inserter(isectIDs));
-	  if (isectIDs.size() < plinkIDs.size()) {
-	    cerr << "ERROR: Some samples in --famFile/bfile are missing in sample file:" << endl
-		 << "       " << sampleFile << endl;
-	    writeMissingIndivs(plinkIDs, sampleIDs);
-	    return false;
-	  }
-	  if (!checkOverlap(famFile, sampleIDs)) {
-	    if (noBgenIDcheck)
-	      cerr << "WARNING: Overlap is < 50% between --famFile and sample file:" << endl
-		   << "         " << sampleFile << endl;
-	    else {
-	      cerr << "ERROR: Overlap is < 50% between --famFile and sample file:" << endl
+	  if (stage == 1) {
+	    vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
+	    sort(plinkIDs.begin(), plinkIDs.end());
+	    vector < std::pair <string, string> > isectIDs;
+	    std::set_intersection(plinkIDs.begin(), plinkIDs.end(), sampleIDs.begin(), sampleIDs.end(),
+				  std::back_inserter(isectIDs));
+	    if (isectIDs.size() < plinkIDs.size()) {
+	      cerr << "ERROR: Some samples in --famFile/bfile are missing in sample file:" << endl
 		   << "       " << sampleFile << endl;
-	      cerr << "       (to override and perform the analysis anyway, set --noBgenIDcheck)"
-		   << endl;
+	      writeMissingIndivs(plinkIDs, sampleIDs);
 	      return false;
+	    }
+	    if (!checkOverlap(famFile, sampleIDs)) {
+	      if (noBgenIDcheck)
+		cerr << "WARNING: Overlap is < 50% between --famFile and sample file:" << endl
+		     << "         " << sampleFile << endl;
+	      else {
+		cerr << "ERROR: Overlap is < 50% between --famFile and sample file:" << endl
+		     << "       " << sampleFile << endl;
+		cerr << "       (to override and perform the analysis anyway, set --noBgenIDcheck)"
+		     << endl;
+		return false;
+	      }
 	    }
 	  }
 	  bgenLayouts[f] = FileUtils::checkBgenSample(bgenFiles[f], sampleFile, Nautosomes,
@@ -829,26 +860,28 @@ namespace LMM {
 	  vector < std::pair <string, string> > dosage2IDs; string FID, IID;
 	  while (issGenoHeader >> FID >> IID)
 	    dosage2IDs.push_back(std::make_pair(FID, IID));
-	  vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
-	  sort(plinkIDs.begin(), plinkIDs.end());
-	  sort(dosage2IDs.begin(), dosage2IDs.end());
-	  vector < std::pair <string, string> > isectIDs;
-	  std::set_intersection(plinkIDs.begin(), plinkIDs.end(), dosage2IDs.begin(),
-				dosage2IDs.end(), std::back_inserter(isectIDs));
-	  if (isectIDs.size() < plinkIDs.size()) {
-	    cerr << "ERROR: Some samples in --famFile/bfile are missing in dosage2 geno file "
-		 << genoFile << endl;
-	    writeMissingIndivs(plinkIDs, dosage2IDs);
-	    return false;
-	  }
-	  if (!checkOverlap(famFile, dosage2IDs)) {
-	    if (noDosage2IDcheck)
-	      cerr << "WARNING: Overlap between dosage2 geno file and --famFile is < 50%" << endl;
-	    else {
-	      cerr << "ERROR: Overlap between dosage2 geno file and --famFile is < 50%" << endl;
-	      cerr << "       (to override and perform analysis anyway, set --noDosage2IDcheck)"
-		   << endl;
+	  if (stage == 1) {
+	    vector < std::pair <string, string> > plinkIDs = readFidIidsRemove(famFile, removeFiles);
+	    sort(plinkIDs.begin(), plinkIDs.end());
+	    sort(dosage2IDs.begin(), dosage2IDs.end());
+	    vector < std::pair <string, string> > isectIDs;
+	    std::set_intersection(plinkIDs.begin(), plinkIDs.end(), dosage2IDs.begin(),
+				  dosage2IDs.end(), std::back_inserter(isectIDs));
+	    if (isectIDs.size() < plinkIDs.size()) {
+	      cerr << "ERROR: Some samples in --famFile/bfile are missing in dosage2 geno file "
+		   << genoFile << endl;
+	      writeMissingIndivs(plinkIDs, dosage2IDs);
 	      return false;
+	    }
+	    if (!checkOverlap(famFile, dosage2IDs)) {
+	      if (noDosage2IDcheck)
+		cerr << "WARNING: Overlap between dosage2 geno file and --famFile is < 50%" << endl;
+	      else {
+		cerr << "ERROR: Overlap between dosage2 geno file and --famFile is < 50%" << endl;
+		cerr << "       (to override and perform analysis anyway, set --noDosage2IDcheck)"
+		     << endl;
+		return false;
+	      }
 	    }
 	  }
 	  int Ndosage2 = dosage2IDs.size();
@@ -946,6 +979,20 @@ namespace LMM {
 
       if (highH2ChromMax==0) highH2ChromMax = Nautosomes;
 
+      bool hasStage2Output = !statsFile.empty() || !statsFileDosageSnps.empty() ||
+	!statsFileImpute2Snps.empty() || !statsFileBgenSnps.empty() ||
+	!statsFileDosage2Snps.empty();
+      if (stage == 2 && !hasStage2Output) {
+	cerr << "ERROR: Stage 2 requires at least one association stats output" << endl;
+	return false;
+      }
+      if (stage == 2 && !statsFile.empty() &&
+	  (famFile.empty() || bimFiles.empty() || bedFiles.empty())) {
+	cerr << "ERROR: --statsFile in Stage 2 requires PLINK --bfile or --fam,--bim,--bed input"
+	     << endl;
+	return false;
+      }
+
       // check that all files specified are readable/writeable
       FileUtils::requireEmptyOrReadable(famFile);
       FileUtils::requireEachEmptyOrReadable(bimFiles);
@@ -962,6 +1009,12 @@ namespace LMM {
       FileUtils::requireEmptyOrWriteable(snpInfoFile);
       FileUtils::requireEmptyOrWriteable(statsFileDosageSnps);
       FileUtils::requireEmptyOrWriteable(statsFileImpute2Snps);
+      FileUtils::requireEmptyOrWriteable(statsFileBgenSnps);
+      FileUtils::requireEmptyOrWriteable(statsFileDosage2Snps);
+      if (stage == 1) {
+	if (!stage1Model.empty()) FileUtils::requireEmptyOrWriteable(stage1Model);
+      }
+      else FileUtils::requireEmptyOrReadable(stage1Model);
 
       FileUtils::requireEmptyOrReadable(MAFhistFile);
       FileUtils::requireEmptyOrReadable(phenoStratFile);
@@ -975,4 +1028,3 @@ namespace LMM {
     return true;
   }
 }
-

@@ -42,12 +42,69 @@
 #include "NumericUtils.hpp"
 #include "LDscoreCalibration.hpp"
 #include "LapackConst.hpp"
+#include "Stage1Model.hpp"
 
 
 using namespace LMM;
 using namespace std;
 namespace ublas = boost::numeric::ublas;
 using FileUtils::getline;
+
+static void runStage2(const BoltParams &params, const Bolt &bolt,
+		      const vector <Bolt::StatsDataRetroLOCO> &retroData, Timer &timer) {
+  if (!params.statsFile.empty() && params.statsFile != "/dev/null") {
+    cout << endl << "=== Streaming PLINK genotypes and writing association stats ===" << endl;
+    bolt.streamComputeRetroLOCO(params.statsFile, params.bimFiles, params.bedFiles,
+				params.geneticMapFile, params.excludeFiles,
+				params.maxMissingPerSnp, params.verboseStats, retroData);
+    cout << endl << "Time for PLINK association readout = " << timer.update_time()
+	 << " sec" << endl << endl;
+  }
+
+  if (!params.statsFileDosageSnps.empty()) {
+    cout << endl << "=== Streaming dosage genotypes and writing association stats ===" << endl;
+    bolt.streamDosages(params.statsFileDosageSnps, params.dosageFiles, params.dosageFidIidFile,
+		       params.geneticMapFile, params.verboseStats, retroData);
+    cout << endl << "Time for dosage association readout = " << timer.update_time()
+	 << " sec" << endl << endl;
+  }
+
+  if (!params.statsFileImpute2Snps.empty()) {
+    cout << endl << "=== Streaming IMPUTE2 genotypes and writing association stats ===" << endl;
+    bolt.fastStreamImpute2(params.statsFileImpute2Snps, params.impute2Files,
+			   params.impute2Chroms, params.impute2FidIidFile,
+			   params.impute2MinMAF, params.geneticMapFile,
+			   params.verboseStats, retroData, params.domRecHetTest);
+    cout << endl << "Time for IMPUTE2 association readout = " << timer.update_time()
+	 << " sec" << endl << endl;
+  }
+
+  if (!params.statsFileBgenSnps.empty()) {
+    cout << endl << "=== Streaming BGEN genotypes and writing association stats ===" << endl;
+    for (uint f = 0; f < params.bgenFiles.size(); f++) {
+      cout << endl << "BGEN file: " << params.bgenFiles[f] << endl;
+      if (params.bgenLayouts[f] == 1)
+	bolt.streamBgen(params.statsFileBgenSnps, f, params.bgenFiles[f], params.sampleFiles[f],
+			params.bgenMinMAF, params.bgenMinINFO, params.geneticMapFile,
+			params.verboseStats, retroData, params.domRecHetTest);
+      else
+	bolt.streamBgen2(params.statsFileBgenSnps, f, params.bgenFiles[f], params.sampleFiles[f],
+			 params.bgenMinMAF, params.bgenMinINFO, params.bgenMinMAC,
+			 params.geneticMapFile, params.verboseStats, retroData,
+			 params.domRecHetTest, params.bgenRefFirst, params.numThreads);
+    }
+    cout << endl << "Time for BGEN association readout = " << timer.update_time()
+	 << " sec" << endl << endl;
+  }
+
+  if (!params.statsFileDosage2Snps.empty()) {
+    cout << endl << "=== Streaming dosage2 genotypes and writing association stats ===" << endl;
+    bolt.streamDosage2(params.statsFileDosage2Snps, params.dosage2MapFiles,
+		       params.dosage2GenoFiles, params.verboseStats, retroData);
+    cout << endl << "Time for dosage2 association readout = " << timer.update_time()
+	 << " sec" << endl << endl;
+  }
+}
 
 int main(int argc, char *argv[]) {
 
@@ -119,6 +176,40 @@ int main(int argc, char *argv[]) {
 #ifdef USE_MKL
   mkl_set_num_threads(params.numThreads);
 #endif
+
+  cout << "Running Stage " << params.stage << endl;
+  cout << "Stage 1 model: " << params.stage1Model << endl;
+
+  if (params.stage == 2) {
+    cout << endl << "=== Loading Stage 1 model ===" << endl << endl;
+    Stage1Model model = Stage1Model::load(params.stage1Model);
+    if (params.Nautosomes != model.Nautosomes) {
+      cerr << "ERROR: --Nautosomes (" << params.Nautosomes
+	   << ") does not match the Stage 1 model (" << model.Nautosomes << ")" << endl;
+      exit(1);
+    }
+    cout << "Loaded " << model.indivIds.size() << " samples, " << model.Cindep
+	 << " covariate basis vectors, and " << model.retroData.size()
+	 << " association statistic(s)" << endl;
+    if (!params.verboseStats && model.retroData.size() > 1)
+      for (vector <Bolt::StatsDataRetroLOCO>::iterator it = model.retroData.begin();
+	   it != model.retroData.end(); ) {
+	if (it->statName == "LINREG") it = model.retroData.erase(it);
+	else ++it;
+      }
+    SnpData snpData(model.indivIds, model.maskIndivs, model.Nstride, params.famFile,
+		    model.Nautosomes);
+    Bolt bolt(snpData, model.maskIndivs, model.covBasis, model.Cindep, model.Nautosomes,
+	      params.bgenVariantsToTest);
+    vector<double>().swap(model.maskIndivs);
+    vector<double>().swap(model.covBasis);
+    vector< pair<string, string> >().swap(model.indivIds);
+    cout << "Time for loading Stage 1 model = " << timer.update_time() << " sec" << endl;
+    runStage2(params, bolt, model.retroData, timer);
+    cout << "Total elapsed time for Stage 2 = " << (timer.get_time() - start_time) << " sec"
+	 << endl;
+    return 0;
+  }
   
   cout << "fam: " << params.famFile << endl;
   cout << "bim(s): ";
@@ -364,8 +455,8 @@ int main(int argc, char *argv[]) {
 
   cout << "=== Computing linear regression (LINREG) stats ===" << endl << endl;
   Bolt::StatsDataRetroLOCO LINREGdata = bolt.computeLINREG(pheno);
-  if (params.verboseStats || !params.snpInfoFile.empty() || (!params.lmmInf && !params.reml))
-    retroData.push_back(LINREGdata);
+  // Store LINREG unconditionally so Stage 2 can independently choose --verboseStats.
+  retroData.push_back(LINREGdata);
   cout << "Time for computing LINREG stats = " << timer.update_time() << " sec" << endl << endl;
 
   // LMM
@@ -666,77 +757,10 @@ int main(int argc, char *argv[]) {
   /***** FREE GENOTYPES STORED IN RAM (NO LONGER NEEDED) *****/
   snpData.freeGenotypes();
 
-  /***** COMPUTE STATS AT FULL SET OF SNPS (INCLUDING NON-GRM SNPS) *****/
-
-  // write stats to file
-  if (!params.statsFile.empty() && params.statsFile != "/dev/null") {
-    cout << endl << "=== Streaming genotypes to compute and write assoc stats at all SNPs ==="
-	 << endl;
-    bolt.streamComputeRetroLOCO(params.statsFile, params.bimFiles, params.bedFiles,
-				params.geneticMapFile, params.verboseStats, retroData);
-    cout << endl << "Time for streaming genotypes and writing output = "
-	 << timer.update_time() << " sec" << endl << endl;
-  }
-
-  // write stats at dosage SNPs to file
-  if (!params.statsFileDosageSnps.empty()) {
-    cout << endl << "=== Streaming genotypes to compute and write assoc stats at dosage SNPs ==="
-	 << endl;
-    bolt.streamDosages(params.statsFileDosageSnps, params.dosageFiles, params.dosageFidIidFile,
-		       params.geneticMapFile, params.verboseStats, retroData);
-    cout << endl << "Time for streaming dosage genotypes and writing output = "
-	 << timer.update_time() << " sec" << endl << endl;
-  }
-
-  // write stats at impute2 SNPs to file
-  if (!params.statsFileImpute2Snps.empty()) {
-    /*
-    cout << endl << "=== Streaming genotypes to compute and write assoc stats at IMPUTE2 SNPs ==="
-	 << endl;
-    bolt.streamImpute2(params.statsFileImpute2Snps+".check", params.impute2Files, params.impute2Chroms,
-		       params.impute2FidIidFile, params.impute2MinMAF, params.geneticMapFile,
-		       params.verboseStats, retroData);
-    cout << endl << "Time for streaming IMPUTE2 genotypes and writing output = "
-	 << timer.update_time() << " sec" << endl << endl;
-    */
-    cout << endl << "=== Streaming genotypes to compute and write assoc stats at IMPUTE2 SNPs ==="
-	 << endl;
-    bolt.fastStreamImpute2(params.statsFileImpute2Snps, params.impute2Files, params.impute2Chroms,
-			   params.impute2FidIidFile, params.impute2MinMAF, params.geneticMapFile,
-			   params.verboseStats, retroData, params.domRecHetTest);
-    cout << endl << "Time for streaming IMPUTE2 genotypes and writing output = "
-	 << timer.update_time() << " sec" << endl << endl;
-  }
-
-  // write stats at bgen SNPs to file
-  if (!params.statsFileBgenSnps.empty()) {
-    cout << endl << "=== Streaming genotypes to compute and write assoc stats at BGEN SNPs ==="
-	 << endl;
-    for (uint f = 0; f < params.bgenFiles.size(); f++) {
-      cout << endl << "BGEN file: " << params.bgenFiles[f] << endl;
-      if (params.bgenLayouts[f]==1)
-	bolt.streamBgen(params.statsFileBgenSnps, f, params.bgenFiles[f], params.sampleFiles[f],
-			params.bgenMinMAF, params.bgenMinINFO, params.geneticMapFile,
-			params.verboseStats, retroData, params.domRecHetTest);
-      else
-	bolt.streamBgen2(params.statsFileBgenSnps, f, params.bgenFiles[f], params.sampleFiles[f],
-			 params.bgenMinMAF, params.bgenMinINFO, params.bgenMinMAC,
-			 params.geneticMapFile, params.verboseStats, retroData,
-			 params.domRecHetTest, params.bgenRefFirst, params.numThreads);
-    }
-    cout << endl << "Time for streaming BGEN genotypes and writing output = "
-	 << timer.update_time() << " sec" << endl << endl;
-  }
-
-  // write stats at dosage2 SNPs to file
-  if (!params.statsFileDosage2Snps.empty()) {
-    cout << endl << "=== Streaming genotypes to compute and write assoc stats at dosage2 SNPs ==="
-	 << endl;
-    bolt.streamDosage2(params.statsFileDosage2Snps, params.dosage2MapFiles,
-		       params.dosage2GenoFiles, params.verboseStats, retroData);
-    cout << endl << "Time for streaming dosage2 genotypes and writing output = "
-	 << timer.update_time() << " sec" << endl << endl;
-  }
+  cout << endl << "=== Writing Stage 1 model ===" << endl << endl;
+  Stage1Model::save(params.stage1Model, snpData, bolt, retroData, params.Nautosomes);
+  cout << "Wrote Stage 1 model: " << params.stage1Model << endl;
+  cout << "Time for writing Stage 1 model = " << timer.update_time() << " sec" << endl << endl;
 
   // write simulated snp effects (NOT including candidate snps) and LD Scores at GRM snps
 

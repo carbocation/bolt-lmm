@@ -43,6 +43,7 @@ namespace LMM {
 
   using std::vector;
   using std::string;
+  using std::pair;
   using std::cout;
   using std::cerr;
   using std::endl;
@@ -651,7 +652,8 @@ namespace LMM {
 		   const vector <string> &removeFiles,
 		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
 		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes)
-    : Nautosomes(_Nautosomes) {
+    : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL), maskSnps(NULL),
+      maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), Nautosomes(_Nautosomes) {
     
     processIndivs(famFile, removeFiles);
     // bedSnps = all snps in PLINK data; will filter and QC to create class member 'snps'
@@ -774,10 +776,77 @@ namespace LMM {
     }
   }
 
+  SnpData::SnpData(const vector < pair <string, string> > &_indivIds,
+		   const vector <double> &_maskIndivs, uint64 _Nstride,
+		   const string &famFile, int _Nautosomes) :
+    Mbed(0), Nbed(0), M(0), N(_indivIds.size()), Nstride(_Nstride), genotypes(NULL),
+    maskSnps(NULL), maskIndivs(NULL), numIndivsQC(0), mapAvailable(false),
+    Nautosomes(_Nautosomes) {
+    if (Nstride < N || (Nstride&3) || _maskIndivs.size() != Nstride) {
+      cerr << "ERROR: Invalid sample dimensions in Stage 1 model" << endl;
+      exit(1);
+    }
+    maskIndivs = ALIGNED_MALLOC_DOUBLES(Nstride);
+    memcpy(maskIndivs, &_maskIndivs[0], Nstride*sizeof(maskIndivs[0]));
+    for (uint64 n = 0; n < Nstride; n++) numIndivsQC += maskIndivs[n] != 0;
+
+    for (uint64 n = 0; n < N; n++) {
+      IndivInfo indiv;
+      indiv.famID = _indivIds[n].first;
+      indiv.indivID = _indivIds[n].second;
+      indiv.paternalID = indiv.maternalID = "0";
+      indiv.sex = 0;
+      indiv.pheno = -9;
+      string key = indiv.famID + " " + indiv.indivID;
+      if (FID_IID_to_ind.find(key) != FID_IID_to_ind.end()) {
+	cerr << "ERROR: Duplicate sample ID in Stage 1 model: " << key << endl;
+	exit(1);
+      }
+      FID_IID_to_ind[key] = n;
+      indivs.push_back(indiv);
+    }
+    vcNames.push_back("");
+
+    if (!famFile.empty()) {
+      FileUtils::AutoGzIfstream fin; fin.openOrExit(famFile);
+      string line;
+      vector <bool> found(N, false);
+      while (getline(fin, line)) {
+	std::istringstream iss(line);
+	string FID, IID, paternalID, maternalID, pheno;
+	int sex;
+	if (!(iss >> FID >> IID >> paternalID >> maternalID >> sex >> pheno)) {
+	  cerr << "ERROR: Incorrectly formatted fam file: " << famFile << endl;
+	  exit(1);
+	}
+	string key = FID + " " + IID;
+	std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
+	if (it == FID_IID_to_ind.end())
+	  bedIndivToRemoveIndex.push_back(-1);
+	else {
+	  if (found[it->second]) {
+	    cerr << "ERROR: Duplicate Stage 1 sample in fam file: " << key << endl;
+	    exit(1);
+	  }
+	  found[it->second] = true;
+	  bedIndivToRemoveIndex.push_back(it->second);
+	}
+      }
+      fin.close();
+      Nbed = bedIndivToRemoveIndex.size();
+      for (uint64 n = 0; n < N; n++)
+	if (!found[n]) {
+	  cerr << "ERROR: Stage 1 sample is missing from Stage 2 fam file: "
+	       << _indivIds[n].first << " " << _indivIds[n].second << endl;
+	  exit(1);
+	}
+    }
+  }
+
   SnpData::~SnpData() {
     if (genotypes!=NULL) ALIGNED_FREE(genotypes);
-    ALIGNED_FREE(maskSnps);
-    ALIGNED_FREE(maskIndivs);
+    if (maskSnps!=NULL) ALIGNED_FREE(maskSnps);
+    if (maskIndivs!=NULL) ALIGNED_FREE(maskIndivs);
   }
 
   void SnpData::freeGenotypes() {
@@ -851,6 +920,33 @@ namespace LMM {
   const uchar* SnpData::getGenotypes(void) const { return genotypes; }
   int SnpData::getNumVCs(void) const { return vcNames.size()-1; }
   std::vector <string> SnpData::getVCnames(void) const { return vcNames; }
+  vector < pair <string, string> > SnpData::getIndivIds(void) const {
+    vector < pair <string, string> > ids;
+    for (uint64 n = 0; n < N; n++)
+      ids.push_back(std::make_pair(indivs[n].famID, indivs[n].indivID));
+    return ids;
+  }
+  void SnpData::validateIndivIds(const vector < pair <string, string> > &ids,
+				 const string &source) const {
+    vector <bool> found(N, false);
+    for (uint64 i = 0; i < ids.size(); i++) {
+      string key = ids[i].first + " " + ids[i].second;
+      std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
+      if (it != FID_IID_to_ind.end()) {
+	if (found[it->second]) {
+	  cerr << "ERROR: Duplicate Stage 1 sample in " << source << ": " << key << endl;
+	  exit(1);
+	}
+	found[it->second] = true;
+      }
+    }
+    for (uint64 n = 0; n < N; n++)
+      if (!found[n]) {
+	cerr << "ERROR: Stage 1 sample is missing from " << source << ": "
+	     << indivs[n].famID << " " << indivs[n].indivID << endl;
+	exit(1);
+      }
+  }
 
   /*
   vector <double> getMAFs(void) const {

@@ -71,7 +71,7 @@ namespace LMM {
   Bolt::StatsDataRetroLOCO::StatsDataRetroLOCO
   (const std::string &_statName, const std::vector <double> &_stats,
    const std::vector < std::vector <double> > &_calibratedResids,
-   const std::vector < std::pair <uint64, int> > &_snpChunkEnds,
+   const std::vector <SnpChunkBoundary> &_snpChunkEnds,
    const std::vector <double> &_VinvScaleFactors=vector <double>()) :
     statName(_statName), stats(_stats), calibratedResids(_calibratedResids),
     snpChunkEnds(_snpChunkEnds), VinvScaleFactors(_VinvScaleFactors) {}
@@ -252,21 +252,23 @@ namespace LMM {
     return chunkAssignments;
   }
 
-  vector < std::pair <uint64, int> >
+  vector <Bolt::SnpChunkBoundary>
   Bolt::computeSnpChunkEnds(const vector <int> &chunkAssignments) const {
-    vector < std::pair <uint64, int> > snpChunkEnds;
+    vector <SnpChunkBoundary> snpChunkEnds;
+    const vector <SnpInfo> &snps = snpData.getSnpInfo();
     uint64 mPrev = 0; int chunkPrev = -1;
     for (uint64 m = 0; m < M; m++)
       if (chunkAssignments[m] >= 0) {
 	if (chunkAssignments[m] != chunkPrev) { // transition
 	  if (chunkPrev != -1)
-	    snpChunkEnds.push_back(std::make_pair(mPrev, chunkPrev));
-	  snpChunkEnds.push_back(std::make_pair(m, chunkAssignments[m]));
+	    snpChunkEnds.push_back(SnpChunkBoundary(snps[mPrev].chrom, snps[mPrev].physpos,
+						     chunkPrev));
+	  snpChunkEnds.push_back(SnpChunkBoundary(snps[m].chrom, snps[m].physpos,
+					   chunkAssignments[m]));
 	}
 	mPrev = m; chunkPrev = chunkAssignments[m];
       }
-    snpChunkEnds.push_back(std::make_pair(mPrev, chunkPrev));
-    unique(snpChunkEnds.begin(), snpChunkEnds.end());
+    snpChunkEnds.push_back(SnpChunkBoundary(snps[mPrev].chrom, snps[mPrev].physpos, chunkPrev));
     /*
     const vector <SnpInfo> &snps = snpData.getSnpInfo();
     for (uint i = 0; i < snpChunkEnds.size(); i++)
@@ -276,16 +278,15 @@ namespace LMM {
     return snpChunkEnds;
   }
 
-  int Bolt::findChunkAssignment(const vector < std::pair <uint64, int> > &snpChunkEnds,
+  int Bolt::findChunkAssignment(const vector <SnpChunkBoundary> &snpChunkEnds,
 				int chr, int bp) const {
-    const vector <SnpInfo> &snps = snpData.getSnpInfo();
     uint64 closestDist = 1LL<<60; int chunk = -1;
     for (uint i = 0; i < snpChunkEnds.size(); i++) {
-      uint64 m = snpChunkEnds[i].first;
-      uint64 dist = ((uint64) (abs(snps[m].chrom - chr))<<30) + abs(snps[m].physpos - bp);
+      uint64 dist = ((uint64) (abs(snpChunkEnds[i].chrom - chr))<<30) +
+	abs(snpChunkEnds[i].physpos - bp);
       if (dist < closestDist) {
 	closestDist = dist;
-	chunk = snpChunkEnds[i].second;
+	chunk = snpChunkEnds[i].chunk;
       }
     }
     return chunk;
@@ -1169,10 +1170,29 @@ namespace LMM {
 	     const vector < pair <string, DataMatrix::ValueType> > &covars, int covMaxLevels,
 	     bool covarUseMissingIndic, int _mBlockMultX, int _Nautosomes,
 	     const std::unordered_set <std::string> &_bgenVariantsToTest) :
-    snpData(_snpData), covarDataT(_covarDataT),
+    snpData(_snpData),
     covBasis(_covarDataT, _maskIndivs, covars, covMaxLevels, covarUseMissingIndic),
     mBlockMultX(_mBlockMultX), Nautosomes(_Nautosomes), bgenVariantsToTest(_bgenVariantsToTest) { // mBlockMultX = block size for X, X' mult in CG... TODO: optimize for speed
     init();
+  }
+
+  Bolt::Bolt(const SnpData &_snpData, const vector <double> &_maskIndivs,
+	     const vector <double> &_covBasis, uint64 _Cindep, int _Nautosomes,
+	     const std::unordered_set <string> &_bgenVariantsToTest) :
+    snpData(_snpData), covBasis(_snpData.getNstride(), _Cindep, _maskIndivs, _covBasis),
+    Xnorm2s(NULL), snpValueLookup(NULL), snpCovBasisNegComps(NULL), projMaskSnps(NULL),
+    mBlockMultX(0), Nautosomes(_Nautosomes), bgenVariantsToTest(_bgenVariantsToTest) {
+    M = MprojMask = 0;
+    Nstride = snpData.getNstride();
+    maskIndivs = covBasis.getMaskIndivs();
+    Nused = covBasis.getNused();
+    Cindep = covBasis.getCindep();
+    Cstride = (Cindep+3)&~3;
+    numChromsProjMask = 0;
+    Xfro2 = 0;
+#ifdef MEASURE_DGEMM
+    dgemmTicks = 0;
+#endif
   }
 
   /**
@@ -1243,10 +1263,10 @@ namespace LMM {
   }
 
   Bolt::~Bolt(void) {
-    ALIGNED_FREE(Xnorm2s);
-    ALIGNED_FREE(snpValueLookup);
-    ALIGNED_FREE(snpCovBasisNegComps);
-    ALIGNED_FREE(projMaskSnps);
+    if (Xnorm2s != NULL) ALIGNED_FREE(Xnorm2s);
+    if (snpValueLookup != NULL) ALIGNED_FREE(snpValueLookup);
+    if (snpCovBasisNegComps != NULL) ALIGNED_FREE(snpCovBasisNegComps);
+    if (projMaskSnps != NULL) ALIGNED_FREE(projMaskSnps);
   }
 
   const SnpData &Bolt::getSnpData(void) const { return snpData; }
@@ -2399,7 +2419,8 @@ namespace LMM {
    */
   void Bolt::streamComputeRetroLOCO
   (const string &outFile, const vector <string> &bimFiles, const vector <string> &bedFiles,
-   const string &geneticMapFile, bool verboseStats,
+   const string &geneticMapFile, const vector <string> &excludeFiles, double maxMissingPerSnp,
+   bool verboseStats,
    const vector <StatsDataRetroLOCO> &retroData) const {
 
     FileUtils::AutoGzOfstream fout; fout.openOrExit(outFile);
@@ -2407,10 +2428,15 @@ namespace LMM {
     printStatsHeader(fout, verboseStats, false, retroData);
 
     MapInterpolater mapInterpolater(geneticMapFile);
-    const vector <int> &bedSnpToGrmIndex = snpData.getBedSnpToGrmIndex();
+    std::unordered_set <string> excludeSnps, seenSnps;
+    for (uint f = 0; f < excludeFiles.size(); f++) {
+      FileUtils::AutoGzIfstream finExclude; finExclude.openOrExit(excludeFiles[f]);
+      string ID, line;
+      while (finExclude >> ID) { excludeSnps.insert(ID); getline(finExclude, line); }
+      finExclude.close();
+    }
 
     FileUtils::AutoGzIfstream finBim, finBed;
-    uint64 mbed = 0;
     uchar *genoLine = ALIGNED_MALLOC_UCHARS(Nstride);
     uchar *bedLineIn = ALIGNED_MALLOC_UCHARS((snpData.getNbed()+3)>>2);
     double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
@@ -2419,24 +2445,44 @@ namespace LMM {
     for (uint f = 0; f < bimFiles.size(); f++) {
       finBim.openOrExit(bimFiles[f]);
       finBed.openOrExit(bedFiles[f], std::ios::in | std::ios::binary);
-      finBed.read((char *) genoLine, 3); // header
+      uchar header[3];
+      finBed.read((char *) header, 3);
+      if (!finBed || header[0] != 0x6c || header[1] != 0x1b || header[2] != 0x01) {
+	cerr << "ERROR: Incorrect first three bytes of bed file: " << bedFiles[f] << endl;
+	exit(1);
+      }
       string line;
+      uint64 lineNum = 0;
       while (getline(finBim, line)) {
+	lineNum++;
 	// read bim info
 	std::istringstream iss(line);
 	string chromStr, ID, allele1, allele0; double genpos; int physpos;
-	iss >> chromStr >> ID >> genpos >> physpos >> allele1 >> allele0;
-	int chrom = SnpData::chrStrToInt(chromStr, Nautosomes);
-	if (!geneticMapFile.empty())
-	  genpos = mapInterpolater.interp(chrom, physpos);
+	if (!(iss >> chromStr >> ID >> genpos >> physpos >> allele1 >> allele0)) {
+	  cerr << "ERROR: Incorrectly formatted bim file at line " << lineNum << ": "
+	       << bimFiles[f] << endl;
+	  exit(1);
+	}
 	
 	// read bed genotypes
 	snpData.readBedLine(genoLine, bedLineIn, finBed, true);
 
-	if (bedSnpToGrmIndex[mbed] != -2) // not excluded	  
+	bool firstOccurrence = seenSnps.insert(ID).second;
+	bool include = firstOccurrence && excludeSnps.find(ID) == excludeSnps.end();
+	int chrom = SnpData::chrStrToInt(chromStr, Nautosomes);
+	if (include && chrom == -1) {
+	  cerr << "ERROR: Unknown chromosome code in bim file at line " << lineNum << ": "
+	       << bimFiles[f] << endl;
+	  exit(1);
+	}
+	if (include && !geneticMapFile.empty()) genpos = mapInterpolater.interp(chrom, physpos);
+	if (include && snpData.computeSnpMissing(genoLine, maskIndivs) <= maxMissingPerSnp)
 	  fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, genoLine, verboseStats,
 			      retroData, snpCovCompVec);
-	mbed++;
+      }
+      if (!finBed || finBed.get() != EOF) {
+	cerr << "ERROR: Wrong file size or reading error for bed file: " << bedFiles[f] << endl;
+	exit(1);
       }
       finBed.close();
       finBim.close();
@@ -2459,6 +2505,7 @@ namespace LMM {
 
     MapInterpolater mapInterpolater(geneticMapFile); // ok if no map; then always returns 0
     vector < std::pair <string, string> > dosageIDs = FileUtils::readFidIids(dosageFidIidFile);
+    snpData.validateIndivIds(dosageIDs, dosageFidIidFile);
     uint Ndosage = dosageIDs.size();
     vector <uint64> dosageIndivInds(Ndosage);
     for (uint i = 0; i < Ndosage; i++)
@@ -2531,6 +2578,7 @@ namespace LMM {
       std::istringstream issGenoHeader(genoLine);
       string SNP, A1, A2, FID, IID; issGenoHeader >> SNP >> A1 >> A2;
       while (issGenoHeader >> FID >> IID) dosage2IDs.push_back(std::make_pair(FID, IID));     
+      snpData.validateIndivIds(dosage2IDs, dosage2GenoFiles[f]);
       uint Ndosage2 = dosage2IDs.size();
       vector <uint64> dosage2IndivInds(Ndosage2);
       for (uint i = 0; i < Ndosage2; i++)
@@ -2598,6 +2646,7 @@ namespace LMM {
 
     MapInterpolater mapInterpolater(geneticMapFile); // ok if no map; then always returns 0
     vector < std::pair <string, string> > impute2IDs = FileUtils::readFidIids(impute2FidIidFile);
+    snpData.validateIndivIds(impute2IDs, impute2FidIidFile);
     uint Nimpute2 = impute2IDs.size();
     vector <uint64> impute2IndivInds(Nimpute2);
     int numFound = 0;
@@ -2686,6 +2735,7 @@ namespace LMM {
 
     MapInterpolater mapInterpolater(geneticMapFile); // ok if no map; then always returns 0
     vector < std::pair <string, string> > impute2IDs = FileUtils::readFidIids(impute2FidIidFile);
+    snpData.validateIndivIds(impute2IDs, impute2FidIidFile);
     uint Nimpute2 = impute2IDs.size();
     vector <uint64> impute2IndivInds(Nimpute2);
     int numFound = 0;
@@ -2865,6 +2915,7 @@ namespace LMM {
     
     MapInterpolater mapInterpolater(geneticMapFile); // ok if no map; then always returns 0
     vector < std::pair <string, string> > sampleIDs = FileUtils::readSampleIDs(sampleFile);
+    snpData.validateIndivIds(sampleIDs, sampleFile);
     
     uint Nsample = sampleIDs.size();
     vector <uint64> bgenIndivInds(Nsample);
@@ -3225,13 +3276,15 @@ namespace LMM {
     
     MapInterpolater mapInterpolater(geneticMapFile); // ok if no map; then always returns 0
     vector < std::pair <string, string> > sampleIDs = FileUtils::readSampleIDs(sampleFile);
+    snpData.validateIndivIds(sampleIDs, sampleFile);
     
     uint Nsample = sampleIDs.size();
     vector <uint64> bgenIndivInds(Nsample);
     int numFound = 0;
     for (uint i = 0; i < Nsample; i++) {
       bgenIndivInds[i] = snpData.getIndivInd(sampleIDs[i].first, sampleIDs[i].second);
-      if (!maskIndivs[bgenIndivInds[i]]) bgenIndivInds[i] = SnpData::IND_MISSING;
+      if (bgenIndivInds[i] == SnpData::IND_MISSING || !maskIndivs[bgenIndivInds[i]])
+	bgenIndivInds[i] = SnpData::IND_MISSING;
       if (bgenIndivInds[i] != SnpData::IND_MISSING) numFound++;
     }
     cout << endl << "Read " << Nsample << " indivs; using "

@@ -112,6 +112,11 @@ namespace LMM {
 	    std::vector <std::string> vcNamesIn=std::vector <std::string> (),
 	    bool loadNonModelSnps=true, int _Nautosomes=22);
 
+    // Stage 2 sample state. If famFile is set, also initializes PLINK BED sample mapping.
+    SnpData(const std::vector < std::pair <std::string, std::string> > &_indivIds,
+	    const std::vector <double> &_maskIndivs, uint64 _Nstride,
+	    const std::string &famFile, int _Nautosomes=22);
+
     ~SnpData();
 
     void freeGenotypes();
@@ -154,6 +159,9 @@ namespace LMM {
     const uchar* getGenotypes(void) const;
     int getNumVCs(void) const;
     std::vector <std::string> getVCnames(void) const;
+    std::vector < std::pair <std::string, std::string> > getIndivIds(void) const;
+    void validateIndivIds(const std::vector < std::pair <std::string, std::string> > &ids,
+			  const std::string &source) const;
     
     uint64 getIndivInd(std::string &FID, std::string &IID) const;
   

@@ -1,4 +1,5 @@
 ../bolt \
+    --stage=1 \
     --bfile=EUR_subset \
     --phenoFile=EUR_subset.pheno2.covars \
     --exclude=EUR_subset.exclude2 \

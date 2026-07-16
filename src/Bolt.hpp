@@ -37,17 +37,26 @@ namespace LMM {
   public:
     static const double BAD_SNP_STAT;
 
+    struct SnpChunkBoundary {
+      int chrom;
+      int physpos;
+      int chunk;
+      SnpChunkBoundary(int _chrom=0, int _physpos=0, int _chunk=-1) :
+	chrom(_chrom), physpos(_physpos), chunk(_chunk) {}
+    };
+
     struct StatsDataRetroLOCO {
       std::string statName;
       std::vector <double> stats; // M-vector
       // projected and calibrated s.t. stat for snp x = dot(x / projNorm(x), resid[chunk])^2
       std::vector < std::vector <double> > calibratedResids; // # LOCO chunks x Nstride
       //std::vector <int> chunkAssignments; // M-vector; [0, # LOCO chunks) or -1 for masked snps
-      std::vector < std::pair <uint64, int> > snpChunkEnds;
+      // Coordinate boundaries make Stage 2 independent of Stage 1 SNP indices.
+      std::vector <SnpChunkBoundary> snpChunkEnds;
       std::vector <double> VinvScaleFactors; // Vinv*y / calibratedResids for each LOCO chunk
       StatsDataRetroLOCO(const std::string &_statName, const std::vector <double> &_stats,
 			 const std::vector < std::vector <double> > &_calibratedResids,
-			 const std::vector < std::pair <uint64, int> > &_snpChunkEnds,
+			 const std::vector <SnpChunkBoundary> &_snpChunkEnds,
 			 const std::vector <double> &_VinvScaleFactors);
     };
 
@@ -61,7 +70,6 @@ namespace LMM {
     mutable unsigned long long dgemmTicks;
 #endif
     const SnpData &snpData; // use to obtain snp vectors via buildMaskedGenotypeVector
-    const DataMatrix &covarDataT; // transposed covariate data matrix
     CovariateBasis covBasis; // contains covariates and maskIndivs
     const double *maskIndivs; // [VECTOR PTR]: NOT copied; set to point to covBasis.maskIndivs
     uint64 M, Nstride, Nused, Cindep, Cstride; // likewise inherited from snpData, covBasis
@@ -108,9 +116,9 @@ namespace LMM {
     void computeProjNorm2s(double projNorm2s[], const double xCovCompVecs[], uint64 B) const;
 
     std::vector <int> makeChunkAssignments(int numLeaveOutChunks) const;
-    std::vector < std::pair <uint64, int> >
+    std::vector <SnpChunkBoundary>
     computeSnpChunkEnds(const std::vector <int> &chunkAssignments) const;
-    int findChunkAssignment(const std::vector < std::pair <uint64, int> > &snpChunkEnds,
+    int findChunkAssignment(const std::vector <SnpChunkBoundary> &snpChunkEnds,
 			    int chr, int bp) const;
     std::vector <uint64> makeBatchMaskSnps(uchar batchMaskSnps[],
 					   const std::vector <int> &chunkAssignments,
@@ -195,6 +203,11 @@ namespace LMM {
     Bolt(const SnpData &_snpData, const DataMatrix &_covarDataT, const double _maskIndivs[],
 	 const std::vector < std::pair <std::string, DataMatrix::ValueType> > &covars,
 	 int covarMaxLevels, bool covarUseMissingIndic, int _mBlockMultX, int _Nautosomes,
+	 const std::unordered_set <std::string> &_bgenVariantsToTest);
+
+    // Lightweight constructor for Stage 2. It does not initialize model genotypes.
+    Bolt(const SnpData &_snpData, const std::vector <double> &_maskIndivs,
+	 const std::vector <double> &_covBasis, uint64 _Cindep, int _Nautosomes,
 	 const std::unordered_set <std::string> &_bgenVariantsToTest);
 
     ~Bolt(void);
@@ -348,6 +361,7 @@ namespace LMM {
     void streamComputeRetroLOCO
     (const std::string &outFile, const std::vector <std::string> &bimFiles,
      const std::vector <std::string> &bedFiles, const std::string &geneticMapFile,
+     const std::vector <std::string> &excludeFiles, double maxMissingPerSnp,
      bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData) const;
     void streamDosages
     (const std::string &outFile, const std::vector <std::string> &dosageFiles,

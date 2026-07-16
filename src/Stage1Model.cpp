@@ -12,7 +12,9 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <set>
+#include <functional>
+#include <unordered_set>
+#include <utility>
 
 #include <zlib.h>
 
@@ -133,6 +135,14 @@ namespace LMM {
 	fail(file, "invalid array dimensions");
       return a*b;
     }
+
+    struct SampleIdHash {
+      size_t operator()(const std::pair<string, string> &id) const {
+	size_t first = std::hash<string>()(id.first);
+	size_t second = std::hash<string>()(id.second);
+	return first ^ (second + 0x9e3779b9 + (first << 6) + (first >> 2));
+      }
+    };
   }
 
   void Stage1Model::save(const string &file, const SnpData &snpData, const Bolt &bolt,
@@ -205,13 +215,14 @@ namespace LMM {
     checkedProduct(file, model.Cindep, model.Nstride);
 
     model.indivIds.reserve(N);
-    std::set < std::pair <string, string> > seenIds;
+    std::unordered_set < std::pair <string, string>, SampleIdHash > seenIds;
+    seenIds.reserve(N);
     for (uint64 n = 0; n < N; n++) {
       string FID = in.text();
       string IID = in.text();
       if (FID.empty() || IID.empty() || !seenIds.insert(std::make_pair(FID, IID)).second)
 	fail(file, "invalid or duplicate sample ID");
-      model.indivIds.push_back(std::make_pair(FID, IID));
+      model.indivIds.emplace_back(std::move(FID), std::move(IID));
     }
     model.maskIndivs.resize(model.Nstride);
     if (model.Nstride) in.bytes(&model.maskIndivs[0], model.Nstride*sizeof(double));

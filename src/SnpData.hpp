@@ -21,7 +21,7 @@
 
 #include <vector>
 #include <string>
-#include <map>
+#include <unordered_map>
 #include <unordered_set>
 #include <boost/utility.hpp>
 
@@ -60,7 +60,7 @@ namespace LMM {
     bool bedIndivsIdentity;
     int Nautosomes;
     
-    std::map <std::string, uint64> FID_IID_to_ind;
+    std::unordered_map <std::string, uint64> FID_IID_to_ind;
   
     struct IndivInfo {
       std::string famID;

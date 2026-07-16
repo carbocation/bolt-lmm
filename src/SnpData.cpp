@@ -26,6 +26,7 @@
 #include <sstream>
 #include <map>
 #include <unordered_set>
+#include <utility>
 
 #ifdef USE_SSE
 #include <emmintrin.h> // SSE2 for packed doubles
@@ -243,12 +244,11 @@ namespace LMM {
       if (sscanf(phenoStr.c_str(), "%lf", &indiv.pheno) != 1)
 	indiv.pheno = -9;
       string combined_ID = indiv.famID + " " + indiv.indivID;
-      if (FID_IID_to_ind.find(combined_ID) != FID_IID_to_ind.end()) {
+      if (!FID_IID_to_ind.emplace(combined_ID, bedIndivs.size()).second) {
 	cerr << "ERROR: Duplicate individual in fam file at line " << bedIndivs.size()+1 << endl;
 	exit(1);
       }
-      FID_IID_to_ind[combined_ID] = bedIndivs.size();
-      bedIndivs.push_back(indiv);
+      bedIndivs.push_back(std::move(indiv));
     }
     fin.close();
     Nbed = bedIndivs.size();
@@ -276,13 +276,14 @@ namespace LMM {
 	  exit(1);
 	}
 	string combined_ID = FID + " " + IID;
-	if (FID_IID_to_ind.find(combined_ID) == FID_IID_to_ind.end()) {
+	std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(combined_ID);
+	if (it == FID_IID_to_ind.end()) {
 	  if (numAbsent < 5)
 	    cerr << "WARNING: Unable to find individual to remove: " << combined_ID << endl;
 	  numAbsent++;
 	}
-	else if (useIndiv[FID_IID_to_ind[combined_ID]]) {
-	  useIndiv[FID_IID_to_ind[combined_ID]] = false;
+	else if (useIndiv[it->second]) {
+	  useIndiv[it->second] = false;
 	  numRemoved++;
 	}
       }
@@ -295,11 +296,13 @@ namespace LMM {
     // determine number of indivs remaining post-removal and set up indices
     bedIndivToRemoveIndex.resize(Nbed);
     FID_IID_to_ind.clear(); // redo FID_IID -> indiv index
+    FID_IID_to_ind.reserve(Nbed);
+    indivs.reserve(Nbed);
     for (uint64 nbed = 0; nbed < Nbed; nbed++) {
       if (useIndiv[nbed]) {
 	bedIndivToRemoveIndex[nbed] = indivs.size();
 	FID_IID_to_ind[bedIndivs[nbed].famID + " " + bedIndivs[nbed].indivID] = indivs.size();
-	indivs.push_back(bedIndivs[nbed]);
+	indivs.push_back(std::move(bedIndivs[nbed]));
       }
       else
 	bedIndivToRemoveIndex[nbed] = -1;
@@ -886,6 +889,8 @@ namespace LMM {
     memcpy(maskIndivs, &_maskIndivs[0], Nstride*sizeof(maskIndivs[0]));
     for (uint64 n = 0; n < Nstride; n++) numIndivsQC += maskIndivs[n] != 0;
 
+    FID_IID_to_ind.reserve(N);
+    indivs.reserve(N);
     for (uint64 n = 0; n < N; n++) {
       IndivInfo indiv;
       indiv.famID = _indivIds[n].first;
@@ -894,12 +899,11 @@ namespace LMM {
       indiv.sex = 0;
       indiv.pheno = -9;
       string key = indiv.famID + " " + indiv.indivID;
-      if (FID_IID_to_ind.find(key) != FID_IID_to_ind.end()) {
+      if (!FID_IID_to_ind.emplace(key, n).second) {
 	cerr << "ERROR: Duplicate sample ID in Stage 1 model: " << key << endl;
 	exit(1);
       }
-      FID_IID_to_ind[key] = n;
-      indivs.push_back(indiv);
+      indivs.push_back(std::move(indiv));
     }
     vcNames.push_back("");
 
@@ -916,7 +920,7 @@ namespace LMM {
 	  exit(1);
 	}
 	string key = FID + " " + IID;
-	std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
+	std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
 	if (it == FID_IID_to_ind.end())
 	  bedIndivToRemoveIndex.push_back(-1);
 	else {
@@ -1021,8 +1025,9 @@ namespace LMM {
   std::vector <string> SnpData::getVCnames(void) const { return vcNames; }
   vector < pair <string, string> > SnpData::getIndivIds(void) const {
     vector < pair <string, string> > ids;
+    ids.reserve(N);
     for (uint64 n = 0; n < N; n++)
-      ids.push_back(std::make_pair(indivs[n].famID, indivs[n].indivID));
+      ids.emplace_back(indivs[n].famID, indivs[n].indivID);
     return ids;
   }
   void SnpData::validateIndivIds(const vector < pair <string, string> > &ids,
@@ -1030,7 +1035,7 @@ namespace LMM {
     vector <bool> found(N, false);
     for (uint64 i = 0; i < ids.size(); i++) {
       string key = ids[i].first + " " + ids[i].second;
-      std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
+      std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
       if (it != FID_IID_to_ind.end()) {
 	if (found[it->second]) {
 	  cerr << "ERROR: Duplicate Stage 1 sample in " << source << ": " << key << endl;
@@ -1055,7 +1060,7 @@ namespace LMM {
   }
   */
   uint64 SnpData::getIndivInd(string &FID, string &IID) const {
-    std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(FID+" "+IID);
+    std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(FID+" "+IID);
     if (it != FID_IID_to_ind.end())
       return it->second;
     else

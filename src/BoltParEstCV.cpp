@@ -49,11 +49,11 @@ namespace LMM {
   (const SnpData& _snpData, const DataMatrix& _covarDataT, const double subMaskIndivs[],
    const vector < std::pair <std::string, DataMatrix::ValueType> > &_covars, int covarMaxLevels,
    bool _covarUseMissingIndic, int mBlockMultX, int Nautosomes,
-   const std::unordered_set <std::string> &_bgenVariantsToTest)
+   const std::unordered_set <std::string> &_bgenVariantsToTest, bool _useCuda)
     : snpData(_snpData), covarDataT(_covarDataT),
       bolt(_snpData, _covarDataT, subMaskIndivs, _covars, covarMaxLevels, _covarUseMissingIndic,
-	   mBlockMultX, Nautosomes, _bgenVariantsToTest),
-    covars(_covars), covarUseMissingIndic(_covarUseMissingIndic),
+	   mBlockMultX, Nautosomes, _bgenVariantsToTest, _useCuda),
+    covars(_covars), covarUseMissingIndic(_covarUseMissingIndic), useCuda(_useCuda),
     bgenVariantsToTest(_bgenVariantsToTest) {
   }
 
@@ -123,7 +123,8 @@ namespace LMM {
       // create Bolt instance for predicting using non-left-out indivs
       int foldCovarMaxLevels = 1<<30; // no need to re-check covar max levels
       const Bolt boltFold(snpData, covarDataT, foldMaskIndivs, covars, foldCovarMaxLevels,
-			  covarUseMissingIndic, mBlockMultX, Nautosomes, bgenVariantsToTest);
+			  covarUseMissingIndic, mBlockMultX, Nautosomes, bgenVariantsToTest,
+			  useCuda);
 
       vector <double> PVEs; double baselinePredMSE;
       { // set up arguments and call Bayes-iter

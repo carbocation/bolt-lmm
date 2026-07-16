@@ -50,6 +50,9 @@
 #include "CovariateBasis.hpp"
 #include "NumericUtils.hpp"
 #include "PgenUtils.hpp"
+#ifdef BOLT_USE_CUDA
+#include "CudaStep1.hpp"
+#endif
 #include "pgenlibr.h"
 #include "LapackConst.hpp"
 #include "MemoryUtils.hpp"
@@ -560,6 +563,18 @@ namespace LMM {
    */
   void Bolt::multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
 			     const uchar batchMaskSnps[], uint64 B) const {
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL) {
+#ifdef MEASURE_DGEMM
+      const unsigned long long cudaTsc = Timer::rdtsc();
+#endif
+      cudaStep1->multXXtransMask(outCovCompVecs, inCovCompVecs, batchMaskSnps, B);
+#ifdef MEASURE_DGEMM
+      dgemmTicks += Timer::rdtsc() - cudaTsc;
+#endif
+      return;
+    }
+#endif
     const uint64 NCstride = Nstride+Cstride;
     const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
     memset(outCovCompVecs, 0, B * NCstride * sizeof(outCovCompVecs[0]));
@@ -770,7 +785,8 @@ namespace LMM {
     ALIGNED_FREE(rCovCompVecs);
 #ifdef MEASURE_DGEMM
     double dgemmPct = 100 * dgemmTicks / (double) (Timer::rdtsc()-tscStart);
-    printf("  Time breakdown: dgemm = %.1f%%, memory/overhead = %.1f%%\n", dgemmPct, 100-dgemmPct);
+    printf("  Time breakdown: matrix operations = %.1f%%, memory/overhead = %.1f%%\n",
+	   dgemmPct, 100-dgemmPct);
     fflush(stdout);
 #endif
   }
@@ -889,10 +905,40 @@ namespace LMM {
 	if (useIterMCMC) usedItersMCMC++;
       
       /***** BEGIN BIG ITERATION *****/
+
+#if defined(BOLT_USE_CUDA) && !defined(SINGLE_M_UPDATE)
+      if (cudaStep1 != NULL) {
+#ifdef MEASURE_DGEMM
+	const unsigned long long cudaTsc = Timer::rdtsc();
+#endif
+	cudaStep1->beginBayesIteration(yResidCovCompVecs, anyBatchMaskSnps, B);
+#ifdef MEASURE_DGEMM
+	dgemmTicks += Timer::rdtsc() - cudaTsc;
+#endif
+      }
+#endif
       
       for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) { // similar to multXtrans()
 
 	uint64 mBlockMultXCrop = std::min(M, m0+mBlockMultX) - m0;
+#ifdef MEASURE_DGEMM
+	unsigned long long tsc = 0;
+#endif
+#if defined(BOLT_USE_CUDA) && !defined(SINGLE_M_UPDATE)
+	if (cudaStep1 != NULL) {
+#ifdef MEASURE_DGEMM
+	  tsc = Timer::rdtsc();
+#endif
+	  cudaStep1->computeBayesBlock
+	    (XtransResids, iter == 0 ? snpDots + m0*mBlockMultXAlloc : NULL,
+	     mBlockMultXAlloc, m0, mBlockMultXCrop, B, Bleft, iter == 0);
+#ifdef MEASURE_DGEMM
+	  dgemmTicks += Timer::rdtsc() - tsc;
+#endif
+	}
+	else
+#endif
+	{
 #pragma omp parallel for
 	for (uint64 mPlus = 0; mPlus < mBlockMultXCrop; mPlus++) {
 	  uint64 m = m0+mPlus;
@@ -905,7 +951,7 @@ namespace LMM {
 	}
 #ifdef MEASURE_DGEMM
 	//Timer timer;
-	unsigned long long tsc = Timer::rdtsc();
+	tsc = Timer::rdtsc();
 #endif
 	{
 	  char TRANSA_ = 'T';
@@ -956,6 +1002,7 @@ namespace LMM {
 	dgemmTicks += Timer::rdtsc() - tsc;
 	//dgemmTicks += timer.update_time();
 #endif
+	}
 
 	/***** BEGIN LITTLE ITER *****/
 
@@ -1112,6 +1159,18 @@ namespace LMM {
 #ifndef SINGLE_M_UPDATE
 	// perform block update of yResidCovCompVecs using coeffs in betaBlockUpdates
 	// similar to multX()
+#ifdef BOLT_USE_CUDA
+	if (cudaStep1 != NULL) {
+#ifdef MEASURE_DGEMM
+	  tsc = Timer::rdtsc();
+#endif
+	  cudaStep1->updateBayesResidual(betaBlockUpdates, mBlockMultXCrop, B, Bleft);
+#ifdef MEASURE_DGEMM
+	  dgemmTicks += Timer::rdtsc() - tsc;
+#endif
+	}
+	else
+#endif
 	{
 #ifdef MEASURE_DGEMM
 	  //Timer timer;
@@ -1148,6 +1207,18 @@ namespace LMM {
 #endif
       }
       /***** END BIG ITERATION *****/
+
+#if defined(BOLT_USE_CUDA) && !defined(SINGLE_M_UPDATE)
+      if (cudaStep1 != NULL) {
+#ifdef MEASURE_DGEMM
+	const unsigned long long cudaTsc = Timer::rdtsc();
+#endif
+	cudaStep1->endBayesIteration(yResidCovCompVecs, B);
+#ifdef MEASURE_DGEMM
+	dgemmTicks += Timer::rdtsc() - cudaTsc;
+#endif
+      }
+#endif
 
       computeProjNorm2s(resNorm2s, yResidCovCompVecs, Bleft); // for approx LLs
       undoSwaps(resNorm2s, swaps); // resNorm2s are initially permuted; need to undo swaps
@@ -1262,7 +1333,8 @@ namespace LMM {
 
 #ifdef MEASURE_DGEMM
     double dgemmPct = 100 * dgemmTicks / (double) (Timer::rdtsc()-tscStart);
-    printf("  Time breakdown: dgemm = %.1f%%, memory/overhead = %.1f%%\n", dgemmPct, 100-dgemmPct);
+    printf("  Time breakdown: matrix operations = %.1f%%, memory/overhead = %.1f%%\n",
+	   dgemmPct, 100-dgemmPct);
     fflush(stdout);
 #endif
 
@@ -1280,11 +1352,25 @@ namespace LMM {
   Bolt::Bolt(const SnpData &_snpData, const DataMatrix &_covarDataT, const double _maskIndivs[],
 	     const vector < pair <string, DataMatrix::ValueType> > &covars, int covMaxLevels,
 	     bool covarUseMissingIndic, int _mBlockMultX, int _Nautosomes,
-	     const std::unordered_set <std::string> &_bgenVariantsToTest) :
+	     const std::unordered_set <std::string> &_bgenVariantsToTest, bool useCuda) :
     snpData(_snpData),
     covBasis(_covarDataT, _maskIndivs, covars, covMaxLevels, covarUseMissingIndic),
-    mBlockMultX(_mBlockMultX), Nautosomes(_Nautosomes), bgenVariantsToTest(_bgenVariantsToTest) { // mBlockMultX = block size for X, X' mult in CG... TODO: optimize for speed
+    mBlockMultX(_mBlockMultX), Nautosomes(_Nautosomes), bgenVariantsToTest(_bgenVariantsToTest)
+#ifdef BOLT_USE_CUDA
+    , cudaStep1(NULL)
+#endif
+  { // mBlockMultX = block size for X, X' mult in CG... TODO: optimize for speed
     init();
+#ifdef BOLT_USE_CUDA
+    if (useCuda)
+      cudaStep1 = new CudaStep1(snpData.getGenotypes(), maskIndivs, snpValueLookup,
+				snpCovBasisNegComps, projMaskSnps, M, Nstride, Cstride);
+#else
+    if (useCuda) {
+      cerr << "ERROR: --cuda requires a binary built with -DBOLT_CUDA=ON" << endl;
+      exit(1);
+    }
+#endif
   }
 
   Bolt::Bolt(const SnpData &_snpData, const vector <double> &_maskIndivs,
@@ -1292,7 +1378,11 @@ namespace LMM {
 	     const std::unordered_set <string> &_bgenVariantsToTest) :
     snpData(_snpData), covBasis(_snpData.getNstride(), _Cindep, _maskIndivs, _covBasis),
     Xnorm2s(NULL), snpValueLookup(NULL), snpCovBasisNegComps(NULL), projMaskSnps(NULL),
-    mBlockMultX(0), Nautosomes(_Nautosomes), bgenVariantsToTest(_bgenVariantsToTest) {
+    mBlockMultX(0), Nautosomes(_Nautosomes), bgenVariantsToTest(_bgenVariantsToTest)
+#ifdef BOLT_USE_CUDA
+    , cudaStep1(NULL)
+#endif
+  {
     M = MprojMask = 0;
     Nstride = snpData.getNstride();
     maskIndivs = covBasis.getMaskIndivs();
@@ -1377,6 +1467,9 @@ namespace LMM {
   }
 
   Bolt::~Bolt(void) {
+#ifdef BOLT_USE_CUDA
+    delete cudaStep1;
+#endif
     if (Xnorm2s != NULL) ALIGNED_FREE(Xnorm2s);
     if (snpValueLookup != NULL) ALIGNED_FREE(snpValueLookup);
     if (snpCovBasisNegComps != NULL) ALIGNED_FREE(snpCovBasisNegComps);

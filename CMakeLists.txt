@@ -37,6 +37,10 @@ set(BOLT_CPU_TARGET "portable" CACHE STRING
 set(BOLT_CPU_TUNE "" CACHE STRING
   "Optional x86 compiler tuning target, for example generic or native")
 
+option(BOLT_CUDA "Build optional CUDA acceleration for Step 1" OFF)
+set(BOLT_CUDA_ARCHITECTURES "80" CACHE STRING
+  "CUDA architectures to compile when BOLT_CUDA is enabled")
+
 set(BOLT_OPENMP_ROOT "" CACHE PATH "Root of an OpenMP installation")
 set(BOLT_MKL_ROOT "" CACHE PATH "Root of an Intel oneMKL installation")
 set(BOLT_OPENBLAS_ROOT "" CACHE PATH "Root of an OpenBLAS installation")
@@ -84,14 +88,21 @@ add_library(bolt_build_options INTERFACE)
 target_compile_features(bolt_build_options INTERFACE cxx_std_14)
 target_compile_definitions(bolt_build_options INTERFACE MEASURE_DGEMM VERBOSE)
 target_compile_options(bolt_build_options INTERFACE
-  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall>
-  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wextra>
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-Wall>
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-Wextra>
   # BOLT performs checked binary reads inside assert(), so Release builds must
   # retain assertions until those legacy checks are converted to runtime errors.
-  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-UNDEBUG>
-  $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-deprecated-copy>
-  $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-vla-cxx-extension>
-  $<$<CXX_COMPILER_ID:AppleClang>:-Wno-deprecated-declarations>)
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-UNDEBUG>
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:Clang,AppleClang>>:-Wno-deprecated-copy>
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:Clang,AppleClang>>:-Wno-vla-cxx-extension>
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:AppleClang>>:-Wno-deprecated-declarations>)
+
+if(BOLT_CUDA)
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  set(CMAKE_CUDA_STANDARD 14)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+endif()
 
 if(BOLT_SIMD STREQUAL "AUTO")
   if(BOLT_X86)
@@ -358,6 +369,10 @@ set(BOLT_SOURCES
   src/StringUtils.cpp
   src/Timer.cpp)
 
+if(BOLT_CUDA)
+  list(APPEND BOLT_SOURCES src/CudaStep1.cu)
+endif()
+
 if(BOLT_WRAP_LEGACY_MEMCPY)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "BOLT_WRAP_LEGACY_MEMCPY is supported only on Linux")
@@ -379,6 +394,13 @@ target_link_libraries(bolt PRIVATE
   ZLIB::ZLIB
   Threads::Threads
   ${CMAKE_DL_LIBS})
+
+if(BOLT_CUDA)
+  target_compile_definitions(bolt PRIVATE BOLT_USE_CUDA)
+  target_link_libraries(bolt PRIVATE CUDA::cudart CUDA::cublas)
+  set_target_properties(bolt PROPERTIES
+    CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
+endif()
 
 if(BOLT_WRAP_LEGACY_MEMCPY)
   target_link_options(bolt PRIVATE "-Wl,--wrap=memcpy")
@@ -436,10 +458,28 @@ if(BUILD_TESTING)
     ZLIB::ZLIB
     Threads::Threads
     ${CMAKE_DL_LIBS})
+  if(BOLT_CUDA)
+    target_compile_definitions(pgen_stage2_parity_test PRIVATE BOLT_USE_CUDA)
+    target_link_libraries(pgen_stage2_parity_test PRIVATE CUDA::cudart CUDA::cublas)
+    set_target_properties(pgen_stage2_parity_test PROPERTIES
+      CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
+  endif()
   add_test(NAME pgen_stage2_hardcall_parity
     COMMAND pgen_stage2_parity_test
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity"
       "${CMAKE_CURRENT_BINARY_DIR}")
+
+  if(BOLT_CUDA)
+    add_executable(cuda_step1_parity_test
+      tests/CudaStep1Parity.cpp
+      src/CudaStep1.cu)
+    target_include_directories(cuda_step1_parity_test PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(cuda_step1_parity_test PRIVATE CUDA::cudart CUDA::cublas)
+    set_target_properties(cuda_step1_parity_test PROPERTIES
+      CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
+    add_test(NAME cuda_step1_matrix_parity COMMAND cuda_step1_parity_test)
+  endif()
 endif()
 
 message(STATUS "BOLT platform: ${CMAKE_SYSTEM_NAME}/${BOLT_TARGET_PROCESSOR}")
@@ -450,4 +490,9 @@ if(BOLT_OPENMP_ENABLED)
   message(STATUS "BOLT OpenMP: enabled")
 else()
   message(STATUS "BOLT OpenMP: serial fallback")
+endif()
+if(BOLT_CUDA)
+  message(STATUS "BOLT CUDA acceleration: enabled (${BOLT_CUDA_ARCHITECTURES})")
+else()
+  message(STATUS "BOLT CUDA acceleration: disabled")
 endif()

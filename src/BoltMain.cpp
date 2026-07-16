@@ -228,6 +228,9 @@ int main(int argc, char *argv[]) {
 #ifdef USE_NEON
   cout << "Compiled with USE_NEON: fast packed genotype decoding" << endl;
 #endif
+#ifdef BOLT_USE_CUDA
+  cout << "Compiled with CUDA Step 1 acceleration" << endl;
+#endif
 #ifdef USE_MKL
   cout << "Compiled with USE_MKL: Intel Math Kernel Library linear algebra" << endl;
 #endif
@@ -410,7 +413,7 @@ int main(int argc, char *argv[]) {
 
   BoltParEstCV boltCV(snpData, covarDataT, &maskIndivs[0], params.covarCols,
 		      params.covarMaxLevels, params.covarUseMissingIndic, params.mBlockMultX,
-		      params.Nautosomes, params.bgenVariantsToTest);
+		      params.Nautosomes, params.bgenVariantsToTest, params.useCuda);
   const Bolt &bolt(boltCV.getBoltRef());
   cout << "Time for covariate data setup + Bolt initialization = " << timer.update_time()
        << " sec" << endl << endl;

@@ -32,6 +32,10 @@
 
 namespace LMM {
 
+#ifdef BOLT_USE_CUDA
+  class CudaStep1;
+#endif
+
   class Bolt : boost::noncopyable {
 
   public:
@@ -87,6 +91,10 @@ namespace LMM {
     int Nautosomes;
 
     const std::unordered_set <std::string> &bgenVariantsToTest;
+
+#ifdef BOLT_USE_CUDA
+    CudaStep1 *cudaStep1;
+#endif
 
     void init(void);
     uchar initMarker(uint64 m, double snpVector[]);
@@ -206,7 +214,7 @@ namespace LMM {
     Bolt(const SnpData &_snpData, const DataMatrix &_covarDataT, const double _maskIndivs[],
 	 const std::vector < std::pair <std::string, DataMatrix::ValueType> > &covars,
 	 int covarMaxLevels, bool covarUseMissingIndic, int _mBlockMultX, int _Nautosomes,
-	 const std::unordered_set <std::string> &_bgenVariantsToTest);
+	 const std::unordered_set <std::string> &_bgenVariantsToTest, bool useCuda=false);
 
     // Lightweight constructor for Stage 2. It does not initialize model genotypes.
     Bolt(const SnpData &_snpData, const std::vector <double> &_maskIndivs,

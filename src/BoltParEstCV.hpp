@@ -39,6 +39,7 @@ namespace LMM {
     const Bolt bolt; // analyses will be performed on indivs in bolt.getMaskIndivs()
     const std::vector < std::pair <std::string, DataMatrix::ValueType> > covars;
     const bool covarUseMissingIndic;
+    const bool useCuda;
     const std::unordered_set <std::string> &bgenVariantsToTest;
 
     struct ParamData {
@@ -53,9 +54,9 @@ namespace LMM {
 
     BoltParEstCV(const SnpData& _snpData, const DataMatrix& _covarDataT,
 		 const double subMaskIndivs[],
-		 const std::vector < std::pair <std::string, DataMatrix::ValueType> > &_covars,
-		 int covarMaxLevels, bool missingIndicator, int mBlockMultX, int Nautosomes,
-		 const std::unordered_set <std::string> &_bgenVariantsToTest);
+	 const std::vector < std::pair <std::string, DataMatrix::ValueType> > &_covars,
+	 int covarMaxLevels, bool missingIndicator, int mBlockMultX, int Nautosomes,
+	 const std::unordered_set <std::string> &_bgenVariantsToTest, bool _useCuda=false);
     
     /**
      * (f2, p) parameter estimation via cross-validation

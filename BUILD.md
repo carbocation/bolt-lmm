@@ -13,6 +13,7 @@ legacy Intel/Linux release environments.
 - NLopt, including its C++ header (`nlopt.hpp`)
 - OpenMP for multithreading; a serial build is available when it is absent
 - One of Intel oneMKL, OpenBLAS, Apple Accelerate, or system BLAS/LAPACK
+- Optional: CUDA Toolkit with cuBLAS for Step 1 GPU acceleration
 
 ## Standard build
 
@@ -73,6 +74,31 @@ modern x86-64 build can use
 `-DBOLT_CPU_TARGET=x86-64-v3 -DBOLT_CPU_TUNE=generic`; use `native` only for a
 binary that will stay on the build machine.
 
+## CUDA Step 1 acceleration
+
+CUDA support is opt-in and leaves the default CPU build unchanged. The GPU path
+accelerates the repeated projected `X X'` products used by variance estimation
+and the infinitesimal model, along with the block matrix operations in the
+Bayesian iterations. Packed 2-bit genotypes are transferred to the device and
+decoded there; expanded genotype matrices do not cross PCIe.
+
+For an NVIDIA A100 (compute capability 8.0):
+
+```sh
+cmake -S . -B build/cuda -DCMAKE_BUILD_TYPE=Release \
+  -DBOLT_CUDA=ON \
+  -DBOLT_CUDA_ARCHITECTURES=80 \
+  -DBOLT_BLAS=MKL \
+  -DBOLT_MKL_ROOT=/opt/intel/oneapi/mkl/latest
+cmake --build build/cuda --parallel
+ctest --test-dir build/cuda --output-on-failure
+```
+
+If `nvcc` is not on `PATH`, also set
+`-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`. Enable the runtime path with
+`--cuda` on a Stage 1 command. A CUDA-enabled binary continues to use the CPU
+path unless that flag is present.
+
 ## Configuration options
 
 - `BOLT_BLAS=AUTO|MKL|OPENBLAS|ACCELERATE|SYSTEM`
@@ -80,6 +106,7 @@ binary that will stay on the build machine.
 - `BOLT_SIMD=AUTO|SSE2|SCALAR`; AUTO uses SSE2 only on x86
 - `BOLT_CPU_TARGET=portable|native|<compiler-target>`
 - `BOLT_CPU_TUNE=<x86-tuning-target>`
+- `BOLT_CUDA=ON|OFF` and `BOLT_CUDA_ARCHITECTURES=<CMake architecture list>`
 - `BOLT_NLOPT_ROOT`, `BOLT_ZSTD_ROOT`, and backend-specific root paths for
   dependencies outside standard search locations
 

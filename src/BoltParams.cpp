@@ -187,7 +187,8 @@ namespace LMM {
       ("lmmForceNonInf", "compute non-inf assoc stats even if BOLT-LMM expects no power gain")
       ("modelSnps", po::value< vector <string> >(&modelSnpsFileTemplates),
        "file(s) listing SNPs to use in model (i.e., GRM) (default: use all non-excluded SNPs)")
-      ("cuda", "use CUDA acceleration for supported Step 1 matrix operations")
+      ("cuda", "use CUDA acceleration (default for Stage 1 in CUDA-enabled builds)")
+      ("no-cuda", "disable CUDA acceleration in a CUDA-enabled build")
 
       // calibration parameters
       ("LDscoresFile", po::value<string>(&LDscoresFile),
@@ -420,7 +421,15 @@ namespace LMM {
       lmmBayes = vm.count("lmm") || lmmForceNonInf;
       lmmBayesMCMC = vm.count("lmmBayesMCMC");
       lmmInf = vm.count("lmmInfOnly") || lmmBayes || lmmBayesMCMC; // Bayes needs inf for calib
+      if (vm.count("cuda") && vm.count("no-cuda")) {
+	cerr << "ERROR: --cuda and --no-cuda cannot be used together" << endl;
+	return false;
+      }
+#ifdef BOLT_USE_CUDA
+      useCuda = stage == 1 && !vm.count("no-cuda");
+#else
       useCuda = vm.count("cuda");
+#endif
       LDscoresUseChip = vm.count("LDscoresUseChip");
       LDscoresMatchBp = vm.count("LDscoresMatchBp");
       verboseStats = vm.count("verboseStats");
@@ -456,7 +465,7 @@ namespace LMM {
 	  (vm.count("phenoFile") || vm.count("phenoCol") || phenoUseFam || vm.count("covarFile") ||
 	   vm.count("covarCol") || vm.count("qCovarCol") || vm.count("modelSnps") ||
 	   vm.count("remove") || reml || lmmInf || vm.count("predBetasFile") ||
-	   vm.count("snpInfoFile") || useCuda)) {
+	   vm.count("snpInfoFile") || vm.count("cuda") || vm.count("no-cuda"))) {
 	cerr << "ERROR: Phenotype, covariate, model-fitting, and prediction options are Stage 1 options"
 	     << endl;
 	return false;

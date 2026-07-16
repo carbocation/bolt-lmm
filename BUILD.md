@@ -106,9 +106,11 @@ ctest --test-dir build/cuda --output-on-failure
 ```
 
 If `nvcc` is not on `PATH`, also set
-`-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`. Enable the runtime path with
-`--cuda` on a Stage 1 command. A CUDA-enabled binary continues to use the CPU
-path unless that flag is present.
+`-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`. CUDA-enabled binaries use the
+GPU path by default for Stage 1. Pass `--no-cuda` to force the CPU path for
+testing or comparison. The existing `--cuda` flag remains accepted for command
+line compatibility. Builds made without `BOLT_CUDA=ON` retain the CPU-only
+default and have no CUDA runtime dependency.
 
 ## Configuration options
 

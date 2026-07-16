@@ -443,6 +443,19 @@ namespace LMM {
   void Bolt::multXtrans(double XtransVecs[], const double vCovCompVecs[], uint64 B)
     const {
 
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL) {
+#ifdef MEASURE_DGEMM
+      const unsigned long long cudaTsc = Timer::rdtsc();
+#endif
+      cudaStep1->multXtrans(XtransVecs, vCovCompVecs, B);
+#ifdef MEASURE_DGEMM
+      dgemmTicks += Timer::rdtsc() - cudaTsc;
+#endif
+      return;
+    }
+#endif
+
     const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
     double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * (Nstride+Cstride));
     double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
@@ -1512,21 +1525,33 @@ namespace LMM {
     // pheno has now been projected and normalized to vector norm 1
 
     // note: pheno already has covariates projected out, so no need for covar comps
-    double *snpVec = ALIGNED_MALLOC_DOUBLES(Nstride);
-    double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
-  
-    for (uint64 m = 0; m < M; m++)
-      if (projMaskSnps[m]) {
-	snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m], work,
-				     maskCoversAllIndivs);
-	// pheno has vector norm 1 and is orthogonal to covariates
-	// ||snpVec||^2 = Xnorm2s[m]
-	// dot product is really taking place in Nused-Cindep free dimensions: scale to get chisq
-	stats[m] = NumericUtils::sq(NumericUtils::dot(snpVec, &pheno[0], Nstride)) / Xnorm2s[m]
-	  * (Nused-Cindep);
-      }
-    ALIGNED_FREE(work);
-    ALIGNED_FREE(snpVec);
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL) {
+      vector <double> phenoCovCompVec(Nstride+Cstride), snpProducts(M);
+      memcpy(&phenoCovCompVec[0], &pheno[0], Nstride*sizeof(pheno[0]));
+      multXtrans(&snpProducts[0], &phenoCovCompVec[0], 1);
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m])
+	  stats[m] = NumericUtils::sq(snpProducts[m]) / Xnorm2s[m] * (Nused-Cindep);
+    }
+    else
+#endif
+    {
+      double *snpVec = ALIGNED_MALLOC_DOUBLES(Nstride);
+      double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m]) {
+	  snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m], work,
+				       maskCoversAllIndivs);
+	  // pheno has vector norm 1 and is orthogonal to covariates
+	  // ||snpVec||^2 = Xnorm2s[m]
+	  // dot product is in Nused-Cindep free dimensions: scale to get chisq
+	  stats[m] = NumericUtils::sq(NumericUtils::dot(snpVec, &pheno[0], Nstride)) /
+	    Xnorm2s[m] * (Nused-Cindep);
+	}
+      ALIGNED_FREE(work);
+      ALIGNED_FREE(snpVec);
+    }
 
     // save calibrated "residual" (i.e., pheno)
     double residFactor = sqrt((double) (Nused-Cindep));
@@ -1578,21 +1603,41 @@ namespace LMM {
 
     vector <double> stats(M, BAD_SNP_STAT);
 
-    double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
-    double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
-    for (uint64 m = 0; m < M; m++)
-      if (projMaskSnps[m]) {
-	const double *phenoResidCovCompVec =
-	  phenoResidCovCompVecs + chunkAssignments[m]*(Nstride+Cstride);
-	
-	// build snp vector + sign-flipped covar comps
-	buildMaskedSnpNegCovCompVec(snpCovCompVec, m, work);
-	
-	// compute LINREG on Bayes residual: (x_m^T phi_resid^m / (||x_m|| * ||phi_resid^m||))^2
-	double dotProd = NumericUtils::dot(snpCovCompVec, phenoResidCovCompVec, Nstride+Cstride);
-	stats[m] = NumericUtils::sq(dotProd) / resNorm2s[chunkAssignments[m]] / Xnorm2s[m]
-	  * (Nused-Cindep);
-      }
+    double *snpCovCompVec = NULL;
+    double (*work)[4] = NULL;
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL) {
+      double *snpProducts = ALIGNED_MALLOC_DOUBLES(M*numLeaveOutChunks);
+      multXtrans(snpProducts, phenoResidCovCompVecs, numLeaveOutChunks);
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m]) {
+	  const int chunk = chunkAssignments[m];
+	  const double dotProd = snpProducts[m*numLeaveOutChunks + chunk];
+	  stats[m] = NumericUtils::sq(dotProd) / resNorm2s[chunk] / Xnorm2s[m]
+	    * (Nused-Cindep);
+	}
+      ALIGNED_FREE(snpProducts);
+    }
+    else
+#endif
+    {
+      snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
+      work = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m]) {
+	  const double *phenoResidCovCompVec =
+	    phenoResidCovCompVecs + chunkAssignments[m]*(Nstride+Cstride);
+
+	  // build snp vector + sign-flipped covar comps
+	  buildMaskedSnpNegCovCompVec(snpCovCompVec, m, work);
+
+	  // compute LINREG on Bayes residual
+	  double dotProd = NumericUtils::dot(snpCovCompVec, phenoResidCovCompVec,
+				       Nstride+Cstride);
+	  stats[m] = NumericUtils::sq(dotProd) / resNorm2s[chunkAssignments[m]] /
+	    Xnorm2s[m] * (Nused-Cindep);
+	}
+    }
     
     /***** calibrate statistics by matching LDscore regression intercept to inf. model stats *****/
     
@@ -1617,8 +1662,8 @@ namespace LMM {
       covBasis.projectCovars(&calibratedResids[i][0]);
     }
 
-    ALIGNED_FREE(work);
-    ALIGNED_FREE(snpCovCompVec);
+    if (work != NULL) ALIGNED_FREE(work);
+    if (snpCovCompVec != NULL) ALIGNED_FREE(snpCovCompVec);
     ALIGNED_FREE(batchMaskSnps);
     ALIGNED_FREE(phenoResidCovCompVecs);
 
@@ -1697,15 +1742,31 @@ namespace LMM {
     // compute uncalibrated MLMe retrospective statistic (GRAMMAR = LINREG on BLUP resid):
     //   (N-C) * (x_m^T H_chunk[m]^-1 phi / (||x_m|| * ||H_chunk[m]^-1 phi||))^2
     vector <double> stats(M, BAD_SNP_STAT);
-    for (uint64 m = 0; m < M; m++)
-      if (projMaskSnps[m]) {
-	buildMaskedSnpNegCovCompVec(covCompVec, m, work);
-	int i = chunkAssignments[m];
-	stats[m] =
-	  NumericUtils::sq(NumericUtils::dot(HinvPhiCovCompVecs + i*(Nstride+Cstride),
-					     covCompVec, Nstride+Cstride))
-	  / HinvPhiNorm2s[i] / Xnorm2s[m] * (Nused-Cindep);
-      }
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL) {
+      double *snpProducts = ALIGNED_MALLOC_DOUBLES(M*numLeaveOutChunks);
+      multXtrans(snpProducts, HinvPhiCovCompVecs, numLeaveOutChunks);
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m]) {
+	  const int i = chunkAssignments[m];
+	  stats[m] = NumericUtils::sq(snpProducts[m*numLeaveOutChunks + i]) /
+	    HinvPhiNorm2s[i] / Xnorm2s[m] * (Nused-Cindep);
+	}
+      ALIGNED_FREE(snpProducts);
+    }
+    else
+#endif
+    {
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m]) {
+	  buildMaskedSnpNegCovCompVec(covCompVec, m, work);
+	  int i = chunkAssignments[m];
+	  stats[m] =
+	    NumericUtils::sq(NumericUtils::dot(HinvPhiCovCompVecs + i*(Nstride+Cstride),
+					       covCompVec, Nstride+Cstride))
+	    / HinvPhiNorm2s[i] / Xnorm2s[m] * (Nused-Cindep);
+	}
+    }
     /*
     double phenoNorm2 = computeProjNorm2(rhsCovCompVecs);
     cout << "phenoNorm2: " << phenoNorm2 << endl;

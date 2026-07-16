@@ -136,6 +136,23 @@ int main() {
     return 1;
   }
 
+  std::vector<double> expectedMultXtrans(M*B, 0), observedMultXtrans(M*B);
+  for (uint64 m = 0; m < M; m++)
+    for (uint64 b = 0; b < B; b++)
+      for (uint64 nc = 0; nc < NCstride; nc++)
+        expectedMultXtrans[m*B+b] += input[b*NCstride+nc] * xNeg[m*NCstride+nc];
+  cuda.multXtrans(observedMultXtrans.data(), input.data(), B);
+  double maxMultXtransError = 0;
+  for (uint64 i = 0; i < observedMultXtrans.size(); i++)
+    maxMultXtransError = std::max(maxMultXtransError,
+                                  std::fabs(observedMultXtrans[i] -
+                                            expectedMultXtrans[i]));
+  if (maxMultXtransError > 1e-11) {
+    std::cerr << "CUDA Step 1 X transpose parity failure: max absolute error = "
+              << maxMultXtransError << std::endl;
+    return 1;
+  }
+
   const uchar activeMaskSnps[M] = {1, 0, 1, 1, 1};
   const uint64 Bleft = 2;
   std::vector<double> residual = input, expectedResidual = input;
@@ -191,6 +208,7 @@ int main() {
 
   std::cout << "CUDA Step 1 parity max absolute errors: projected multiply = "
             << maxAbsError << ", X beta = " << maxMultXError
+            << ", X transpose = " << maxMultXtransError
             << ", Bayesian iteration = " << maxBayesError << std::endl;
   return 0;
 }

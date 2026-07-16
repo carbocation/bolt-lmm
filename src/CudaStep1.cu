@@ -301,6 +301,38 @@ namespace LMM {
                 "copy CUDA X beta output vectors to host");
     }
 
+    void multiplyXtrans(double hostOut[], const double hostIn[], uint64 B) {
+      ensureBatchCapacity(B);
+      checkCuda(cudaMemcpy(inCovCompVecs, hostIn,
+                           B * NCstride * sizeof(*inCovCompVecs), cudaMemcpyHostToDevice),
+                "copy X transpose input vectors to CUDA");
+
+      const unsigned int threads = 256;
+      const double one = 1.0, zero = 0.0;
+      for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
+        const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
+        checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
+                             blockSize * bytesPerSnp * sizeof(*packedBlock),
+                             cudaMemcpyHostToDevice),
+                  "copy packed X transpose block to CUDA");
+
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+          (snpBlock, packedBlock, maskIndivs, lookup, negCovComps, projMaskSnps,
+           nullptr, m0, blockSize, Nstride, Cstride);
+        checkCuda(cudaGetLastError(), "launch CUDA X transpose genotype decoder");
+
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                static_cast<int>(B), static_cast<int>(blockSize),
+                                static_cast<int>(NCstride), &one, inCovCompVecs,
+                                static_cast<int>(NCstride), snpBlock,
+                                static_cast<int>(NCstride), &zero, Xtrans,
+                                static_cast<int>(B)), "cuBLAS X transpose multiply");
+        checkCuda(cudaMemcpy(hostOut + m0 * B, Xtrans,
+                             blockSize * B * sizeof(*Xtrans), cudaMemcpyDeviceToHost),
+                  "copy CUDA X transpose products to host");
+      }
+    }
+
     void beginBayes(const double yResid[], const uchar activeMask[], uint64 B) {
       ensureBatchCapacity(B);
       checkCuda(cudaMemcpy(inCovCompVecs, yResid, B * NCstride * sizeof(*inCovCompVecs),
@@ -410,6 +442,11 @@ namespace LMM {
                         bool applyIndivMask, bool positiveCovariateComponents) {
     impl->multiplyX(outCovCompVecs, coefficients, B, applyIndivMask,
                     positiveCovariateComponents);
+  }
+
+  void CudaStep1::multXtrans(double outSnpProducts[], const double inCovCompVecs[],
+                             uint64 B) {
+    impl->multiplyXtrans(outSnpProducts, inCovCompVecs, B);
   }
 
   void CudaStep1::beginBayesIteration(const double yResidCovCompVecs[],

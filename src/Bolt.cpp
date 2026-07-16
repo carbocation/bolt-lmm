@@ -3536,7 +3536,7 @@ namespace LMM {
 	B++;
 
       if (B == B_MAX || mbgen+1 == Mbgen) { // process the block of SNPs using multi-threading
-#ifdef USE_MKL
+#ifdef BOLT_USE_OPENMP
 #pragma omp parallel for schedule(dynamic)
 #endif
 	for (int b = 0; b < B; b++) {

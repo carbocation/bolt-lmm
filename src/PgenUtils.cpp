@@ -289,8 +289,9 @@ namespace LMM {
         snp.ID = fields[idCol];
         snp.chrom = SnpData::chrStrToInt(fields[chromCol], Nauto);
         snp.physpos = parseInt(fields[posCol], "POS", pvarFile, lineNum);
+        // PVAR CM values are centimorgans; BOLT stores genetic positions in Morgans.
         snp.genpos = cmCol == -1 || fields[cmCol] == "." ? 0 :
-          parseDouble(fields[cmCol], "CM", pvarFile, lineNum);
+          0.01 * parseDouble(fields[cmCol], "CM", pvarFile, lineNum);
         snp.allele1 = fields[altCol];
         snp.allele2 = fields[refCol];
         if (snp.allele1.find(',') != string::npos) {
@@ -329,6 +330,13 @@ namespace LMM {
       if (N&3)
         out[packedBytes-1] &= (1U << (2*(N&3))) - 1;
       memset(out + packedBytes, 0, (Nstride/4-packedBytes) * sizeof(out[0]));
+    }
+
+    void packedPgenToGeno(uchar out[], const uchar in[],
+                          const vector<int> &sourceToTarget) {
+      const uchar pgenToGeno[4] = {0, 1, 2, 9};
+      for (uint64 source = 0; source < sourceToTarget.size(); source++)
+        out[sourceToTarget[source]] = pgenToGeno[(in[source>>2] >> (2*(source&3))) & 3];
     }
 
   }

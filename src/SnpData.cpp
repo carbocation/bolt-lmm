@@ -1121,7 +1121,7 @@ namespace LMM {
 
   SnpData::SnpData(const vector < pair <string, string> > &_indivIds,
 		   const vector <double> &_maskIndivs, uint64 _Nstride,
-		   const string &famFile, int _Nautosomes) :
+		   const string &sampleFile, int _Nautosomes, bool psamFormat) :
     Mbed(0), Nbed(0), M(0), N(_indivIds.size()), Nstride(_Nstride), genotypes(NULL),
     maskSnps(NULL), maskIndivs(NULL), numIndivsQC(0), mapAvailable(false),
     bedIndivsIdentity(false), Nautosomes(_Nautosomes) {
@@ -1151,36 +1151,51 @@ namespace LMM {
     }
     vcNames.push_back("");
 
-    if (!famFile.empty()) {
-      FileUtils::AutoGzIfstream fin; fin.openOrExit(famFile);
-      string line;
-      vector <bool> found(N, false);
-      while (getline(fin, line)) {
-	std::istringstream iss(line);
-	string FID, IID, paternalID, maternalID, pheno;
-	int sex;
-	if (!(iss >> FID >> IID >> paternalID >> maternalID >> sex >> pheno)) {
-	  cerr << "ERROR: Incorrectly formatted fam file: " << famFile << endl;
-	  exit(1);
+    if (!sampleFile.empty()) {
+      vector < pair <string, string> > inputIds;
+      if (psamFormat) {
+	vector <PgenUtils::SampleInfo> psamIndivs = PgenUtils::readPsamFile(sampleFile);
+	inputIds.reserve(psamIndivs.size());
+	for (uint64 n = 0; n < psamIndivs.size(); n++)
+	  inputIds.push_back(std::make_pair(psamIndivs[n].famID, psamIndivs[n].indivID));
+      }
+      else {
+	FileUtils::AutoGzIfstream fin; fin.openOrExit(sampleFile);
+	string line;
+	while (getline(fin, line)) {
+	  std::istringstream iss(line);
+	  string FID, IID, paternalID, maternalID, pheno;
+	  int sex;
+	  if (!(iss >> FID >> IID >> paternalID >> maternalID >> sex >> pheno)) {
+	    cerr << "ERROR: Incorrectly formatted fam file: " << sampleFile << endl;
+	    exit(1);
+	  }
+	  inputIds.push_back(std::make_pair(FID, IID));
 	}
-	string key = FID + " " + IID;
+	fin.close();
+      }
+
+      vector <bool> found(N, false);
+      for (uint64 inputInd = 0; inputInd < inputIds.size(); inputInd++) {
+	string key = inputIds[inputInd].first + " " + inputIds[inputInd].second;
 	std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
 	if (it == FID_IID_to_ind.end())
 	  bedIndivToRemoveIndex.push_back(-1);
 	else {
 	  if (found[it->second]) {
-	    cerr << "ERROR: Duplicate Stage 1 sample in fam file: " << key << endl;
+	    cerr << "ERROR: Duplicate Stage 1 sample in " << (psamFormat ? "psam" : "fam")
+		 << " file: " << key << endl;
 	    exit(1);
 	  }
 	  found[it->second] = true;
 	  bedIndivToRemoveIndex.push_back(it->second);
 	}
       }
-      fin.close();
       Nbed = bedIndivToRemoveIndex.size();
       for (uint64 n = 0; n < N; n++)
 	if (!found[n]) {
-	  cerr << "ERROR: Stage 1 sample is missing from Stage 2 fam file: "
+	  cerr << "ERROR: Stage 1 sample is missing from Stage 2 "
+	       << (psamFormat ? "psam" : "fam") << " file: "
 	       << _indivIds[n].first << " " << _indivIds[n].second << endl;
 	  exit(1);
 	}
@@ -1250,6 +1265,9 @@ namespace LMM {
   // don't provide getN: don't want the rest of the program to even know N!
   uint64 SnpData::getNstride(void) const { return Nstride; }
   uint64 SnpData::getNbed(void) const { return Nbed; }
+  const vector <int> &SnpData::getInputIndivToModelIndex(void) const {
+    return bedIndivToRemoveIndex;
+  }
   uint64 SnpData::getNumIndivsQC(void) const { return numIndivsQC; }
   const double* SnpData::getMaskIndivs(void) const { return maskIndivs; }
   void SnpData::writeMaskIndivs(double out[]) const {

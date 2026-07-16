@@ -25,6 +25,13 @@ ctest --test-dir build --output-on-failure
 The executable is written to `build/bolt`. The equivalent convenience command
 is `make`; additional CMake options can be supplied through `CMAKE_ARGS`.
 
+## PLINK 2 hardcall input
+
+Use `--pfile PREFIX` in either Stage 1 or Stage 2 to read
+`PREFIX.pgen`, `PREFIX.pvar` (or `.pvar.gz`), and `PREFIX.psam` (or `.psam.gz`).
+BOLT accepts biallelic variants and intentionally reads the PGEN hardcall
+component; dosage overrides in the PGEN are reported and ignored.
+
 ## macOS on Apple Silicon
 
 Apple Accelerate is the default linear-algebra backend. Homebrew's OpenBLAS can

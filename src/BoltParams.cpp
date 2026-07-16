@@ -145,7 +145,7 @@ namespace LMM {
       ("bfile", po::value<string>(), "prefix of PLINK .fam, .bim, .bed files")
       ("bfilegz", po::value<string>(), "prefix of PLINK .fam.gz, .bim.gz, .bed.gz files")
       ("pfile", po::value<string>(&pfilePrefix),
-       "prefix of PLINK 2 .pgen, .pvar[.gz], .psam[.gz] files (biallelic hardcalls)")
+       "PLINK 2 prefix for Stage 1/2 (biallelic hardcalls; PGEN dosages are ignored)")
       ("fam", po::value<string>(&famFile),
        "PLINK .fam file (note: file names ending in .gz are auto-[de]compressed)")
       ("bim", po::value< vector <string> >(&bimFileTemplates)/*->multitoken()*/,
@@ -997,8 +997,8 @@ namespace LMM {
 	return false;
       }
       if (stage == 2 && !statsFile.empty() &&
-	  (famFile.empty() || bimFiles.empty() || bedFiles.empty())) {
-	cerr << "ERROR: --statsFile in Stage 2 requires PLINK --bfile or --fam,--bim,--bed input"
+	  pgenFile.empty() && (famFile.empty() || bimFiles.empty() || bedFiles.empty())) {
+	cerr << "ERROR: --statsFile in Stage 2 requires --pfile, --bfile, or --fam,--bim,--bed input"
 	     << endl;
 	return false;
       }

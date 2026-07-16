@@ -130,10 +130,10 @@ namespace LMM {
             std::vector <std::string> vcNamesIn=std::vector <std::string> (),
             bool loadNonModelSnps=true, int _Nautosomes=22);
 
-    // Stage 2 sample state. If famFile is set, also initializes PLINK BED sample mapping.
+    // Stage 2 sample state. If sampleFile is set, also initializes input sample mapping.
     SnpData(const std::vector < std::pair <std::string, std::string> > &_indivIds,
 	    const std::vector <double> &_maskIndivs, uint64 _Nstride,
-	    const std::string &famFile, int _Nautosomes=22);
+	    const std::string &sampleFile, int _Nautosomes=22, bool psamFormat=false);
 
     ~SnpData();
 
@@ -174,6 +174,7 @@ namespace LMM {
     // don't provide getN: don't want the rest of the program to even know N!
     uint64 getNstride(void) const;
     uint64 getNbed(void) const;
+    const std::vector <int> &getInputIndivToModelIndex(void) const;
     const double* getMaskIndivs(void) const;
     uint64 getNumIndivsQC(void) const;
     void writeMaskSnps(uchar out[]) const;

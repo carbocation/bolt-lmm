@@ -141,11 +141,18 @@ namespace {
 static void runStage2(const BoltParams &params, const Bolt &bolt,
 		      const vector <Bolt::StatsDataRetroLOCO> &retroData, Timer &timer) {
   if (!params.statsFile.empty() && params.statsFile != "/dev/null") {
-    cout << endl << "=== Streaming PLINK genotypes and writing association stats ===" << endl;
-    bolt.streamComputeRetroLOCO(params.statsFile, params.bimFiles, params.bedFiles,
-				params.geneticMapFile, params.excludeFiles,
-				params.maxMissingPerSnp, params.verboseStats, retroData);
-    cout << endl << "Time for PLINK association readout = " << timer.update_time()
+    cout << endl << "=== Streaming " << (params.pgenFile.empty() ? "PLINK" : "PGEN hardcall")
+	 << " genotypes and writing association stats ===" << endl;
+    if (params.pgenFile.empty())
+      bolt.streamComputeRetroLOCO(params.statsFile, params.bimFiles, params.bedFiles,
+				  params.geneticMapFile, params.excludeFiles,
+				  params.maxMissingPerSnp, params.verboseStats, retroData);
+    else
+      bolt.streamComputeRetroLOCOPgen(params.statsFile, params.pgenFile, params.pvarFile,
+				      params.geneticMapFile, params.excludeFiles,
+				      params.maxMissingPerSnp, params.verboseStats, retroData);
+    cout << endl << "Time for " << (params.pgenFile.empty() ? "PLINK" : "PGEN hardcall")
+	 << " association readout = " << timer.update_time()
 	 << " sec" << endl << endl;
   }
 
@@ -293,8 +300,9 @@ int main(int argc, char *argv[]) {
 	if (it->statName == "LINREG") it = model.retroData.erase(it);
 	else ++it;
       }
-    SnpData snpData(model.indivIds, model.maskIndivs, model.Nstride, params.famFile,
-		    model.Nautosomes);
+    const string &sampleFile = params.pgenFile.empty() ? params.famFile : params.psamFile;
+    SnpData snpData(model.indivIds, model.maskIndivs, model.Nstride, sampleFile,
+		    model.Nautosomes, !params.pgenFile.empty());
     Bolt bolt(snpData, model.maskIndivs, model.covBasis, model.Cindep, model.Nautosomes,
 	      params.bgenVariantsToTest);
     vector<double>().swap(model.maskIndivs);

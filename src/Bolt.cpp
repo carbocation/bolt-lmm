@@ -17,6 +17,7 @@
 */
 
 #include <cmath>
+#include <climits>
 #include <cstring>
 #include <cstdio>
 #include <array>
@@ -48,6 +49,8 @@
 #include "SnpData.hpp"
 #include "CovariateBasis.hpp"
 #include "NumericUtils.hpp"
+#include "PgenUtils.hpp"
+#include "pgenlibr.h"
 #include "LapackConst.hpp"
 #include "MemoryUtils.hpp"
 #include "Jackknife.hpp"
@@ -2648,6 +2651,127 @@ namespace LMM {
     if (work != NULL) ALIGNED_FREE(work);
     ALIGNED_FREE(snpCovCompVec);
     ALIGNED_FREE(bedLineIn);
+    if (genoLine != NULL) ALIGNED_FREE(genoLine);
+    fout.close();
+  }
+
+  void Bolt::streamComputeRetroLOCOPgen
+  (const string &outFile, const string &pgenFile, const string &pvarFile,
+   const string &geneticMapFile, const vector <string> &excludeFiles,
+   double maxMissingPerSnp, bool verboseStats,
+   const vector <StatsDataRetroLOCO> &retroData) const {
+
+    FileUtils::AutoGzOfstream fout; fout.openOrExit(outFile);
+    printStatsHeader(fout, verboseStats, false, retroData);
+
+    std::unordered_set <string> excludeSnps, seenSnps;
+    for (uint f = 0; f < excludeFiles.size(); f++) {
+      FileUtils::AutoGzIfstream finExclude; finExclude.openOrExit(excludeFiles[f]);
+      string ID, line;
+      while (finExclude >> ID) { excludeSnps.insert(ID); getline(finExclude, line); }
+      finExclude.close();
+    }
+    vector <SnpInfo> variants = PgenUtils::readPvarFile(pvarFile, Nautosomes, &excludeSnps);
+    if (variants.size() > INT_MAX) {
+      cerr << "ERROR: PGEN variant count exceeds the range supported by the bundled reader"
+	   << endl;
+      exit(1);
+    }
+
+    const vector <int> &inputToModel = snpData.getInputIndivToModelIndex();
+    if (inputToModel.size() != snpData.getNbed() || inputToModel.empty()) {
+      cerr << "ERROR: PGEN Stage 2 sample mapping was not initialized" << endl;
+      exit(1);
+    }
+    if (snpData.getNbed() > INT_MAX) {
+      cerr << "ERROR: PGEN sample count exceeds the range supported by the bundled reader"
+	   << endl;
+      exit(1);
+    }
+    vector <int> subsetIndices1based, subsetToModel;
+    subsetIndices1based.reserve(inputToModel.size());
+    subsetToModel.reserve(inputToModel.size());
+    for (uint64 inputInd = 0; inputInd < inputToModel.size(); inputInd++)
+      if (inputToModel[inputInd] != -1) {
+	subsetIndices1based.push_back(static_cast<int>(inputInd+1));
+	subsetToModel.push_back(inputToModel[inputInd]);
+      }
+    const uint64 modelSampleCount = subsetToModel.size();
+    if (modelSampleCount == inputToModel.size()) subsetIndices1based.clear();
+
+    ::PgenReader pgenReader;
+    pgenReader.Load(pgenFile, static_cast<uint32_t>(snpData.getNbed()),
+		    subsetIndices1based, 1);
+    if (pgenReader.GetRawSampleCt() != snpData.getNbed()) {
+      cerr << "ERROR: Number of samples in pgen file (" << pgenReader.GetRawSampleCt()
+	   << ") does not match psam file (" << snpData.getNbed() << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetSubsetSize() != modelSampleCount) {
+      cerr << "ERROR: PGEN sample subset does not match the Stage 1 model" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetVariantCt() != variants.size()) {
+      cerr << "ERROR: Number of variants in pgen file (" << pgenReader.GetVariantCt()
+	   << ") does not match pvar file (" << variants.size() << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetMaxAlleleCt() != 2) {
+      cerr << "ERROR: Only biallelic PGEN variants are supported" << endl;
+      exit(1);
+    }
+    if (pgenReader.DosagePresent())
+      cout << "NOTE: PGEN dosages are present; Stage 2 uses hardcalls and ignores dosage overrides"
+	   << endl;
+
+    MapInterpolater mapInterpolater(geneticMapFile);
+    const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
+    const bool usePackedIdentity = allIndivsIncluded && snpData.getBedIndivsIdentity();
+    const uint64 packedBytes = (modelSampleCount+3)>>2;
+    vector <uchar> pgenLine(packedBytes);
+    vector <uchar> bedLine(usePackedIdentity ? Nstride/4 : 0);
+    uchar *genoLine = usePackedIdentity ? NULL : ALIGNED_MALLOC_UCHARS(Nstride);
+    double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
+    double (*work)[4] = usePackedIdentity ?
+      (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work)) : NULL;
+    memset(snpCovCompVec, 0, (Nstride+Cstride)*sizeof(snpCovCompVec[0]));
+
+    for (uint64 variantIndex = 0; variantIndex < variants.size(); variantIndex++) {
+      SnpInfo &snp = variants[variantIndex];
+      const bool firstOccurrence = seenSnps.insert(snp.ID).second;
+      const bool include = firstOccurrence && excludeSnps.find(snp.ID) == excludeSnps.end();
+      if (!include) continue;
+      if (!geneticMapFile.empty())
+	snp.genpos = mapInterpolater.interp(snp.chrom, snp.physpos);
+
+      pgenReader.ReadHardcallsPacked(pgenLine.data(), packedBytes, modelSampleCount, 0,
+				     variantIndex, 1);
+      double missing, alleleFreq;
+      if (usePackedIdentity) {
+	PgenUtils::packedPgenToBed(bedLine.data(), pgenLine.data(), modelSampleCount,
+				       Nstride);
+	alleleFreq = snpData.computeIdentityBedAlleleFreqAndMissing(bedLine.data(), &missing);
+      }
+      else {
+	PgenUtils::packedPgenToGeno(genoLine, pgenLine.data(), subsetToModel);
+	alleleFreq = snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing,
+						       allIndivsIncluded);
+      }
+      if (missing > maxMissingPerSnp) continue;
+
+      if (usePackedIdentity)
+	snpData.identityBedLineToSnpVector(snpCovCompVec, bedLine.data(), alleleFreq, work);
+      else
+	snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
+					  allIndivsIncluded);
+      fout << getSnpStats(snp.ID, snp.chrom, snp.physpos, snp.genpos, snp.allele1,
+			  snp.allele2, alleleFreq, missing, snpCovCompVec,
+			  verboseStats, retroData);
+    }
+
+    pgenReader.Close();
+    if (work != NULL) ALIGNED_FREE(work);
+    ALIGNED_FREE(snpCovCompVec);
     if (genoLine != NULL) ALIGNED_FREE(genoLine);
     fout.close();
   }

@@ -367,6 +367,11 @@ namespace LMM {
      const std::vector <std::string> &bedFiles, const std::string &geneticMapFile,
      const std::vector <std::string> &excludeFiles, double maxMissingPerSnp,
      bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData) const;
+    void streamComputeRetroLOCOPgen
+    (const std::string &outFile, const std::string &pgenFile,
+     const std::string &pvarFile, const std::string &geneticMapFile,
+     const std::vector <std::string> &excludeFiles, double maxMissingPerSnp,
+     bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData) const;
     void streamDosages
     (const std::string &outFile, const std::vector <std::string> &dosageFiles,
      const std::string &dosageFidIidFile, const std::string &geneticMapFile, bool verboseStats,

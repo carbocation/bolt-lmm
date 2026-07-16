@@ -48,6 +48,11 @@ namespace LMM {
     // BED bit encoding used by SnpData. out has Nstride/4 bytes.
     void packedPgenToBed(uchar out[], const uchar in[], uint64 N, uint64 Nstride);
 
+    // Expands pgenlib codes and scatters source-order samples into model order.
+    // sourceToTarget contains one target index for each packed input sample.
+    void packedPgenToGeno(uchar out[], const uchar in[],
+                          const std::vector<int> &sourceToTarget);
+
   }
 }
 

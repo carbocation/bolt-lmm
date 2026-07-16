@@ -33,6 +33,14 @@ Use `--pfile PREFIX` in either Stage 1 or Stage 2 to read
 BOLT accepts biallelic variants and intentionally reads the PGEN hardcall
 component; dosage overrides in the PGEN are reported and ignored.
 
+Stage 1 keeps a BED-coded 2-bit cache because its numerical kernels revisit
+variants many times. When this cache would exceed half of physical RAM, BOLT
+automatically creates an unlinked, file-backed cache under `TMPDIR` (or `/tmp`).
+Use `--pgenCacheDir DIR` to choose local scratch storage explicitly; specifying
+the option also forces file-backed storage, which is useful for testing and for
+leaving RAM available to operating-system and model working sets. BOLT reports
+the required cache size and checks available scratch space before loading.
+
 ## macOS on Apple Silicon
 
 Apple Accelerate is the default linear-algebra backend. Homebrew's OpenBLAS can

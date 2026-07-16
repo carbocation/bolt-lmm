@@ -21,13 +21,20 @@
 #include <cassert>
 #include <array>
 #include <climits>
+#include <cerrno>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <map>
 #include <unordered_set>
 #include <utility>
+
+#include <sys/mman.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
 
 #ifdef USE_SSE
 #include <emmintrin.h> // SSE2 for packed doubles
@@ -91,6 +98,26 @@ namespace LMM {
     }
 
     const std::array<BedByteStats, 256> BED_BYTE_STATS = makeBedByteStats();
+
+    uint64 physicalMemoryBytes() {
+      const long pages = sysconf(_SC_PHYS_PAGES);
+      const long pageSize = sysconf(_SC_PAGESIZE);
+      if (pages <= 0 || pageSize <= 0)
+	return 0;
+      if (static_cast<uint64>(pages) >
+	  std::numeric_limits<uint64>::max() / static_cast<uint64>(pageSize))
+	return 0;
+      return static_cast<uint64>(pages) * static_cast<uint64>(pageSize);
+    }
+
+    string defaultCacheDir() {
+      const char *tmpDir = std::getenv("TMPDIR");
+      return tmpDir && *tmpDir ? tmpDir : "/tmp";
+    }
+
+    double bytesToGiB(uint64 bytes) {
+      return bytes / static_cast<double>(1ULL << 30);
+    }
 
   }
 
@@ -881,7 +908,8 @@ namespace LMM {
 		   const vector <string> &removeFiles,
 		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
 		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes)
-    : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL), maskSnps(NULL),
+    : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL),
+      genotypeStorageBytes(0), genotypesFileBacked(false), maskSnps(NULL),
       maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
       Nautosomes(_Nautosomes) {
     
@@ -1017,14 +1045,83 @@ namespace LMM {
     }
   }
 
+  void SnpData::allocatePgenGenotypes(uint64 bytes, const string &cacheDirIn) {
+    genotypeStorageBytes = bytes;
+    const uint64 memoryBytes = physicalMemoryBytes();
+    const bool forceFileBacked = !cacheDirIn.empty();
+    genotypesFileBacked = forceFileBacked || (memoryBytes && bytes > memoryBytes / 2);
+    if (!genotypesFileBacked) {
+      genotypes = ALIGNED_MALLOC_UCHARS(bytes);
+      return;
+    }
+
+    const string cacheDir = forceFileBacked ? cacheDirIn : defaultCacheDir();
+    struct statvfs fsInfo;
+    if (statvfs(cacheDir.c_str(), &fsInfo) != 0) {
+      cerr << "ERROR: Unable to inspect PGEN cache directory " << cacheDir << ": "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+    const uint64 freeBytes = static_cast<uint64>(fsInfo.f_bavail) * fsInfo.f_frsize;
+    if (freeBytes < bytes) {
+      cerr << "ERROR: PGEN Stage 1 cache requires " << std::fixed << std::setprecision(1)
+	   << bytesToGiB(bytes) << " GiB, but only " << bytesToGiB(freeBytes)
+	   << " GiB is available in " << cacheDir << endl;
+      exit(1);
+    }
+
+    string cacheTemplate = cacheDir;
+    if (cacheTemplate.empty() || cacheTemplate.back() != '/') cacheTemplate += '/';
+    cacheTemplate += "bolt-pgen-stage1-XXXXXX";
+    vector<char> cachePath(cacheTemplate.begin(), cacheTemplate.end());
+    cachePath.push_back('\0');
+    const int fd = mkstemp(cachePath.data());
+    if (fd == -1) {
+      cerr << "ERROR: Unable to create PGEN Stage 1 cache in " << cacheDir << ": "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+
+    cout << "Using file-backed PGEN Stage 1 cache in " << cacheDir << " ("
+	 << std::fixed << std::setprecision(1) << bytesToGiB(bytes) << " GiB; "
+	 << (forceFileBacked ? "requested by --pgenCacheDir" :
+	     "packed genotypes exceed half of physical RAM") << ")" << endl;
+    if (unlink(cachePath.data()) != 0) {
+      const int savedErrno = errno;
+      close(fd);
+      cerr << "ERROR: Unable to unlink temporary PGEN cache " << cachePath.data()
+	   << ": " << std::strerror(savedErrno) << endl;
+      exit(1);
+    }
+    if (bytes > static_cast<uint64>(std::numeric_limits<off_t>::max()) ||
+	ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+      const int savedErrno = errno;
+      close(fd);
+      cerr << "ERROR: Unable to size temporary PGEN cache: "
+	   << std::strerror(savedErrno) << endl;
+      exit(1);
+    }
+    void *mapping = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    const int mapErrno = errno;
+    close(fd);
+    if (mapping == MAP_FAILED) {
+      cerr << "ERROR: Unable to map temporary PGEN cache: "
+	   << std::strerror(mapErrno) << endl;
+      exit(1);
+    }
+    genotypes = static_cast<uchar *>(mapping);
+  }
+
   SnpData::SnpData(const string &pgenFile, const string &pvarFile,
 		   const string &psamFile, const string &geneticMapFile,
 		   const vector <string> &excludeFiles,
 		   const vector <string> &modelSnpsFiles,
 		   const vector <string> &removeFiles,
 		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
-		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes)
-    : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL), maskSnps(NULL),
+		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes,
+		   const string &pgenCacheDir)
+    : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL),
+      genotypeStorageBytes(0), genotypesFileBacked(false), maskSnps(NULL),
       maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
       Nautosomes(_Nautosomes) {
 
@@ -1046,8 +1143,13 @@ namespace LMM {
       exit(1);
     }
 
+    if (M > std::numeric_limits<uint64>::max() / (Nstride/4)) {
+      cerr << "ERROR: Packed PGEN genotype dimensions overflow addressable storage" << endl;
+      exit(1);
+    }
+    const uint64 genotypeBytes = M * (Nstride/4);
     cout << "Allocating " << M << " x " << Nstride << "/4 bytes to store genotypes" << endl;
-    genotypes = ALIGNED_MALLOC_UCHARS(M * Nstride/4);
+    allocatePgenGenotypes(genotypeBytes, pgenCacheDir);
     numIndivsQC = N;
 
     vector <int> subsetIndices1based;
@@ -1123,6 +1225,7 @@ namespace LMM {
 		   const vector <double> &_maskIndivs, uint64 _Nstride,
 		   const string &sampleFile, int _Nautosomes, bool psamFormat) :
     Mbed(0), Nbed(0), M(0), N(_indivIds.size()), Nstride(_Nstride), genotypes(NULL),
+    genotypeStorageBytes(0), genotypesFileBacked(false),
     maskSnps(NULL), maskIndivs(NULL), numIndivsQC(0), mapAvailable(false),
     bedIndivsIdentity(false), Nautosomes(_Nautosomes) {
     if (Nstride < N || (Nstride&3) || _maskIndivs.size() != Nstride) {
@@ -1206,14 +1309,23 @@ namespace LMM {
   }
 
   SnpData::~SnpData() {
-    if (genotypes!=NULL) ALIGNED_FREE(genotypes);
+    freeGenotypes();
     if (maskSnps!=NULL) ALIGNED_FREE(maskSnps);
     if (maskIndivs!=NULL) ALIGNED_FREE(maskIndivs);
   }
 
   void SnpData::freeGenotypes() {
-    ALIGNED_FREE(genotypes);
+    if (genotypes == NULL) return;
+    if (genotypesFileBacked) {
+      if (munmap(genotypes, genotypeStorageBytes) != 0)
+	cerr << "WARNING: Unable to unmap PGEN Stage 1 cache: "
+	     << std::strerror(errno) << endl;
+    }
+    else
+      ALIGNED_FREE(genotypes);
     genotypes = NULL;
+    genotypeStorageBytes = 0;
+    genotypesFileBacked = false;
   }
 
   vector <SnpInfo> SnpData::readBimFile(const string &bimFile, int Nauto,
@@ -1283,6 +1395,7 @@ namespace LMM {
   }
   bool SnpData::getMapAvailable(void) const { return mapAvailable; }
   const uchar* SnpData::getGenotypes(void) const { return genotypes; }
+  bool SnpData::getGenotypesFileBacked(void) const { return genotypesFileBacked; }
   int SnpData::getNumVCs(void) const { return vcNames.size()-1; }
   std::vector <string> SnpData::getVCnames(void) const { return vcNames; }
   vector < pair <string, string> > SnpData::getIndivIds(void) const {

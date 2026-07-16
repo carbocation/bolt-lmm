@@ -27,7 +27,10 @@ int main(int argc, char **argv) {
                    std::vector<std::string>(1, prefix + ".bed"), "", empty, empty,
                    removeFiles, 1.0, 1.0, false);
   LMM::SnpData pgen(prefix + ".pgen", prefix + ".pvar", prefix + ".psam", "",
-                    empty, empty, removeFiles, 1.0, 1.0, false);
+                    empty, empty, removeFiles, 1.0, 1.0, false, empty, true, 22, dir);
+
+  if (!pgen.getGenotypesFileBacked())
+    return fail("explicit cache directory did not select file-backed storage");
 
   if (bed.getM() != pgen.getM()) return fail("post-QC variant counts differ");
   if (bed.getNstride() != pgen.getNstride()) return fail("sample strides differ");

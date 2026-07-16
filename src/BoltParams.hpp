@@ -44,6 +44,7 @@ namespace LMM {
     std::vector <std::string> bimFiles, bedFiles; // possibly multiple files and/or range templates
     std::string pfilePrefix;
     std::string pgenFile, pvarFile, psamFile;
+    std::string pgenCacheDir;
 
     // optional reference map file for filling in genpos
     std::string geneticMapFile;

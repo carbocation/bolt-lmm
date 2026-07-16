@@ -341,8 +341,9 @@ int main(int argc, char *argv[]) {
 				 params.geneticMapFile, params.excludeFiles,
 				 params.modelSnpsFiles, params.removeFiles,
 				 params.maxMissingPerSnp, params.maxMissingPerIndiv,
-				 params.noMapCheck, params.remlGuessVCnames,
-				 !params.reml && params.lmmInf, params.Nautosomes));
+			 params.noMapCheck, params.remlGuessVCnames,
+			 !params.reml && params.lmmInf, params.Nautosomes,
+			 params.pgenCacheDir));
   else
     snpDataPtr.reset(new SnpData(params.famFile, params.bimFiles, params.bedFiles,
 				 params.geneticMapFile, params.excludeFiles,

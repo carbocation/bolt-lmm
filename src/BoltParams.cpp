@@ -245,6 +245,8 @@ namespace LMM {
       ("noBgenIDcheck", "disable automatic check of match between PLINK and BGEN sample IDs")
       ("maxModelSnps", po::value<int>(&maxModelSnps)->default_value(1000000),
        "an error-check: if millions of SNPs are imputed, it's inefficient to use them all")
+      ("pgenCacheDir", po::value<string>(&pgenCacheDir),
+       "scratch directory for a file-backed Stage 1 PGEN hardcall cache")
       ("covarMaxLevels", po::value<int>(&covarMaxLevels)->default_value(10),
        "an error-check: maximum number of levels for a categorical covariate")
       ("maxBgenVariantsToScan", po::value<uint>(&maxBgenVariantsToScan)->default_value(100000),
@@ -406,6 +408,10 @@ namespace LMM {
 	pgenFile = pfiles.pgenFile;
 	pvarFile = pfiles.pvarFile;
 	psamFile = pfiles.psamFile;
+      }
+      if (!pgenCacheDir.empty() && (stage != 1 || pgenFile.empty())) {
+	cerr << "ERROR: --pgenCacheDir requires Stage 1 --pfile input" << endl;
+	return false;
       }
 
       phenoUseFam = vm.count("phenoUseFam");

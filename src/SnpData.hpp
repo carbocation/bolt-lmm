@@ -48,6 +48,8 @@ namespace LMM {
     // Nstride = stride length of genotype lines stored in memory
     uint64 M, N, Nstride; // post-remove (but pre-QC) indivs, post-exclude and post-QC snps
     uchar *genotypes; // [[MATRIX]]: M x Nstride/4 (PLINK bed format, restricted to M x N)
+    uint64 genotypeStorageBytes;
+    bool genotypesFileBacked;
 
     // maskSnps is all-1s M-vector (currently unused; keep in case masking is eventually needed)
     // maskIndivs is zero-filled to Nstride; only indivs failing missingness QC are masked
@@ -104,6 +106,7 @@ namespace LMM {
 					     int numMissingPerIndiv[]) const;
     void finishGenoQc(const std::vector <int> &numMissingPerIndiv,
                       double maxMissingPerIndiv);
+    void allocatePgenGenotypes(uint64 bytes, const std::string &cacheDir);
 
   public:
     /**    
@@ -128,7 +131,8 @@ namespace LMM {
             const std::vector <std::string> &removeFiles,
             double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
             std::vector <std::string> vcNamesIn=std::vector <std::string> (),
-            bool loadNonModelSnps=true, int _Nautosomes=22);
+            bool loadNonModelSnps=true, int _Nautosomes=22,
+            const std::string &pgenCacheDir="");
 
     // Stage 2 sample state. If sampleFile is set, also initializes input sample mapping.
     SnpData(const std::vector < std::pair <std::string, std::string> > &_indivIds,
@@ -184,6 +188,7 @@ namespace LMM {
     std::vector <double> getFamPhenos(void) const;    
     bool getMapAvailable(void) const;
     const uchar* getGenotypes(void) const;
+    bool getGenotypesFileBacked(void) const;
     int getNumVCs(void) const;
     std::vector <std::string> getVCnames(void) const;
     std::vector < std::pair <std::string, std::string> > getIndivIds(void) const;

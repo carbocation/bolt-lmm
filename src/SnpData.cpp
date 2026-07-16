@@ -691,6 +691,8 @@ namespace LMM {
     return true;
   }
 
+  bool SnpData::getBedIndivsIdentity(void) const { return bedIndivsIdentity; }
+
   double SnpData::computeAlleleFreqAndMissing(const uchar genoLine[],
 					      const double subMaskIndivs[],
 					      double *missing,
@@ -788,6 +790,34 @@ namespace LMM {
     }
     for (uint64 n = N; n < Nstride; n++)
       maskedSnpVector[n] = 0;
+  }
+
+  void SnpData::identityBedLineToSnpVector(double out[], const uchar bedLine[],
+					    double alleleFreq, double (*work)[4]) const {
+    const double mean = 2*alleleFreq;
+    const double lookupBedCode[4] = {2-mean, 0, 1-mean, -mean};
+    buildByteLookup(work, lookupBedCode);
+
+    const uint64 Nfull = N & ~(uint64) 3;
+    const uchar *ptr = bedLine;
+    for (uint64 n4 = 0; n4 < Nfull; n4 += 4) {
+#if defined(USE_SSE)
+      _mm_store_pd(&out[n4], _mm_load_pd(&work[*ptr][0]));
+      _mm_store_pd(&out[n4+2], _mm_load_pd(&work[*ptr][2]));
+#elif defined(USE_NEON)
+      vst1q_f64(&out[n4], vld1q_f64(&work[*ptr][0]));
+      vst1q_f64(&out[n4+2], vld1q_f64(&work[*ptr][2]));
+#else
+      memcpy(out + n4, work[*ptr], sizeof(work[0]));
+#endif
+      ptr++;
+    }
+    if (Nfull != N) {
+      for (uint64 n = Nfull; n < N; n++)
+	out[n] = work[*ptr][n&3];
+    }
+    for (uint64 n = N; n < Nstride; n++)
+      out[n] = 0;
   }
   // assumes maskedSnpVector has dimension Nstride; zero-fills
   // note alleleFreq != MAF: alleleFreq = (mean allele count) / 2 and has full range [0..1]!

@@ -98,7 +98,6 @@ namespace LMM {
 		    bool noMapCheck);
     void storeBedLineAndCountMissing(uchar bedLineOut[], const uchar genoLine[],
 				     int numMissingPerIndiv[]);
-    double computeIdentityBedAlleleFreqAndMissing(const uchar bedLine[], double *missing) const;
     void storeIdentityBedLineAndCountMissing(uchar bedLineOut[], const uchar bedLineIn[],
 					     int numMissingPerIndiv[]) const;
 
@@ -137,6 +136,10 @@ namespace LMM {
      */
     void readBedLine(uchar genoLine[], uchar bedLineIn[], FileUtils::AutoGzIfstream &fin,
 		     bool loadGenoLine) const;
+    bool getBedIndivsIdentity(void) const;
+    double computeIdentityBedAlleleFreqAndMissing(const uchar bedLine[], double *missing) const;
+    void identityBedLineToSnpVector(double out[], const uchar bedLine[], double alleleFreq,
+				    double (*work)[4]) const;
     bool allIndivsIncluded(const double subMaskIndivs[]) const;
     double computeAlleleFreqAndMissing(const uchar genoLine[], const double subMaskIndivs[],
 				       double *missing, bool allIndivsIncluded=false) const;

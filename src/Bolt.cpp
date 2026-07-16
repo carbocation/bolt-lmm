@@ -2536,11 +2536,14 @@ namespace LMM {
     }
 
     FileUtils::AutoGzIfstream finBim, finBed;
-    uchar *genoLine = ALIGNED_MALLOC_UCHARS(Nstride);
+    const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
+    const bool usePackedIdentity = allIndivsIncluded && snpData.getBedIndivsIdentity();
+    uchar *genoLine = usePackedIdentity ? NULL : ALIGNED_MALLOC_UCHARS(Nstride);
     uchar *bedLineIn = ALIGNED_MALLOC_UCHARS((snpData.getNbed()+3)>>2);
     double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
+    double (*work)[4] = usePackedIdentity ?
+      (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work)) : NULL;
     memset(snpCovCompVec, 0, (Nstride+Cstride)*sizeof(snpCovCompVec[0])); // important!
-    const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
 
     for (uint f = 0; f < bimFiles.size(); f++) {
       finBim.openOrExit(bimFiles[f]);
@@ -2564,9 +2567,6 @@ namespace LMM {
 	  exit(1);
 	}
 	
-	// read bed genotypes
-	snpData.readBedLine(genoLine, bedLineIn, finBed, true);
-
 	bool firstOccurrence = seenSnps.insert(ID).second;
 	bool include = firstOccurrence && excludeSnps.find(ID) == excludeSnps.end();
 	int chrom = SnpData::chrStrToInt(chromStr, Nautosomes);
@@ -2576,14 +2576,25 @@ namespace LMM {
 	  exit(1);
 	}
 	if (include && !geneticMapFile.empty()) genpos = mapInterpolater.interp(chrom, physpos);
+
+	// read bed genotypes; packed identity-order data need not be expanded to bytes
+	if (usePackedIdentity)
+	  finBed.read((char *) bedLineIn, (snpData.getNbed()+3)>>2);
+	else
+	  snpData.readBedLine(genoLine, bedLineIn, finBed, include);
+
 	if (include) {
 	  double missing;
-	  const double alleleFreq =
+	  const double alleleFreq = usePackedIdentity ?
+	    snpData.computeIdentityBedAlleleFreqAndMissing(bedLineIn, &missing) :
 	    snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing,
-						  allIndivsIncluded);
+					  allIndivsIncluded);
 	  if (missing <= maxMissingPerSnp) {
-	    snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
-					       allIndivsIncluded);
+	    if (usePackedIdentity)
+	      snpData.identityBedLineToSnpVector(snpCovCompVec, bedLineIn, alleleFreq, work);
+	    else
+	      snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
+						 allIndivsIncluded);
 	    fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, alleleFreq, missing,
 			 snpCovCompVec, verboseStats, retroData);
 	  }
@@ -2597,9 +2608,10 @@ namespace LMM {
       finBim.close();
     }
 
+    if (work != NULL) ALIGNED_FREE(work);
     ALIGNED_FREE(snpCovCompVec);
     ALIGNED_FREE(bedLineIn);
-    ALIGNED_FREE(genoLine);
+    if (genoLine != NULL) ALIGNED_FREE(genoLine);
     fout.close();
   }
 

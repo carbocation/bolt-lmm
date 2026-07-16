@@ -32,6 +32,7 @@
 #include "PhenoBuilder.hpp"
 #include "MatrixUtils.hpp"
 #include "BoltParams.hpp"
+#include "PgenUtils.hpp"
 
 #include <boost/program_options.hpp>
 #include <boost/numeric/ublas/matrix.hpp>
@@ -143,6 +144,8 @@ namespace LMM {
       // genotype data parameters
       ("bfile", po::value<string>(), "prefix of PLINK .fam, .bim, .bed files")
       ("bfilegz", po::value<string>(), "prefix of PLINK .fam.gz, .bim.gz, .bed.gz files")
+      ("pfile", po::value<string>(&pfilePrefix),
+       "prefix of PLINK 2 .pgen, .pvar[.gz], .psam[.gz] files (biallelic hardcalls)")
       ("fam", po::value<string>(&famFile),
        "PLINK .fam file (note: file names ending in .gz are auto-[de]compressed)")
       ("bim", po::value< vector <string> >(&bimFileTemplates)/*->multitoken()*/,
@@ -166,7 +169,7 @@ namespace LMM {
       ("phenoFile", po::value<string>(&phenoFile),
        "phenotype file (header required; FID IID must be first two columns)")
       ("phenoCol", po::value< vector <string> >(&phenoCols), "phenotype column header")
-      ("phenoUseFam", "use last (6th) column of .fam file as phenotype")
+      ("phenoUseFam", "use phenotype column of .fam/.psam file")
       ("covarFile", po::value<string>(&covarFile),
        "covariate file (header required; FID IID must be first two columns)")
       ("covarCol", po::value< vector <string> >(&covarColTemplates),
@@ -374,10 +377,10 @@ namespace LMM {
 	cerr << "ERROR: --stage1Model is required (output for Stage 1; input for Stage 2)" << endl;
 	return false;
       }
-      int numPlinkFormats = vm.count("bfile") + vm.count("bfilegz") +
+      int numPlinkFormats = vm.count("bfile") + vm.count("bfilegz") + vm.count("pfile") +
 	(vm.count("fam") || vm.count("bim") || vm.count("bed"));
       if ((stage == 1 && numPlinkFormats != 1) || (stage == 2 && numPlinkFormats > 1)) {
-	cerr << "ERROR: Use one of --bfile, --bfilegz, or --fam,--bim,--bed"
+	cerr << "ERROR: Use one of --bfile, --bfilegz, --pfile, or --fam,--bim,--bed"
 	     << (stage == 2 ? " (PLINK input is optional in Stage 2)" : "") << endl;
 	return false;
       }
@@ -394,6 +397,13 @@ namespace LMM {
 	famFile = bfile + ".fam.gz";
 	bimFileTemplates.push_back(bfile + ".bim.gz");
 	bedFileTemplates.push_back(bfile + ".bed.gz");
+      }
+
+      if (vm.count("pfile")) {
+	PgenUtils::FileSet pfiles = PgenUtils::resolvePrefix(pfilePrefix);
+	pgenFile = pfiles.pgenFile;
+	pvarFile = pfiles.pvarFile;
+	psamFile = pfiles.psamFile;
       }
 
       phenoUseFam = vm.count("phenoUseFam");
@@ -450,18 +460,18 @@ namespace LMM {
 	return false;
       }
 
-      if (stage == 1 && famFile.empty()) {
-	cerr << "ERROR: fam file must be specified either using --fam or --bfile"
+      if (stage == 1 && famFile.empty() && pgenFile.empty()) {
+	cerr << "ERROR: Sample data must be specified using --pfile, --fam, or --bfile"
 	     << endl;
 	return false;
       }
-      if (stage == 1 && bimFileTemplates.empty()) {
-	cerr << "ERROR: bim file(s) must be specified either using --bim or --bfile"
+      if (stage == 1 && bimFileTemplates.empty() && pgenFile.empty()) {
+	cerr << "ERROR: Variant data must be specified using --pfile, --bim, or --bfile"
 	     << endl;
 	return false;
       }
-      if (stage == 1 && bedFileTemplates.empty()) {
-	cerr << "ERROR: bed file(s) must be specified either using --bed or --bfile"
+      if (stage == 1 && bedFileTemplates.empty() && pgenFile.empty()) {
+	cerr << "ERROR: Genotypes must be specified using --pfile, --bed, or --bfile"
 	     << endl;
 	return false;
       }
@@ -997,6 +1007,9 @@ namespace LMM {
       FileUtils::requireEmptyOrReadable(famFile);
       FileUtils::requireEachEmptyOrReadable(bimFiles);
       FileUtils::requireEachEmptyOrReadable(bedFiles);
+      FileUtils::requireEmptyOrReadable(pgenFile);
+      FileUtils::requireEmptyOrReadable(pvarFile);
+      FileUtils::requireEmptyOrReadable(psamFile);
       FileUtils::requireEmptyOrReadable(geneticMapFile);
       FileUtils::requireEachEmptyOrReadable(removeFiles);
       FileUtils::requireEachEmptyOrReadable(excludeFiles);

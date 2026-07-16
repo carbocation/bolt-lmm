@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cassert>
 #include <array>
+#include <climits>
 #include <iomanip>
 #include <iostream>
 #include <fstream>
@@ -43,6 +44,8 @@
 #include "MemoryUtils.hpp"
 #include "MapInterpolater.hpp"
 #include "LapackConst.hpp"
+#include "PgenUtils.hpp"
+#include "pgenlibr.h"
 
 namespace LMM {
 
@@ -245,32 +248,55 @@ namespace LMM {
     }
   }
 
-  void SnpData::processIndivs(const string &famFile, const vector <string> &removeFiles) {
+  void SnpData::processIndivs(const string &sampleFile, const vector <string> &removeFiles,
+                              bool psamFormat) {
     string line;
 
     vector <IndivInfo> bedIndivs;
-    FileUtils::AutoGzIfstream fin; fin.openOrExit(famFile);
-    while (getline(fin, line)) {
-      std::istringstream iss(line);
-      IndivInfo indiv; string phenoStr;
-      if (!(iss >> indiv.famID >> indiv.indivID >> indiv.paternalID >> indiv.maternalID
-	    >> indiv.sex >> phenoStr)) {
-	cerr << "ERROR: Incorrectly formatted fam file: " << famFile << endl;
-	cerr << "Line " << bedIndivs.size()+1 << ":" << endl;
-	cerr << line << endl;
-	cerr << "Unable to input 6 values (4 string, 1 int, 1 double/string)" << endl;
-	exit(1);
+    FileUtils::AutoGzIfstream fin;
+    if (psamFormat) {
+      vector <PgenUtils::SampleInfo> psamIndivs = PgenUtils::readPsamFile(sampleFile);
+      bedIndivs.reserve(psamIndivs.size());
+      for (uint64 n = 0; n < psamIndivs.size(); n++) {
+	IndivInfo indiv;
+	indiv.famID = psamIndivs[n].famID;
+	indiv.indivID = psamIndivs[n].indivID;
+	indiv.paternalID = psamIndivs[n].paternalID;
+	indiv.maternalID = psamIndivs[n].maternalID;
+	indiv.sex = psamIndivs[n].sex;
+	indiv.pheno = psamIndivs[n].pheno;
+	bedIndivs.push_back(std::move(indiv));
       }
-      if (sscanf(phenoStr.c_str(), "%lf", &indiv.pheno) != 1)
-	indiv.pheno = -9;
-      string combined_ID = indiv.famID + " " + indiv.indivID;
-      if (!FID_IID_to_ind.emplace(combined_ID, bedIndivs.size()).second) {
-	cerr << "ERROR: Duplicate individual in fam file at line " << bedIndivs.size()+1 << endl;
-	exit(1);
-      }
-      bedIndivs.push_back(std::move(indiv));
     }
-    fin.close();
+    else {
+      fin.openOrExit(sampleFile);
+      while (getline(fin, line)) {
+	std::istringstream iss(line);
+	IndivInfo indiv; string phenoStr;
+	if (!(iss >> indiv.famID >> indiv.indivID >> indiv.paternalID >> indiv.maternalID
+	      >> indiv.sex >> phenoStr)) {
+	  cerr << "ERROR: Incorrectly formatted fam file: " << sampleFile << endl;
+	  cerr << "Line " << bedIndivs.size()+1 << ":" << endl;
+	  cerr << line << endl;
+	  cerr << "Unable to input 6 values (4 string, 1 int, 1 double/string)" << endl;
+	  exit(1);
+	}
+	if (sscanf(phenoStr.c_str(), "%lf", &indiv.pheno) != 1)
+	  indiv.pheno = -9;
+	bedIndivs.push_back(std::move(indiv));
+      }
+      fin.close();
+    }
+
+    FID_IID_to_ind.reserve(bedIndivs.size());
+    for (uint64 n = 0; n < bedIndivs.size(); n++) {
+      string combined_ID = bedIndivs[n].famID + " " + bedIndivs[n].indivID;
+      if (!FID_IID_to_ind.emplace(combined_ID, n).second) {
+	cerr << "ERROR: Duplicate individual in " << (psamFormat ? "psam" : "fam")
+	     << " file at sample " << n+1 << endl;
+	exit(1);
+      }
+    }
     Nbed = bedIndivs.size();
 
     cout << "Total indivs in PLINK data: Nbed = " << Nbed << endl;
@@ -340,10 +366,12 @@ namespace LMM {
     for (uint64 n = N; n < Nstride; n++) maskIndivs[n] = 0;
   }
 
-  vector <SnpInfo> SnpData::processSnps(vector <uint64> &Mfiles, const vector <string> &bimFiles,
+  vector <SnpInfo> SnpData::processSnps(vector <uint64> &Mfiles,
+					const vector <string> &variantFiles,
 					const vector <string> &excludeFiles,
 					const vector <string> &modelSnpsFiles,
-					const vector <string> &vcNamesIn, bool loadNonModelSnps) {
+					const vector <string> &vcNamesIn, bool loadNonModelSnps,
+					bool pvarFormat) {
     FileUtils::AutoGzIfstream fin;
     string line;
 
@@ -363,10 +391,13 @@ namespace LMM {
     }
 
     vector <SnpInfo> bedSnps;
-    // read bim files
-    for (uint i = 0; i < bimFiles.size(); i++) {
-      cout << "Reading bim file #" << (i+1) << ": " << bimFiles[i] << endl;
-      vector <SnpInfo> snps_i = readBimFile(bimFiles[i], Nautosomes, &excludeSnps);
+    // read variant metadata files
+    for (uint i = 0; i < variantFiles.size(); i++) {
+      cout << "Reading " << (pvarFormat ? "pvar" : "bim") << " file #" << (i+1)
+	   << ": " << variantFiles[i] << endl;
+      vector <SnpInfo> snps_i = pvarFormat ?
+	PgenUtils::readPvarFile(variantFiles[i], Nautosomes, &excludeSnps) :
+	readBimFile(variantFiles[i], Nautosomes, &excludeSnps);
       bedSnps.insert(bedSnps.end(), snps_i.begin(), snps_i.end());
       Mfiles.push_back(snps_i.size());
       cout << "    Read " << Mfiles.back() << " snps" << endl;
@@ -854,11 +885,11 @@ namespace LMM {
       maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
       Nautosomes(_Nautosomes) {
     
-    processIndivs(famFile, removeFiles);
+    processIndivs(famFile, removeFiles, false);
     // bedSnps = all snps in PLINK data; will filter and QC to create class member 'snps'
     vector <uint64> Mfiles;
     vector <SnpInfo> bedSnps = processSnps(Mfiles, bimFiles, excludeFiles, modelSnpsFiles,
-					   vcNamesIn, loadNonModelSnps);
+					   vcNamesIn, loadNonModelSnps, false);
     processMap(bedSnps, geneticMapFile, noMapCheck);
 
     // allocate genotypes
@@ -941,6 +972,11 @@ namespace LMM {
       fin.close();
     }
 
+    finishGenoQc(numMissingPerIndiv, maxMissingPerIndiv);
+  }
+
+  void SnpData::finishGenoQc(const vector <int> &numMissingPerIndiv,
+			     double maxMissingPerIndiv) {
     M = snps.size();
 
     // allocate and initialize maskSnps to all good
@@ -979,6 +1015,108 @@ namespace LMM {
 	exit(1);
       }
     }
+  }
+
+  SnpData::SnpData(const string &pgenFile, const string &pvarFile,
+		   const string &psamFile, const string &geneticMapFile,
+		   const vector <string> &excludeFiles,
+		   const vector <string> &modelSnpsFiles,
+		   const vector <string> &removeFiles,
+		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
+		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes)
+    : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL), maskSnps(NULL),
+      maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
+      Nautosomes(_Nautosomes) {
+
+    processIndivs(psamFile, removeFiles, true);
+    vector <uint64> Mfiles;
+    vector <string> pvarFiles(1, pvarFile);
+    vector <SnpInfo> bedSnps = processSnps(Mfiles, pvarFiles, excludeFiles,
+					   modelSnpsFiles, vcNamesIn,
+					   loadNonModelSnps, true);
+    processMap(bedSnps, geneticMapFile, noMapCheck);
+
+    if (N == 0) {
+      cerr << "ERROR: No samples remain after applying remove files" << endl;
+      exit(1);
+    }
+    if (Nbed > INT_MAX || Mbed > INT_MAX) {
+      cerr << "ERROR: PGEN dimensions exceed the range supported by the bundled reader"
+	   << endl;
+      exit(1);
+    }
+
+    cout << "Allocating " << M << " x " << Nstride << "/4 bytes to store genotypes" << endl;
+    genotypes = ALIGNED_MALLOC_UCHARS(M * Nstride/4);
+    numIndivsQC = N;
+
+    vector <int> subsetIndices1based;
+    if (!bedIndivsIdentity) {
+      subsetIndices1based.reserve(N);
+      for (uint64 nbed = 0; nbed < Nbed; nbed++)
+	if (bedIndivToRemoveIndex[nbed] != -1)
+	  subsetIndices1based.push_back(static_cast<int>(nbed+1));
+    }
+
+    ::PgenReader pgenReader;
+    pgenReader.Load(pgenFile, static_cast<uint32_t>(Nbed), subsetIndices1based, 1);
+    if (pgenReader.GetRawSampleCt() != Nbed) {
+      cerr << "ERROR: Number of samples in pgen file (" << pgenReader.GetRawSampleCt()
+	   << ") does not match psam file (" << Nbed << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetVariantCt() != Mbed) {
+      cerr << "ERROR: Number of variants in pgen file (" << pgenReader.GetVariantCt()
+	   << ") does not match pvar file (" << Mbed << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetMaxAlleleCt() != 2) {
+      cerr << "ERROR: Only biallelic PGEN variants are supported" << endl;
+      exit(1);
+    }
+    if (pgenReader.DosagePresent())
+      cout << "NOTE: PGEN dosages are present; Stage 1 uses hardcalls and ignores dosage overrides"
+	   << endl;
+
+    cout << "Reading PGEN hardcalls and performing QC filtering on snps and indivs..." << endl;
+    const uint64 packedBytes = (N+3)>>2;
+    vector <uchar> pgenLine(packedBytes);
+    vector <uchar> bedLine(Nstride/4);
+    vector <int> numMissingPerIndiv(N);
+    uchar *bedLineOut = genotypes;
+    int numSnpsFailedQC = 0;
+    for (uint64 mbed = 0; mbed < Mbed; mbed++) {
+      if (bedSnpToGrmIndex[mbed] == -2) continue;
+
+      pgenReader.ReadHardcallsPacked(pgenLine.data(), packedBytes, N, 0, mbed, 1);
+      PgenUtils::packedPgenToBed(bedLine.data(), pgenLine.data(), N, Nstride);
+      double snpMissing;
+      const double alleleFreq = computeIdentityBedAlleleFreqAndMissing(bedLine.data(),
+							       &snpMissing);
+      if (snpMissing <= maxMissingPerSnp) {
+	if (bedSnpToGrmIndex[mbed] >= 0) {
+	  storeIdentityBedLineAndCountMissing(bedLineOut, bedLine.data(),
+					       numMissingPerIndiv.data());
+	  bedLineOut += Nstride>>2;
+	  bedSnpToGrmIndex[mbed] = snps.size();
+	  snps.push_back(bedSnps[mbed]);
+	  snps.back().MAF = std::min(alleleFreq, 1.0-alleleFreq);
+	}
+      }
+      else {
+	bedSnpToGrmIndex[mbed] = -2;
+	if (numSnpsFailedQC < 5)
+	  cout << "Filtering snp " << bedSnps[mbed].ID << ": "
+	       << snpMissing << " missing" << endl;
+	numSnpsFailedQC++;
+      }
+    }
+    pgenReader.Close();
+
+    if (numSnpsFailedQC)
+      cout << "Filtered " << numSnpsFailedQC << " SNPs with > " << maxMissingPerSnp
+	   << " missing" << endl;
+    finishGenoQc(numMissingPerIndiv, maxMissingPerIndiv);
   }
 
   SnpData::SnpData(const vector < pair <string, string> > &_indivIds,

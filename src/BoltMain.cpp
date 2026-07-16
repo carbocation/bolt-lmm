@@ -20,6 +20,7 @@
 #include <string>
 #include <set>
 #include <iostream>
+#include <memory>
 #include <fstream>
 #include <algorithm>
 #include <numeric>
@@ -306,20 +307,39 @@ int main(int argc, char *argv[]) {
     return 0;
   }
   
-  cout << "fam: " << params.famFile << endl;
-  cout << "bim(s): ";
-  for (uint i = 0; i < params.bimFiles.size(); i++) cout << params.bimFiles[i] << endl;
-  cout << "bed(s): ";
-  for (uint i = 0; i < params.bedFiles.size(); i++) cout << params.bedFiles[i] << endl;
+  if (!params.pgenFile.empty()) {
+    cout << "pgen: " << params.pgenFile << endl;
+    cout << "pvar: " << params.pvarFile << endl;
+    cout << "psam: " << params.psamFile << endl;
+  }
+  else {
+    cout << "fam: " << params.famFile << endl;
+    cout << "bim(s): ";
+    for (uint i = 0; i < params.bimFiles.size(); i++) cout << params.bimFiles[i] << endl;
+    cout << "bed(s): ";
+    for (uint i = 0; i < params.bedFiles.size(); i++) cout << params.bedFiles[i] << endl;
+  }
 
   /***** SET UP SNPDATA *****/
 
   cout << endl << "=== Reading genotype data ===" << endl << endl;
 
-  SnpData snpData(params.famFile, params.bimFiles, params.bedFiles, params.geneticMapFile,
-		  params.excludeFiles, params.modelSnpsFiles, params.removeFiles,
-		  params.maxMissingPerSnp, params.maxMissingPerIndiv, params.noMapCheck,
-		  params.remlGuessVCnames, !params.reml && params.lmmInf, params.Nautosomes);
+  std::unique_ptr<SnpData> snpDataPtr;
+  if (!params.pgenFile.empty())
+    snpDataPtr.reset(new SnpData(params.pgenFile, params.pvarFile, params.psamFile,
+				 params.geneticMapFile, params.excludeFiles,
+				 params.modelSnpsFiles, params.removeFiles,
+				 params.maxMissingPerSnp, params.maxMissingPerIndiv,
+				 params.noMapCheck, params.remlGuessVCnames,
+				 !params.reml && params.lmmInf, params.Nautosomes));
+  else
+    snpDataPtr.reset(new SnpData(params.famFile, params.bimFiles, params.bedFiles,
+				 params.geneticMapFile, params.excludeFiles,
+				 params.modelSnpsFiles, params.removeFiles,
+				 params.maxMissingPerSnp, params.maxMissingPerIndiv,
+				 params.noMapCheck, params.remlGuessVCnames,
+				 !params.reml && params.lmmInf, params.Nautosomes));
+  SnpData &snpData = *snpDataPtr;
   const vector <SnpInfo> &snps = snpData.getSnpInfo();
   // snpData status at this point:
   // - N = # of indivs in .fam file not in --remove file

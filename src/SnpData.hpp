@@ -87,19 +87,23 @@ namespace LMM {
     bool fillSnpSubRowNorm1(float x[], uint64 m, const std::vector <int> &indivs) const;
     
 
-    void processIndivs(const std::string &famFile, const std::vector <std::string> &removeFiles);
+    void processIndivs(const std::string &sampleFile,
+                       const std::vector <std::string> &removeFiles,
+                       bool psamFormat);
     std::vector <SnpInfo> processSnps(std::vector <uint64> &Mfiles,
-				      const std::vector <std::string> &bimFiles,
+				      const std::vector <std::string> &variantFiles,
 				      const std::vector <std::string> &excludeFiles,
 				      const std::vector <std::string> &modelSnpsFiles,
 				      const std::vector <std::string> &vcNamesIn,
-				      bool loadNonModelSnps);
+				      bool loadNonModelSnps, bool pvarFormat);
     void processMap(std::vector <SnpInfo> &bedSnps, const std::string &geneticMapFile,
 		    bool noMapCheck);
     void storeBedLineAndCountMissing(uchar bedLineOut[], const uchar genoLine[],
 				     int numMissingPerIndiv[]);
     void storeIdentityBedLineAndCountMissing(uchar bedLineOut[], const uchar bedLineIn[],
 					     int numMissingPerIndiv[]) const;
+    void finishGenoQc(const std::vector <int> &numMissingPerIndiv,
+                      double maxMissingPerIndiv);
 
   public:
     /**    
@@ -115,6 +119,16 @@ namespace LMM {
 	    double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
 	    std::vector <std::string> vcNamesIn=std::vector <std::string> (),
 	    bool loadNonModelSnps=true, int _Nautosomes=22);
+
+    /** Reads biallelic hardcalls from a PLINK 2 pgen/pvar/psam file set. */
+    SnpData(const std::string &pgenFile, const std::string &pvarFile,
+            const std::string &psamFile, const std::string &geneticMapFile,
+            const std::vector <std::string> &excludeFiles,
+            const std::vector <std::string> &modelSnpsFiles,
+            const std::vector <std::string> &removeFiles,
+            double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
+            std::vector <std::string> vcNamesIn=std::vector <std::string> (),
+            bool loadNonModelSnps=true, int _Nautosomes=22);
 
     // Stage 2 sample state. If famFile is set, also initializes PLINK BED sample mapping.
     SnpData(const std::vector < std::pair <std::string, std::string> > &_indivIds,

@@ -342,6 +342,7 @@ set(BOLT_SOURCES
   src/NonlinearOptMulti.cpp
   src/NumericUtils.cpp
   src/PhenoBuilder.cpp
+  src/PgenUtils.cpp
   src/RestrictSnpSet.cpp
   src/SnpData.cpp
   src/SnpInfo.cpp

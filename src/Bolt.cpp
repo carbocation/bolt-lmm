@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <array>
 #include <vector>
 #include <string>
 #include <iostream>
@@ -65,6 +66,40 @@ namespace LMM {
   using std::cerr;
   using std::endl;
   using FileUtils::getline;
+
+  namespace {
+    struct Bgen8DosageLookupEntry {
+      double dosage;
+      double infoVariance;
+    };
+
+    const std::array<double, 256> &bgen8ProbabilityLookup() {
+      static const std::array<double, 256> lookup = [] {
+	std::array<double, 256> values = {};
+	for (uint i = 0; i < values.size(); i++) values[i] = i / 255.0;
+	return values;
+      }();
+      return lookup;
+    }
+
+    const std::array<Bgen8DosageLookupEntry, 65536> &bgen8DosageLookup() {
+      static const std::array<Bgen8DosageLookupEntry, 65536> lookup = [] {
+	std::array<Bgen8DosageLookupEntry, 65536> values = {};
+	const std::array<double, 256> &probabilities = bgen8ProbabilityLookup();
+	for (uint p11byte = 0; p11byte < 256; p11byte++)
+	  for (uint p10byte = 0; p10byte < 256; p10byte++) {
+	    const double p11 = probabilities[p11byte];
+	    const double p10 = probabilities[p10byte];
+	    const double dosage = 2*p11 + p10;
+	    Bgen8DosageLookupEntry &entry = values[p11byte | (p10byte << 8)];
+	    entry.dosage = dosage;
+	    entry.infoVariance = 4*p11 + p10 - dosage*dosage;
+	  }
+	return values;
+      }();
+      return lookup;
+    }
+  }
 
   const double Bolt::BAD_SNP_STAT = -1e9;
 
@@ -3269,9 +3304,10 @@ namespace LMM {
 
     /********** compute MAF and INFO; apply filtering thresholds **********/
 
-    double lut[256];
-    for (int i = 0; i <= 255; i++)
-      lut[i] = i/255.0;
+    const std::array<double, 256> &lut = bgen8ProbabilityLookup();
+    const bool useDosageLookup = Pmin == 2U && Phased == 0U;
+    const std::array<Bgen8DosageLookupEntry, 65536> *dosageLookup =
+      useDosageLookup ? &bgen8DosageLookup() : NULL;
 
     int Nnonmiss = 0, NprobBytes = 0;
     double sum_eij = 0, sum_fij_minus_eij2 = 0; // for INFO
@@ -3280,13 +3316,20 @@ namespace LMM {
       NprobBytes += ploidy;
       if (ploidyMissBytes[i] & missBit) { bufAt += ploidy; continue; } // missing => skip
       Nnonmiss++;
-      double p11 = lut[*bufAt]; bufAt++;                          // if phased, contains p(hap1)==1
-      double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; } // if phased, contains p(hap2)==1
-      double dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
-      double eij = dosage;
-      double fij = ((Phased==0U||ploidy==1U) ? 4*p11 + p10 : p11 + 2*p11*p10 + p10);
-      sum_eij += eij;
-      sum_fij_minus_eij2 += fij - eij*eij;
+      if (useDosageLookup) {
+	const uint lookupIndex = bufAt[0] | (bufAt[1] << 8); bufAt += 2;
+	const Bgen8DosageLookupEntry &entry = (*dosageLookup)[lookupIndex];
+	sum_eij += entry.dosage;
+	sum_fij_minus_eij2 += entry.infoVariance;
+      }
+      else {
+	double p11 = lut[*bufAt]; bufAt++;                          // if phased, contains p(hap1)==1
+	double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; } // if phased, contains p(hap2)==1
+	double dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
+	double fij = ((Phased==0U||ploidy==1U) ? 4*p11 + p10 : p11 + 2*p11*p10 + p10);
+	sum_eij += dosage;
+	sum_fij_minus_eij2 += fij - dosage*dosage;
+      }
     }
     double thetaHat = sum_eij / (2*Nnonmiss);
     double info = thetaHat==0 || thetaHat==1 ? 1 :
@@ -3304,9 +3347,16 @@ namespace LMM {
     double dosageSum = 0, dosageNum = 0, missingNum = 0;
     for (uint i = 0; i < N; i++) {
       uint ploidy = ploidyMissBytes[i] & ~missBit;
-      double p11 = lut[*bufAt]; bufAt++;
-      double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; }
-      double dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
+      double dosage;
+      if (useDosageLookup) {
+	const uint lookupIndex = bufAt[0] | (bufAt[1] << 8); bufAt += 2;
+	dosage = (*dosageLookup)[lookupIndex].dosage;
+      }
+      else {
+	double p11 = lut[*bufAt]; bufAt++;
+	double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; }
+	dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
+      }
       if (bgenRefFirst) // use second allele as effect allele
 	dosage = 2 - dosage;
       if (bgenIndivInds[i] != SnpData::IND_MISSING) {

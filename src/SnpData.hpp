@@ -57,6 +57,7 @@ namespace LMM {
 
     std::vector <SnpInfo> snps; // [VECTOR]: M
     bool mapAvailable;
+    bool bedIndivsIdentity;
     int Nautosomes;
     
     std::map <std::string, uint64> FID_IID_to_ind;

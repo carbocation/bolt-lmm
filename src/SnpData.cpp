@@ -19,6 +19,7 @@
 #include <cstring>
 #include <cmath>
 #include <cassert>
+#include <array>
 #include <iomanip>
 #include <iostream>
 #include <fstream>
@@ -51,6 +52,23 @@ namespace LMM {
   using std::cerr;
   using std::endl;
   using FileUtils::getline;
+
+  namespace {
+
+    typedef std::array<uchar, 4> DecodedBedByte;
+
+    std::array<DecodedBedByte, 256> makeBedByteLookup() {
+      const uchar bedToGeno[4] = {2, 9, 1, 0};
+      std::array<DecodedBedByte, 256> lookup = {};
+      for (uint byte = 0; byte < lookup.size(); byte++)
+	for (uint k = 0; k < 4; k++)
+	  lookup[byte][k] = bedToGeno[(byte >> (2*k)) & 3];
+      return lookup;
+    }
+
+    const std::array<DecodedBedByte, 256> BED_BYTE_LOOKUP = makeBedByteLookup();
+
+  }
 
   const uint64 SnpData::IND_MISSING = (uint64) -1;
 
@@ -287,6 +305,9 @@ namespace LMM {
 	bedIndivToRemoveIndex[nbed] = -1;
     }
     N = indivs.size();
+    bedIndivsIdentity = Nbed == N;
+    for (uint64 nbed = 0; bedIndivsIdentity && nbed < Nbed; nbed++)
+      bedIndivsIdentity = bedIndivToRemoveIndex[nbed] == static_cast<int>(nbed);
     cout << "Total indivs stored in memory: N = " << N << endl;
 
     // allocate and initialize maskIndivs to all good (aside from filler at end)
@@ -558,6 +579,14 @@ namespace LMM {
 			    bool loadGenoLine) const {
     fin.read((char *) bedLineIn, (Nbed+3)>>2);
     if (loadGenoLine) {
+      if (bedIndivsIdentity) {
+	const uint64 fullBytes = N >> 2;
+	for (uint64 byte = 0; byte < fullBytes; byte++)
+	  memcpy(genoLine + (byte << 2), BED_BYTE_LOOKUP[bedLineIn[byte]].data(), 4);
+	for (uint64 n = fullBytes << 2; n < N; n++)
+	  genoLine[n] = BED_BYTE_LOOKUP[bedLineIn[n>>2]][n&3];
+	return;
+      }
       const int bedToGeno[4] = {2, 9, 1, 0};
       for (uint64 nbed = 0; nbed < Nbed; nbed++)
 	if (bedIndivToRemoveIndex[nbed] != -1) {
@@ -676,7 +705,8 @@ namespace LMM {
 		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
 		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes)
     : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL), maskSnps(NULL),
-      maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), Nautosomes(_Nautosomes) {
+      maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
+      Nautosomes(_Nautosomes) {
     
     processIndivs(famFile, removeFiles);
     // bedSnps = all snps in PLINK data; will filter and QC to create class member 'snps'
@@ -804,7 +834,7 @@ namespace LMM {
 		   const string &famFile, int _Nautosomes) :
     Mbed(0), Nbed(0), M(0), N(_indivIds.size()), Nstride(_Nstride), genotypes(NULL),
     maskSnps(NULL), maskIndivs(NULL), numIndivsQC(0), mapAvailable(false),
-    Nautosomes(_Nautosomes) {
+    bedIndivsIdentity(false), Nautosomes(_Nautosomes) {
     if (Nstride < N || (Nstride&3) || _maskIndivs.size() != Nstride) {
       cerr << "ERROR: Invalid sample dimensions in Stage 1 model" << endl;
       exit(1);
@@ -863,6 +893,9 @@ namespace LMM {
 	       << _indivIds[n].first << " " << _indivIds[n].second << endl;
 	  exit(1);
 	}
+      bedIndivsIdentity = Nbed == N;
+      for (uint64 nbed = 0; bedIndivsIdentity && nbed < Nbed; nbed++)
+	bedIndivsIdentity = bedIndivToRemoveIndex[nbed] == static_cast<int>(nbed);
     }
   }
 

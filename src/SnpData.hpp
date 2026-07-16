@@ -133,8 +133,9 @@ namespace LMM {
      */
     void readBedLine(uchar genoLine[], uchar bedLineIn[], FileUtils::AutoGzIfstream &fin,
 		     bool loadGenoLine) const;
+    bool allIndivsIncluded(const double subMaskIndivs[]) const;
     double computeAlleleFreqAndMissing(const uchar genoLine[], const double subMaskIndivs[],
-				       double *missing) const;
+				       double *missing, bool allIndivsIncluded=false) const;
     double computeAlleleFreq(const uchar genoLine[], const double subMaskIndivs[]) const;
     double computeAlleleFreq(const double genoLine[], const double subMaskIndivs[]) const;
     double computeMAF(const uchar genoLine[], const double subMaskIndivs[]) const;
@@ -142,7 +143,8 @@ namespace LMM {
     double computeSnpMissing(const double dosageLine[], const double subMaskIndivs[]) const;
     // assumes maskedSnpVector has dimension Nstride; zero-fills
     void genoLineToMaskedSnpVector(double maskedSnpVector[], const uchar genoLine[],
-				   const double subMaskIndivs[], double MAF) const;
+				   const double subMaskIndivs[], double MAF,
+				   bool allIndivsIncluded=false) const;
     // assumes maskedSnpVector has dimension Nstride; zero-fills
     void dosageLineToMaskedSnpVector(double dosageLineVec[], const double subMaskIndivs[],
 				     double MAF) const;

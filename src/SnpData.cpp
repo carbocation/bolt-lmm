@@ -601,11 +601,30 @@ namespace LMM {
     return -eps <= dosage && dosage <= 2+eps;
   }
 
+  bool SnpData::allIndivsIncluded(const double subMaskIndivs[]) const {
+    for (uint64 n = 0; n < N; n++)
+      if (!subMaskIndivs[n]) return false;
+    return true;
+  }
+
   double SnpData::computeAlleleFreqAndMissing(const uchar genoLine[],
 					      const double subMaskIndivs[],
-					      double *missing) const {
+					      double *missing,
+					      bool allIndivsIncluded) const {
     double alleleSum = 0, missingSum = 0;
     int numObserved = 0, numMasked = 0;
+    if (allIndivsIncluded) {
+      for (size_t n = 0; n < N; n++) {
+	const bool isMissing = genoLine[n] == 9;
+	missingSum += isMissing;
+	if (!isMissing) {
+	  alleleSum += genoLine[n];
+	  numObserved++;
+	}
+      }
+      *missing = missingSum / N;
+      return 0.5 * alleleSum / numObserved;
+    }
     for (size_t n = 0; n < N; n++) {
       if (subMaskIndivs[n]) {
 	const bool isMissing = genoLine[n] == 9;
@@ -669,7 +688,14 @@ namespace LMM {
   // assumes maskedSnpVector has dimension Nstride; zero-fills
   // note alleleFreq != MAF: alleleFreq = (mean allele count) / 2 and has full range [0..1]!
   void SnpData::genoLineToMaskedSnpVector(double maskedSnpVector[], const uchar genoLine[],
-					  const double subMaskIndivs[], double alleleFreq) const {
+					  const double subMaskIndivs[], double alleleFreq,
+					  bool allIndivsIncluded) const {
+    if (allIndivsIncluded) {
+      for (size_t n = 0; n < N; n++)
+	maskedSnpVector[n] = genoLine[n] != 9 ? genoLine[n] - 2*alleleFreq : 0;
+      for (uint64 n = N; n < Nstride; n++) maskedSnpVector[n] = 0;
+      return;
+    }
     for (size_t n = 0; n < N; n++) {
       if (subMaskIndivs[n] && genoLine[n] != 9)
 	maskedSnpVector[n] = genoLine[n] - 2*alleleFreq;

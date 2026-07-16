@@ -2535,6 +2535,7 @@ namespace LMM {
     uchar *bedLineIn = ALIGNED_MALLOC_UCHARS((snpData.getNbed()+3)>>2);
     double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
     memset(snpCovCompVec, 0, (Nstride+Cstride)*sizeof(snpCovCompVec[0])); // important!
+    const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
 
     for (uint f = 0; f < bimFiles.size(); f++) {
       finBim.openOrExit(bimFiles[f]);
@@ -2573,9 +2574,11 @@ namespace LMM {
 	if (include) {
 	  double missing;
 	  const double alleleFreq =
-	    snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing);
+	    snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing,
+						  allIndivsIncluded);
 	  if (missing <= maxMissingPerSnp) {
-	    snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq);
+	    snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
+					       allIndivsIncluded);
 	    fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, alleleFreq, missing,
 			 snpCovCompVec, verboseStats, retroData);
 	  }

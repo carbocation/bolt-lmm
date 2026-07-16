@@ -382,6 +382,33 @@ install(TARGETS bolt RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 if(BUILD_TESTING)
   add_test(NAME bolt_help COMMAND bolt --help)
+
+  add_executable(pgen_stage1_parity_test
+    tests/PgenStage1Parity.cpp
+    src/FileUtils.cpp
+    src/MapInterpolater.cpp
+    src/MemoryUtils.cpp
+    src/NumericUtils.cpp
+    src/PgenUtils.cpp
+    src/RestrictSnpSet.cpp
+    src/SnpData.cpp
+    src/SnpInfo.cpp
+    src/StringUtils.cpp)
+  target_include_directories(pgen_stage1_parity_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(pgen_stage1_parity_test PRIVATE
+    bolt_build_options
+    bolt_pgenlib
+    bolt_linear_algebra
+    bolt_openmp
+    bolt_zstd
+    Boost::iostreams
+    ZLIB::ZLIB
+    Threads::Threads
+    ${CMAKE_DL_LIBS})
+  add_test(NAME pgen_stage1_hardcall_parity
+    COMMAND pgen_stage1_parity_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity")
 endif()
 
 message(STATUS "BOLT platform: ${CMAKE_SYSTEM_NAME}/${BOLT_TARGET_PROCESSOR}")

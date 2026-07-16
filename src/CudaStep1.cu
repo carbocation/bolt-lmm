@@ -82,6 +82,109 @@ namespace LMM {
       snpBlock[index] = value;
     }
 
+    __global__ void computeMarkerLookup(const uchar packedBlock[], const double maskIndivs[],
+                                        double lookup[], uchar projMaskSnps[], uint64 m0,
+                                        uint64 blockSize, uint64 Nstride, uint64 Nused) {
+      const uint64 mPlus = blockIdx.x;
+      if (mPlus >= blockSize)
+        return;
+      const uint64 m = m0 + mPlus;
+      if (!projMaskSnps[m])
+        return;
+
+      const uint64 bytesPerSnp = Nstride >> 2;
+      double sum = 0;
+      uint64 count = 0;
+      for (uint64 byte = threadIdx.x; byte < bytesPerSnp; byte += blockDim.x) {
+        const uchar packed = packedBlock[mPlus * bytesPerSnp + byte];
+        const uint64 n0 = byte << 2;
+        for (uint64 offset = 0; offset < 4; offset++) {
+          const uchar bedCode = (packed >> (2 * offset)) & 3;
+          if (maskIndivs[n0 + offset] && bedCode != 1) {
+            sum += bedCode == 0 ? 2 : bedCode == 2 ? 1 : 0;
+            count++;
+          }
+        }
+      }
+
+      __shared__ double sums[256];
+      __shared__ uint64 counts[256];
+      __shared__ double mean;
+      sums[threadIdx.x] = sum;
+      counts[threadIdx.x] = count;
+      __syncthreads();
+      for (unsigned int stride = blockDim.x >> 1; stride; stride >>= 1) {
+        if (threadIdx.x < stride) {
+          sums[threadIdx.x] += sums[threadIdx.x + stride];
+          counts[threadIdx.x] += counts[threadIdx.x + stride];
+        }
+        __syncthreads();
+      }
+      if (threadIdx.x == 0)
+        mean = counts[0] ? sums[0] / counts[0] : 0;
+      __syncthreads();
+
+      double meanCenterNorm2 = 0;
+      for (uint64 byte = threadIdx.x; byte < bytesPerSnp; byte += blockDim.x) {
+        const uchar packed = packedBlock[mPlus * bytesPerSnp + byte];
+        const uint64 n0 = byte << 2;
+        for (uint64 offset = 0; offset < 4; offset++) {
+          const uchar bedCode = (packed >> (2 * offset)) & 3;
+          if (maskIndivs[n0 + offset] && bedCode != 1) {
+            const double genotype = bedCode == 0 ? 2 : bedCode == 2 ? 1 : 0;
+            const double centered = genotype - mean;
+            meanCenterNorm2 += centered * centered;
+          }
+        }
+      }
+      sums[threadIdx.x] = meanCenterNorm2;
+      __syncthreads();
+      for (unsigned int stride = blockDim.x >> 1; stride; stride >>= 1) {
+        if (threadIdx.x < stride)
+          sums[threadIdx.x] += sums[threadIdx.x + stride];
+        __syncthreads();
+      }
+
+      if (threadIdx.x == 0) {
+        if (!counts[0] || sums[0] <= 0) {
+          projMaskSnps[m] = 0;
+          return;
+        }
+        const double invMeanCenterNorm = sqrt((Nused - 1) / sums[0]);
+        lookup[m * 4] = -mean * invMeanCenterNorm;
+        lookup[m * 4 + 1] = (1 - mean) * invMeanCenterNorm;
+        lookup[m * 4 + 2] = (2 - mean) * invMeanCenterNorm;
+        lookup[m * 4 + 3] = 0;
+      }
+    }
+
+    __global__ void finalizeMarkerInitialization(double lookup[], double negCovComps[],
+                                                  double Xnorm2s[], uchar projMaskSnps[],
+                                                  uint64 m0, uint64 blockSize,
+                                                  uint64 Cindep, uint64 Cstride,
+                                                  uint64 Nused) {
+      const uint64 mPlus = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (mPlus >= blockSize)
+        return;
+      const uint64 m = m0 + mPlus;
+      if (!projMaskSnps[m])
+        return;
+      double projNorm2 = Nused - 1;
+      for (uint64 c = 0; c < Cindep; c++) {
+        const double component = negCovComps[m * Cstride + c];
+        projNorm2 -= component * component;
+      }
+      if (projNorm2 < 0.1) {
+        projMaskSnps[m] = 0;
+        lookup[m * 4] = lookup[m * 4 + 1] = 0;
+        lookup[m * 4 + 2] = lookup[m * 4 + 3] = 0;
+        return;
+      }
+      for (uint64 c = 0; c < Cindep; c++)
+        negCovComps[m * Cstride + c] *= -1;
+      Xnorm2s[m] = projNorm2;
+    }
+
     __global__ void applyBatchMask(double Xtrans[], const uchar batchMaskSnps[],
                                    uint64 m0, uint64 blockSize, uint64 B) {
       const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -511,6 +614,118 @@ namespace LMM {
                 "copy Bayesian residuals from CUDA");
     }
   };
+
+  void CudaStep1::initializeMarkers
+  (const uchar hostGenotypes[], const double hostMaskIndivs[], const double hostCovBasis[],
+   uint64 Cindep, double (*hostLookup)[4], double hostNegCovComps[], double hostXnorm2s[],
+   uchar hostProjMaskSnps[], uint64 Nused, uint64 M, uint64 Nstride, uint64 Cstride) {
+    if (!hostGenotypes || !hostMaskIndivs || (Cindep && !hostCovBasis) || !hostLookup ||
+        !hostNegCovComps || !hostXnorm2s || !hostProjMaskSnps || Nused < 2 || !M ||
+        !Cstride || (Nstride & 3) || Cindep > Cstride)
+      throw std::runtime_error("Invalid CUDA marker initialization dimensions");
+
+    const uint64 bytesPerSnp = Nstride >> 2;
+    const uint64 NCstride = Nstride + Cstride;
+    const uint64 snpsPerBlock = std::min<uint64>(M, 1024);
+    uchar *packedBlock = nullptr, *projMaskSnps = nullptr;
+    double *snpBlock = nullptr, *maskIndivs = nullptr, *covBasis = nullptr;
+    double *lookup = nullptr, *negCovComps = nullptr, *Xnorm2s = nullptr;
+    cublasHandle_t cublas = nullptr;
+
+    checkCublas(cublasCreate(&cublas), "cublasCreate for marker initialization");
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&packedBlock),
+                         snpsPerBlock * bytesPerSnp * sizeof(*packedBlock)),
+              "cudaMalloc marker initialization packed block");
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&snpBlock),
+                         snpsPerBlock * NCstride * sizeof(*snpBlock)),
+              "cudaMalloc marker initialization decoded block");
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&maskIndivs),
+                         Nstride * sizeof(*maskIndivs)),
+              "cudaMalloc marker initialization sample mask");
+    if (Cindep)
+      checkCuda(cudaMalloc(reinterpret_cast<void **>(&covBasis),
+                           Cindep * Nstride * sizeof(*covBasis)),
+                "cudaMalloc marker initialization covariate basis");
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&lookup), M * 4 * sizeof(*lookup)),
+              "cudaMalloc marker initialization lookup");
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&negCovComps),
+                         M * Cstride * sizeof(*negCovComps)),
+              "cudaMalloc marker initialization covariate components");
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&Xnorm2s), M * sizeof(*Xnorm2s)),
+              "cudaMalloc marker initialization SNP norms");
+    checkCuda(cudaMalloc(reinterpret_cast<void **>(&projMaskSnps),
+                         M * sizeof(*projMaskSnps)),
+              "cudaMalloc marker initialization SNP mask");
+
+    checkCuda(cudaMemcpy(maskIndivs, hostMaskIndivs, Nstride * sizeof(*maskIndivs),
+                         cudaMemcpyHostToDevice),
+              "copy marker initialization sample mask");
+    if (Cindep)
+      checkCuda(cudaMemcpy(covBasis, hostCovBasis, Cindep * Nstride * sizeof(*covBasis),
+                           cudaMemcpyHostToDevice),
+                "copy marker initialization covariate basis");
+    checkCuda(cudaMemcpy(projMaskSnps, hostProjMaskSnps, M * sizeof(*projMaskSnps),
+                         cudaMemcpyHostToDevice),
+              "copy marker initialization SNP mask");
+    checkCuda(cudaMemset(lookup, 0, M * 4 * sizeof(*lookup)),
+              "clear marker initialization lookup");
+    checkCuda(cudaMemset(negCovComps, 0, M * Cstride * sizeof(*negCovComps)),
+              "clear marker initialization covariate components");
+    checkCuda(cudaMemset(Xnorm2s, 0, M * sizeof(*Xnorm2s)),
+              "clear marker initialization SNP norms");
+
+    const unsigned int threads = 256;
+    const double one = 1.0, zero = 0.0;
+    for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
+      const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
+      checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
+                           blockSize * bytesPerSnp * sizeof(*packedBlock),
+                           cudaMemcpyHostToDevice),
+                "copy packed genotypes for marker initialization");
+      computeMarkerLookup<<<static_cast<unsigned int>(blockSize), threads>>>
+        (packedBlock, maskIndivs, lookup, projMaskSnps, m0, blockSize, Nstride, Nused);
+      checkCuda(cudaGetLastError(), "launch marker lookup initialization");
+      decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+        (snpBlock, packedBlock, maskIndivs, lookup, negCovComps, projMaskSnps,
+         nullptr, m0, blockSize, Nstride, Cstride);
+      checkCuda(cudaGetLastError(), "launch marker initialization decoder");
+      if (Cindep)
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                static_cast<int>(Cindep), static_cast<int>(blockSize),
+                                static_cast<int>(Nstride), &one, covBasis,
+                                static_cast<int>(Nstride), snpBlock,
+                                static_cast<int>(NCstride), &zero,
+                                negCovComps + m0 * Cstride, static_cast<int>(Cstride)),
+                    "cuBLAS marker covariate projection");
+      finalizeMarkerInitialization<<<numBlocks(blockSize, threads), threads>>>
+        (lookup, negCovComps, Xnorm2s, projMaskSnps, m0, blockSize,
+         Cindep, Cstride, Nused);
+      checkCuda(cudaGetLastError(), "launch marker initialization finalizer");
+    }
+
+    checkCuda(cudaMemcpy(hostLookup, lookup, M * 4 * sizeof(*lookup),
+                         cudaMemcpyDeviceToHost),
+              "copy initialized marker lookup from CUDA");
+    checkCuda(cudaMemcpy(hostNegCovComps, negCovComps,
+                         M * Cstride * sizeof(*negCovComps), cudaMemcpyDeviceToHost),
+              "copy initialized marker covariate components from CUDA");
+    checkCuda(cudaMemcpy(hostXnorm2s, Xnorm2s, M * sizeof(*Xnorm2s),
+                         cudaMemcpyDeviceToHost),
+              "copy initialized marker norms from CUDA");
+    checkCuda(cudaMemcpy(hostProjMaskSnps, projMaskSnps, M * sizeof(*projMaskSnps),
+                         cudaMemcpyDeviceToHost),
+              "copy initialized marker mask from CUDA");
+
+    cudaFree(projMaskSnps);
+    cudaFree(Xnorm2s);
+    cudaFree(negCovComps);
+    cudaFree(lookup);
+    cudaFree(covBasis);
+    cudaFree(maskIndivs);
+    cudaFree(snpBlock);
+    cudaFree(packedBlock);
+    cublasDestroy(cublas);
+  }
 
   CudaStep1::CudaStep1(const uchar genotypes[], const double maskIndivs[],
                        const double (*snpValueLookup)[4],

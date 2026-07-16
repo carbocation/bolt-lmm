@@ -1386,12 +1386,13 @@ namespace LMM {
     , cudaStep1(NULL)
 #endif
   { // mBlockMultX = block size for X, X' mult in CG... TODO: optimize for speed
-    init();
 #ifdef BOLT_USE_CUDA
+    init(useCuda);
     if (useCuda)
       cudaStep1 = new CudaStep1(snpData.getGenotypes(), maskIndivs, snpValueLookup,
 				snpCovBasisNegComps, projMaskSnps, M, Nstride, Cstride);
 #else
+    init(false);
     if (useCuda) {
       cerr << "ERROR: --cuda requires a binary built with -DBOLT_CUDA=ON" << endl;
       exit(1);
@@ -1427,7 +1428,7 @@ namespace LMM {
    * creates lookup tables of 0129 translation as well as covbasis components for each SNP
    * creates sub-mask to eliminate any bad snps
    */
-  void Bolt::init(void) {
+  void Bolt::init(bool useCuda) {
     cout << endl << "=== Initializing Bolt object: projecting and normalizing SNPs ===" << endl
 	 << endl;
 
@@ -1459,9 +1460,28 @@ namespace LMM {
     projMaskSnps = ALIGNED_MALLOC_UCHARS(M);
     snpData.writeMaskSnps(projMaskSnps);
     
-    double *snpVector = ALIGNED_MALLOC_DOUBLES(Nstride);
-    double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
-    double lut0129[4] = {0, 1, 2, 9};    
+    if (useCuda) {
+#ifdef BOLT_USE_CUDA
+      CudaStep1::initializeMarkers(snpData.getGenotypes(), maskIndivs,
+				   covBasis.getBasis(false), Cindep, snpValueLookup,
+				   snpCovBasisNegComps, Xnorm2s, projMaskSnps,
+				   Nused, M, Nstride, Cstride);
+#endif
+    }
+    else {
+      double *snpVector = ALIGNED_MALLOC_DOUBLES(Nstride);
+      double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
+      double lut0129[4] = {0, 1, 2, 9};
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m]) {
+	  // build masked snp vector with default 0129 values (note 0 can mean masked!)
+	  snpData.buildMaskedSnpVector(snpVector, maskIndivs, m, lut0129, work,
+				       maskCoversAllIndivs);
+	  projMaskSnps[m] = initMarker(m, snpVector);
+	}
+      ALIGNED_FREE(work);
+      ALIGNED_FREE(snpVector);
+    }
 
     MprojMask = 0;
     std::set <int> projMaskChromSet;
@@ -1469,16 +1489,9 @@ namespace LMM {
     const vector <SnpInfo> &snps = snpData.getSnpInfo();
     for (uint64 m = 0; m < M; m++)
       if (projMaskSnps[m]) {
-	// build masked snp vector with default 0129 values (note 0 can mean masked!)
-	snpData.buildMaskedSnpVector(snpVector, maskIndivs, m, lut0129, work,
-				     maskCoversAllIndivs);
-	projMaskSnps[m] = initMarker(m, snpVector);
-
-	if (projMaskSnps[m]) { // may have been masked by initMarker!
-	  projMaskChromSet.insert(snps[m].chrom);
-	  MprojMask++;
-	  Xfro2 += Xnorm2s[m];
-	}
+	projMaskChromSet.insert(snps[m].chrom);
+	MprojMask++;
+	Xfro2 += Xnorm2s[m];
       }
     numChromsProjMask = projMaskChromSet.size();
     printf("Number of chroms with >= 1 good SNP: %d\n", numChromsProjMask);
@@ -1487,9 +1500,6 @@ namespace LMM {
     printf("Dimension of all-1s proj space (Nused-1): %d\n", (int) (Nused-1));
     fflush(stdout);
 #endif
-
-    ALIGNED_FREE(work);
-    ALIGNED_FREE(snpVector);
   }
 
   Bolt::~Bolt(void) {

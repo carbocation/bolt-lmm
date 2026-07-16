@@ -39,8 +39,13 @@ MKL_NUM_THREADS=1 taskset -c 0 build/step1-mkl/bolt \
 Use a fresh model output path for each timed repetition.
 
 For the CUDA build described in `BUILD.md`, add `--cuda` to the same command.
-On an NVIDIA A100-SXM4-40GB, the workload above took 7.6 seconds versus 111.8
-seconds for the portable single-thread oneMKL build, a 14.79x speedup. Reported
+On an NVIDIA A100-SXM4-40GB, the workload above took 3.3 seconds versus 111.8
+seconds for the portable single-thread oneMKL build, a 33.69x speedup. Reported
 heritability, cross-validation choice, prediction errors, convergence
 trajectories, and association summaries matched the CPU run at their displayed
 precision.
+
+A larger 131,072-sample, 16,384-variant fixture took 8.4 seconds with CUDA.
+Moving the two SNP normalization/projection passes for the main and CV-fold
+models to the GPU reduced that fixture from 26.2 seconds with the otherwise
+same CUDA backend.

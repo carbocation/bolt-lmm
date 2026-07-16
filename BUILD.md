@@ -82,8 +82,10 @@ and the infinitesimal model, along with the block matrix operations in the
 Bayesian iterations and the `X beta` products used by Monte Carlo phenotype
 generation and cross-validation prediction. Transposed products used by
 variance estimation, LINREG, and retrospective association scoring are also
-computed on the GPU. Packed 2-bit genotypes are transferred to the device and
-decoded there; expanded genotype matrices do not cross PCIe.
+computed on the GPU. Initial SNP normalization and covariate projection for the
+main analysis and cross-validation folds also run on the GPU. Packed 2-bit
+genotypes are transferred to the device and decoded there; expanded genotype
+matrices do not cross PCIe.
 
 The CUDA backend uses otherwise-free device memory to cache a shared prefix of
 the packed genotype matrix. It reserves one additional decoded SNP block plus

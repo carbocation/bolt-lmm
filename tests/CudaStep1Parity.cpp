@@ -36,6 +36,99 @@ int main() {
     }
 
   const double maskIndivs[Nstride] = {1, 1, 0, 1, 1, 0, 1, 1};
+  const uint64 initCindep = 2, initNused = 6;
+  double covBasis[initCindep*Nstride] = {};
+  for (uint64 n = 0; n < Nstride; n++)
+    covBasis[n] = maskIndivs[n] / std::sqrt(static_cast<double>(initNused));
+  covBasis[Nstride] = 1 / std::sqrt(2.0);
+  covBasis[Nstride + 1] = -1 / std::sqrt(2.0);
+
+  double initializedLookup[M][4] = {};
+  double initializedNegCovComps[M*Cstride] = {};
+  double initializedNorms[M] = {};
+  uchar initializedMask[M] = {1, 1, 0, 1, 1};
+  double expectedInitializedLookup[M][4] = {};
+  double expectedInitializedNegCovComps[M*Cstride] = {};
+  double expectedInitializedNorms[M] = {};
+  const uchar expectedInitializedMaskInput[M] = {1, 1, 0, 1, 1};
+  uchar expectedInitializedMask[M];
+  std::copy(expectedInitializedMaskInput, expectedInitializedMaskInput + M,
+            expectedInitializedMask);
+  for (uint64 m = 0; m < M; m++) {
+    if (!expectedInitializedMask[m])
+      continue;
+    double sum = 0;
+    uint64 count = 0;
+    for (uint64 n = 0; n < Nstride; n++)
+      if (maskIndivs[n] && genotypesUnpacked[m][n] != 9) {
+        sum += genotypesUnpacked[m][n];
+        count++;
+      }
+    if (!count) {
+      expectedInitializedMask[m] = 0;
+      continue;
+    }
+    const double mean = sum / count;
+    double centered[Nstride] = {}, meanCenterNorm2 = 0;
+    for (uint64 n = 0; n < Nstride; n++)
+      if (maskIndivs[n] && genotypesUnpacked[m][n] != 9) {
+        centered[n] = genotypesUnpacked[m][n] - mean;
+        meanCenterNorm2 += centered[n] * centered[n];
+      }
+    if (meanCenterNorm2 <= 0) {
+      expectedInitializedMask[m] = 0;
+      continue;
+    }
+    double components[initCindep] = {};
+    double projNorm2 = meanCenterNorm2;
+    for (uint64 c = 0; c < initCindep; c++) {
+      for (uint64 n = 0; n < Nstride; n++)
+        components[c] += covBasis[c*Nstride+n] * centered[n];
+      projNorm2 -= components[c] * components[c];
+    }
+    if (projNorm2 < 0.1) {
+      expectedInitializedMask[m] = 0;
+      continue;
+    }
+    const double invMeanCenterNorm = std::sqrt((initNused - 1) / meanCenterNorm2);
+    expectedInitializedLookup[m][0] = -mean * invMeanCenterNorm;
+    expectedInitializedLookup[m][1] = (1 - mean) * invMeanCenterNorm;
+    expectedInitializedLookup[m][2] = (2 - mean) * invMeanCenterNorm;
+    for (uint64 c = 0; c < initCindep; c++)
+      expectedInitializedNegCovComps[m*Cstride+c] = -components[c] * invMeanCenterNorm;
+    expectedInitializedNorms[m] = projNorm2 * invMeanCenterNorm * invMeanCenterNorm;
+  }
+
+  LMM::CudaStep1::initializeMarkers(packed.data(), maskIndivs, covBasis, initCindep,
+                                    initializedLookup, initializedNegCovComps,
+                                    initializedNorms, initializedMask, initNused,
+                                    M, Nstride, Cstride);
+  double maxInitializationError = 0;
+  for (uint64 m = 0; m < M; m++) {
+    if (initializedMask[m] != expectedInitializedMask[m]) {
+      std::cerr << "CUDA Step 1 marker initialization mask mismatch at SNP " << m
+                << std::endl;
+      return 1;
+    }
+    maxInitializationError = std::max(maxInitializationError,
+                                      std::fabs(initializedNorms[m] -
+                                                expectedInitializedNorms[m]));
+    for (uint64 value = 0; value < 4; value++)
+      maxInitializationError = std::max(
+        maxInitializationError,
+        std::fabs(initializedLookup[m][value] - expectedInitializedLookup[m][value]));
+    for (uint64 c = 0; c < Cstride; c++)
+      maxInitializationError = std::max(
+        maxInitializationError,
+        std::fabs(initializedNegCovComps[m*Cstride+c] -
+                  expectedInitializedNegCovComps[m*Cstride+c]));
+  }
+  if (maxInitializationError > 1e-11) {
+    std::cerr << "CUDA Step 1 marker initialization parity failure: max absolute error = "
+              << maxInitializationError << std::endl;
+    return 1;
+  }
+
   double lookup[M][4];
   double negCovComps[M*Cstride];
   for (uint64 m = 0; m < M; m++) {
@@ -206,8 +299,9 @@ int main() {
     return 1;
   }
 
-  std::cout << "CUDA Step 1 parity max absolute errors: projected multiply = "
-            << maxAbsError << ", X beta = " << maxMultXError
+  std::cout << "CUDA Step 1 parity max absolute errors: initialization = "
+            << maxInitializationError << ", projected multiply = " << maxAbsError
+            << ", X beta = " << maxMultXError
             << ", X transpose = " << maxMultXtransError
             << ", Bayesian iteration = " << maxBayesError << std::endl;
   return 0;

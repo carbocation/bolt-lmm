@@ -96,7 +96,7 @@ namespace LMM {
     CudaStep1 *cudaStep1;
 #endif
 
-    void init(void);
+    void init(bool useCuda);
     uchar initMarker(uint64 m, double snpVector[]);
 
     inline void buildMaskedSnpNegCovCompVec(double snpCovCompVec[], uint64 m, double (*work)[4])

@@ -2503,8 +2503,10 @@ namespace LMM {
 			   const vector <StatsDataRetroLOCO> &retroData, double info) const {
 
     double alleleFreq = snpData.computeAlleleFreq(dosageLine, maskIndivs);
-    double missing = snpData.computeSnpMissing(dosageLine, maskIndivs);
-    snpData.dosageLineToMaskedSnpVector(dosageLine, maskIndivs, alleleFreq);
+    // BGEN emits INFO rather than F_MISS and has already mean-filled missing dosages.
+    double missing = info == -9 ? snpData.computeSnpMissing(dosageLine, maskIndivs) : 0;
+    snpData.dosageLineToMaskedSnpVector(dosageLine, maskIndivs, alleleFreq,
+					maskCoversAllIndivs);
     
     return getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, alleleFreq, missing,
 		       dosageLine, verboseStats, retroData, info);

@@ -822,7 +822,13 @@ namespace LMM {
   // assumes maskedSnpVector has dimension Nstride; zero-fills
   // note alleleFreq != MAF: alleleFreq = (mean allele count) / 2 and has full range [0..1]!
   void SnpData::dosageLineToMaskedSnpVector(double dosageLineVec[], const double subMaskIndivs[],
-					    double alleleFreq) const {
+					    double alleleFreq, bool allIndivsIncluded) const {
+    if (allIndivsIncluded) {
+      for (size_t n = 0; n < N; n++)
+	dosageLineVec[n] = dosageValid(dosageLineVec[n]) ? dosageLineVec[n] - 2*alleleFreq : 0;
+      for (uint64 n = N; n < Nstride; n++) dosageLineVec[n] = 0;
+      return;
+    }
     for (size_t n = 0; n < N; n++) {
       if (subMaskIndivs[n] && dosageValid(dosageLineVec[n]))
 	dosageLineVec[n] = dosageLineVec[n] - 2*alleleFreq;

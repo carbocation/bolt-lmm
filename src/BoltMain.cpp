@@ -217,6 +217,9 @@ int main(int argc, char *argv[]) {
 #ifdef USE_SSE
   cout << "Compiled with USE_SSE: fast aligned memory access" << endl;
 #endif
+#ifdef USE_NEON
+  cout << "Compiled with USE_NEON: fast packed genotype decoding" << endl;
+#endif
 #ifdef USE_MKL
   cout << "Compiled with USE_MKL: Intel Math Kernel Library linear algebra" << endl;
 #endif

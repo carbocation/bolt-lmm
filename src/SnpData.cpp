@@ -29,6 +29,9 @@
 #ifdef USE_SSE
 #include <emmintrin.h> // SSE2 for packed doubles
 #endif
+#ifdef USE_NEON
+#include <arm_neon.h>
+#endif
 
 #include "Types.hpp"
 #include "SnpData.hpp"
@@ -1009,13 +1012,20 @@ namespace LMM {
 
     uchar *ptr = genotypes + m * (Nstride>>2);
     for (uint64 n4 = 0; n4 < Nstride; n4 += 4) {
-#ifdef USE_SSE // todo: add AVX instructions to do all at once?
+#if defined(USE_SSE) // todo: add AVX instructions to do all at once?
       __m128d x01 = _mm_load_pd(&work[*ptr][0]);
       __m128d x23 = _mm_load_pd(&work[*ptr][2]);
       __m128d mask01 = _mm_load_pd(&subMaskIndivs[n4]);
       __m128d mask23 = _mm_load_pd(&subMaskIndivs[n4+2]);
       _mm_store_pd(&out[n4], _mm_mul_pd(x01, mask01));
       _mm_store_pd(&out[n4+2], _mm_mul_pd(x23, mask23));
+#elif defined(USE_NEON)
+      float64x2_t x01 = vld1q_f64(&work[*ptr][0]);
+      float64x2_t x23 = vld1q_f64(&work[*ptr][2]);
+      float64x2_t mask01 = vld1q_f64(&subMaskIndivs[n4]);
+      float64x2_t mask23 = vld1q_f64(&subMaskIndivs[n4+2]);
+      vst1q_f64(&out[n4], vmulq_f64(x01, mask01));
+      vst1q_f64(&out[n4+2], vmulq_f64(x23, mask23));
 #else
       // non-lookup approach
       /*

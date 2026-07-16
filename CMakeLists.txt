@@ -29,8 +29,8 @@ set(BOLT_OPENMP "AUTO" CACHE STRING
 set_property(CACHE BOLT_OPENMP PROPERTY STRINGS AUTO ON OFF)
 
 set(BOLT_SIMD "AUTO" CACHE STRING
-  "Genotype decoding implementation: AUTO, SSE2, or SCALAR")
-set_property(CACHE BOLT_SIMD PROPERTY STRINGS AUTO SSE2 SCALAR)
+  "Genotype decoding implementation: AUTO, SSE2, NEON, or SCALAR")
+set_property(CACHE BOLT_SIMD PROPERTY STRINGS AUTO SSE2 NEON SCALAR)
 
 set(BOLT_CPU_TARGET "portable" CACHE STRING
   "CPU target: portable, native, or a compiler target such as x86-64-v3 or apple-m1")
@@ -58,7 +58,7 @@ endif()
 if(NOT BOLT_OPENMP MATCHES "^(AUTO|ON|OFF)$")
   message(FATAL_ERROR "Unsupported BOLT_OPENMP='${BOLT_OPENMP}'")
 endif()
-if(NOT BOLT_SIMD MATCHES "^(AUTO|SSE2|SCALAR)$")
+if(NOT BOLT_SIMD MATCHES "^(AUTO|SSE2|NEON|SCALAR)$")
   message(FATAL_ERROR "Unsupported BOLT_SIMD='${BOLT_SIMD}'")
 endif()
 
@@ -96,6 +96,8 @@ target_compile_options(bolt_build_options INTERFACE
 if(BOLT_SIMD STREQUAL "AUTO")
   if(BOLT_X86)
     set(BOLT_SIMD "SSE2")
+  elseif(BOLT_ARM AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(BOLT_SIMD "NEON")
   else()
     set(BOLT_SIMD "SCALAR")
   endif()
@@ -108,6 +110,11 @@ if(BOLT_SIMD STREQUAL "SSE2")
   if(CMAKE_SIZEOF_VOID_P EQUAL 4)
     target_compile_options(bolt_build_options INTERFACE -msse2)
   endif()
+elseif(BOLT_SIMD STREQUAL "NEON")
+  if(NOT BOLT_ARM OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "BOLT_SIMD=NEON is only valid for 64-bit ARM processors")
+  endif()
+  target_compile_definitions(bolt_build_options INTERFACE USE_NEON)
 endif()
 
 if(NOT BOLT_CPU_TARGET STREQUAL "portable")

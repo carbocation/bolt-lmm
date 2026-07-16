@@ -307,15 +307,6 @@ elseif(BOLT_BLAS_SELECTED STREQUAL "SYSTEM")
   target_link_libraries(bolt_linear_algebra INTERFACE BLAS::BLAS LAPACK::LAPACK)
 endif()
 
-# Accelerate benefits substantially from wider matrix batches on Apple Silicon.
-# Keep the established default for other BLAS and architecture combinations.
-set(BOLT_DEFAULT_SNPS_PER_BLOCK 64)
-if(BOLT_BLAS_SELECTED STREQUAL "ACCELERATE" AND BOLT_ARM)
-  set(BOLT_DEFAULT_SNPS_PER_BLOCK 512)
-endif()
-target_compile_definitions(bolt_linear_algebra INTERFACE
-  BOLT_DEFAULT_SNPS_PER_BLOCK=${BOLT_DEFAULT_SNPS_PER_BLOCK})
-
 set(BOLT_SOURCES
   src/Bolt.cpp
   src/BoltMain.cpp
@@ -376,7 +367,6 @@ endif()
 message(STATUS "BOLT platform: ${CMAKE_SYSTEM_NAME}/${BOLT_TARGET_PROCESSOR}")
 message(STATUS "BOLT BLAS backend: ${BOLT_BLAS_SELECTED}")
 message(STATUS "BOLT SIMD implementation: ${BOLT_SIMD}")
-message(STATUS "BOLT default SNP block size: ${BOLT_DEFAULT_SNPS_PER_BLOCK}")
 message(STATUS "BOLT CPU target: ${BOLT_CPU_TARGET}")
 if(BOLT_OPENMP_ENABLED)
   message(STATUS "BOLT OpenMP: enabled")

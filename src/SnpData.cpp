@@ -775,7 +775,9 @@ namespace LMM {
       for (uint64 mfile = 0; mfile < Mfiles[i]; mfile++, mbed++) {
 	readBedLine(genoLine, bedLineIn, fin, bedSnpToGrmIndex[mbed] != -2);
 	if (bedSnpToGrmIndex[mbed] != -2) { // not excluded
-	  double snpMissing = computeSnpMissing(genoLine, maskIndivs);
+	  double snpMissing;
+	  const double alleleFreq =
+	    computeAlleleFreqAndMissing(genoLine, maskIndivs, &snpMissing, true);
 	  bool snpPassQC = snpMissing <= maxMissingPerSnp;
 	  if (snpPassQC) {
 	    if (bedSnpToGrmIndex[mbed] >= 0) { // use in GRM
@@ -783,7 +785,7 @@ namespace LMM {
 	      bedLineOut += Nstride>>2;
 	      bedSnpToGrmIndex[mbed] = snps.size(); // reassign to final value
 	      snps.push_back(bedSnps[mbed]);
-	      snps.back().MAF = computeMAF(genoLine, maskIndivs);
+	      snps.back().MAF = std::min(alleleFreq, 1.0-alleleFreq);
 	      // update indiv QC info
 	      for (uint64 n = 0; n < N; n++)
 		if (genoLine[n] == 9)

@@ -110,6 +110,7 @@ namespace LMM {
 
     // mean-center and replace missing values with mean (centered to 0)
     double mean = sumGenoNonMissing / numGenoNonMissing;
+    double meanCenterNorm2 = 0;
     for (uint64 n = 0; n < Nstride; n++) {
       if (maskIndivs[n]) {
 	if (snpVector[n] == 9)
@@ -119,6 +120,7 @@ namespace LMM {
       }
       else
 	assert(snpVector[n] == 0); // buildMaskedSnpVector should've already zeroed
+      meanCenterNorm2 += NumericUtils::sq(snpVector[n]);
     }
 
     // compute components onto covBasis.basis (negate later when scaling by projNorm)
@@ -127,7 +129,6 @@ namespace LMM {
 
     // normalize mean-centered SNP (before projecting out other covars) to mean sq entry 1
 
-    double meanCenterNorm2 = NumericUtils::norm2(snpVector, Nstride);
     // normalize to Nused-1 (dimensionality of subspace with all-1s vector projected out)
     double invMeanCenterNorm = sqrt((Nused-1) / meanCenterNorm2);
 

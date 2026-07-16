@@ -96,7 +96,8 @@ namespace LMM {
 				      bool loadNonModelSnps);
     void processMap(std::vector <SnpInfo> &bedSnps, const std::string &geneticMapFile,
 		    bool noMapCheck);
-    void storeBedLine(uchar bedLineOut[], const uchar genoLine[]);
+    void storeBedLineAndCountMissing(uchar bedLineOut[], const uchar genoLine[],
+				     int numMissingPerIndiv[]);
 
   public:
     /**    

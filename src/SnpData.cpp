@@ -564,11 +564,30 @@ namespace LMM {
       }
   }
 
-  void SnpData::storeBedLine(uchar bedLineOut[], const uchar genoLine[]) {
-    const int genoToBed[10] = {3, 2, 0, 0, 0, 0, 0, 0, 0, 1};
-    memset(bedLineOut, 0, (Nstride>>2) * sizeof(bedLineOut[0]));
-    for (uint64 n = 0; n < N; n++)
-      bedLineOut[n>>2] = (uchar) (bedLineOut[n>>2] | genoToBed[genoLine[n]]<<((n&3)<<1));
+  void SnpData::storeBedLineAndCountMissing(uchar bedLineOut[], const uchar genoLine[],
+					     int numMissingPerIndiv[]) {
+    const uchar genoToBed[10] = {3, 2, 0, 0, 0, 0, 0, 0, 0, 1};
+    const uint64 fullBytes = N >> 2;
+    for (uint64 byte = 0; byte < fullBytes; byte++) {
+      const uchar *geno = genoLine + (byte << 2);
+      bedLineOut[byte] = genoToBed[geno[0]] | (genoToBed[geno[1]] << 2) |
+	(genoToBed[geno[2]] << 4) | (genoToBed[geno[3]] << 6);
+      for (uint64 offset = 0; offset < 4; offset++)
+	if (geno[offset] == 9)
+	  numMissingPerIndiv[(byte << 2) + offset]++;
+    }
+
+    const uint64 packedBytes = (N+3) >> 2;
+    if (fullBytes != packedBytes) {
+      uchar packed = 0;
+      for (uint64 n = fullBytes << 2; n < N; n++) {
+	packed |= genoToBed[genoLine[n]] << ((n&3) << 1);
+	if (genoLine[n] == 9)
+	  numMissingPerIndiv[n]++;
+      }
+      bedLineOut[fullBytes] = packed;
+    }
+    memset(bedLineOut + packedBytes, 0, (Nstride/4-packedBytes) * sizeof(bedLineOut[0]));
   }
 
   /**
@@ -781,15 +800,11 @@ namespace LMM {
 	  bool snpPassQC = snpMissing <= maxMissingPerSnp;
 	  if (snpPassQC) {
 	    if (bedSnpToGrmIndex[mbed] >= 0) { // use in GRM
-	      storeBedLine(bedLineOut, genoLine);
+	      storeBedLineAndCountMissing(bedLineOut, genoLine, numMissingPerIndiv.data());
 	      bedLineOut += Nstride>>2;
 	      bedSnpToGrmIndex[mbed] = snps.size(); // reassign to final value
 	      snps.push_back(bedSnps[mbed]);
 	      snps.back().MAF = std::min(alleleFreq, 1.0-alleleFreq);
-	      // update indiv QC info
-	      for (uint64 n = 0; n < N; n++)
-		if (genoLine[n] == 9)
-		  numMissingPerIndiv[n]++;
 	    }
 	    // if bedSnpToGrmIndex[mbed] == -1 (don't use in GRM), leave as-is
 	  }

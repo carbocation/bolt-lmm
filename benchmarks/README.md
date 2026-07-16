@@ -123,9 +123,16 @@ reduces the bytes reread on every subsequent pass:
 | 7.987 GiB | 19.368 s | 48.0% |
 
 The retained range is filled during the first marker-initialization scan, so
-its disk read is a one-time cost. The automatic limit is one quarter of
-physical RAM (about 20.8 GiB on the 83 GiB A100 VM); use
+its disk read is a one-time cost. The automatic limit is one half of physical
+RAM (about 41.7 GiB on the 83 GiB A100 VM); use
 `--cudaHostCacheGiB=0` for the previous minimum-memory behavior. An end-to-end
 file-backed PGEN run with half of its matrix retained produced the same
 byte-identical Stage 1 model as both the no-host-cache run and the prior CUDA
 streaming implementation.
+
+On the exact 500,000-sample by 1,000,000-variant fixture, increasing retained
+host genotypes from 20.86 to 39.94 GiB reduced the CUDA LINREG pass from 226.0
+to 180.6 seconds (20.1%). PGEN setup was unchanged (528.7 versus 528.9 seconds),
+as was the first marker-initialization pass (396.3 versus 397.8 seconds). The
+larger run retained about 40 GiB of reclaimable file pages in addition to the
+host cache, still had about 40 GiB available, and used no swap.

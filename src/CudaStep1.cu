@@ -99,8 +99,8 @@ namespace LMM {
       const long double physicalBytes =
         static_cast<long double>(pages) * static_cast<long double>(pageBytes);
       if (physicalBytes > std::numeric_limits<uint64>::max())
-        return std::numeric_limits<uint64>::max() / 4;
-      return static_cast<uint64>(physicalBytes) / 4;
+        return std::numeric_limits<uint64>::max() / 2;
+      return static_cast<uint64>(physicalBytes) / 2;
     }
 
     bool allocateSharedPackedHostCache(const uchar *hostGenotypes, uint64 M,

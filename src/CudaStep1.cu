@@ -28,6 +28,11 @@ namespace LMM {
 
   namespace {
 
+    const uint64 CUDA_SNPS_PER_BLOCK = 512;
+    // The main and CV-fold Bolt objects coexist, so cache sizing also reserves
+    // one decoded block plus room for their batch vectors and CUDA overhead.
+    const uint64 CUDA_WORKSPACE_RESERVE_BYTES = 3ULL << 30;
+
     struct SharedPackedGenotypeCache {
       const uchar *hostGenotypes;
       uchar *deviceGenotypes;
@@ -369,7 +374,7 @@ namespace LMM {
         return false;
       }
       const uint64 decodedBlockBytes = snpsPerBlock * NCstride * sizeof(double);
-      const uint64 reserveBytes = decodedBlockBytes + (4ULL << 30);
+      const uint64 reserveBytes = decodedBlockBytes + CUDA_WORKSPACE_RESERVE_BYTES;
       if (freeBytes <= reserveBytes)
         return false;
 
@@ -436,7 +441,8 @@ namespace LMM {
          bool hostGenotypesFileBacked) :
       hostGenotypes(hostGenotypesIn), M(MIn), Nstride(NstrideIn), Cstride(CstrideIn),
       NCstride(NstrideIn + CstrideIn), bytesPerSnp(NstrideIn >> 2),
-      snpsPerBlock(std::min<uint64>(MIn, 1024)), batchCapacity(0), cublas(nullptr),
+      snpsPerBlock(std::min<uint64>(MIn, CUDA_SNPS_PER_BLOCK)), batchCapacity(0),
+      cublas(nullptr),
       computeStream(nullptr), transferStream(nullptr), packedBlocks{nullptr, nullptr},
       hostPackedBlocks{nullptr, nullptr}, transferDone{nullptr, nullptr},
       packedConsumed{nullptr, nullptr}, transferRecorded{false, false},
@@ -1009,7 +1015,7 @@ namespace LMM {
 
     const uint64 bytesPerSnp = Nstride >> 2;
     const uint64 NCstride = Nstride + Cstride;
-    const uint64 snpsPerBlock = std::min<uint64>(M, 1024);
+    const uint64 snpsPerBlock = std::min<uint64>(M, CUDA_SNPS_PER_BLOCK);
     const uint64 packedBlockBytes = snpsPerBlock * bytesPerSnp;
     uchar *packedBlocks[2] = {nullptr, nullptr};
     uchar *hostPackedBlocks[2] = {nullptr, nullptr};

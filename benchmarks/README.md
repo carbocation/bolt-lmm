@@ -136,3 +136,41 @@ to 180.6 seconds (20.1%). PGEN setup was unchanged (528.7 versus 528.9 seconds),
 as was the first marker-initialization pass (396.3 versus 397.8 seconds). The
 larger run retained about 40 GiB of reclaimable file pages in addition to the
 host cache, still had about 40 GiB available, and used no swap.
+
+LINREG is used here only as a controlled one-traversal timer. The intended
+production output is `P_BOLT_LMM`; the same retained device and host ranges are
+reused by variance fitting, cross-validation, and final spike-and-slab scoring.
+
+## Larger CUDA device cache
+
+Reducing the decoded CUDA block from 1,024 to 512 SNPs lowers the target-scale
+block allocation from 3.815 to 1.907 GiB. Cache sizing keeps an additional
+3 GiB free, as well as one decoded block, because the main and CV-fold CUDA
+objects coexist. At the default largest batch of 52 vectors, the target-scale
+batch allocations occupy about 0.44 GiB. This leaves roughly 2.5 GiB beyond the
+main batch and second decoded block during a fold.
+
+Based on the measured 27.299 GiB device cache with 1,024-SNP blocks, the smaller
+block raises automatic device retention to about 32.114 GiB on this A100. With
+the VM's 41.732 GiB automatic host cache, the disk-backed suffix of the exact
+116.415 GiB packed matrix falls from 47.384 to 42.569 GiB: 10.2% fewer disk
+bytes per repeated genotype traversal. These are memory-accounting projections,
+not another full target-scale timing run.
+
+Six interleaved runs on the fully cached 131,072-sample by 16,384-variant PGEN
+fixture checked the launch-overhead tradeoff on the complete spike-and-slab
+path:
+
+| Measurement (median) | 1,024-SNP blocks | 512-SNP blocks | Change |
+| --- | ---: | ---: | ---: |
+| End-to-end wall time | 7.10 s | 7.12 s | +0.3% |
+| Variance fitting | 0.819 s | 0.826 s | +0.9% |
+| Mixture estimation | 0.910 s | 0.901 s | -1.0% |
+| Bayesian association scoring | 0.847 s | 0.840 s | -0.8% |
+
+Stage 2 statistics, including `P_BOLT_LMM`, were byte-identical between the two
+Step 1 models. This synthetic fixture exercised 6- and 7-iteration variance CG
+solves, a 9-iteration infinitesimal solve, a 6-iteration CV fit, and a
+5-iteration final Bayesian fit. Its h2 secant search nevertheless converged in
+zero steps, so it is a regression and overhead benchmark rather than a proxy
+for the difficulty of variance fitting in real biobank data.

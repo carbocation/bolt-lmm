@@ -107,6 +107,17 @@ main marker-initialization scan, and fold marker initialization reads cached
 blocks directly on the device; neither operation performs a redundant host or
 scratch-disk scan of the cached prefix.
 
+Use `--cudaCacheGiB N` to cap the packed device cache when GPU memory must be
+reserved for another process. `--cudaCacheGiB 0` disables it and exercises the
+streamed host-to-device path; the default `-1` retains automatic sizing.
+
+Packed blocks outside the device cache are double-buffered through two pinned
+host buffers and two device buffers. A nonblocking transfer stream preloads the
+next block while the compute stream decodes and multiplies the current block.
+The pinned host pair is bounded (256 MiB at N=500,000 with the default
+1,024-SNP CUDA block) and shared by the main and cross-validation `Bolt`
+objects, whose operations are sequential.
+
 For an NVIDIA A100 (compute capability 8.0):
 
 ```sh

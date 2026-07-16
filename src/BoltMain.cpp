@@ -50,6 +50,9 @@
 #include "LDscoreCalibration.hpp"
 #include "LapackConst.hpp"
 #include "Stage1Model.hpp"
+#ifdef BOLT_USE_CUDA
+#include "CudaStep1.hpp"
+#endif
 
 
 using namespace LMM;
@@ -276,6 +279,11 @@ int main(int argc, char *argv[]) {
     cerr << "For list of arguments, run with -h (--help) option" << endl;
     exit(1);
   }
+
+#ifdef BOLT_USE_CUDA
+  if (params.useCuda)
+    CudaStep1::setPackedCacheLimitGiB(params.cudaCacheGiB);
+#endif
 
   cout << "Setting number of threads to " << params.numThreads << endl;
   omp_set_num_threads(params.numThreads);

@@ -479,6 +479,8 @@ if(BUILD_TESTING)
     set_target_properties(cuda_step1_parity_test PROPERTIES
       CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
     add_test(NAME cuda_step1_matrix_parity COMMAND cuda_step1_parity_test)
+    add_test(NAME cuda_step1_streaming_parity
+      COMMAND cuda_step1_parity_test --no-cache)
   endif()
 endif()
 

@@ -65,3 +65,21 @@ main initialization from 0.926 to 0.799 seconds (13.7%) and the one-fold
 mixture-parameter phase from 1.022 to 0.907 seconds (11.2%) on that fixture.
 This also avoids redundant scratch-disk reads when the packed host matrix is
 file-backed and larger than RAM. Model artifacts again remained byte-identical.
+
+## Uncached CUDA streaming
+
+The 131,072-sample PGEN fixture was also run with `--cudaCacheGiB=0` to exercise
+the host-to-device path for every genotype block. Two pinned buffers and a
+nonblocking transfer stream reduced median phase times as follows across three
+pinned runs:
+
+| Phase | Synchronous H2D | Double-buffered H2D | Reduction |
+| --- | ---: | ---: | ---: |
+| Variance fitting | 2.673 s | 1.981 s | 25.9% |
+| Mixture estimation (one fold) | 1.985 s | 1.519 s | 23.5% |
+| Bayesian association scoring | 1.649 s | 1.329 s | 19.4% |
+
+Main/fold marker setup remained neutral (0.793 versus 0.789 seconds). The
+normal fully cached path stayed within 1.2% of its prior timings. A half-cached
+run exercised the cache-to-stream transition, and all cached, partially cached,
+and uncached runs produced the same byte-identical Stage 1 model artifact.

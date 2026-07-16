@@ -21,6 +21,8 @@ namespace LMM {
     Impl *impl;
 
   public:
+    static void setPackedCacheLimitGiB(double limitGiB);
+
     static void initializeMarkers(const uchar hostGenotypes[], const double maskIndivs[],
                                   const double covBasis[], uint64 Cindep,
                                   double (*snpValueLookup)[4],

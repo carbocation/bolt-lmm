@@ -16,7 +16,13 @@ namespace {
 
 }
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--no-cache")
+    LMM::CudaStep1::setPackedCacheLimitGiB(0);
+  else if (argc != 1) {
+    std::cerr << "Usage: " << argv[0] << " [--no-cache]" << std::endl;
+    return 1;
+  }
   const uint64 M = 5, Nstride = 8, Cstride = 4, NCstride = Nstride + Cstride, B = 3;
   const int genotypesUnpacked[M][Nstride] = {
     {0, 1, 2, 0, 1, 2, 0, 1},

@@ -74,6 +74,7 @@ namespace LMM {
     bool reml; // flag to run variance components analysis (automatic if computing assoc stats)
     bool lmmInf, lmmBayes, lmmBayesMCMC, lmmForceNonInf;
     bool useCuda;
+    double cudaCacheGiB;
     double h2gGuess;
     int MCMCiters;
     int numLeaveOutChunks;

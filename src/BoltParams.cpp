@@ -247,6 +247,8 @@ namespace LMM {
        "an error-check: if millions of SNPs are imputed, it's inefficient to use them all")
       ("pgenCacheDir", po::value<string>(&pgenCacheDir),
        "scratch directory for a file-backed Stage 1 PGEN hardcall cache")
+      ("cudaCacheGiB", po::value<double>(&cudaCacheGiB)->default_value(-1),
+       "maximum CUDA packed-genotype cache size in GiB (-1 = automatic, 0 = disabled)")
       ("covarMaxLevels", po::value<int>(&covarMaxLevels)->default_value(10),
        "an error-check: maximum number of levels for a categorical covariate")
       ("maxBgenVariantsToScan", po::value<uint>(&maxBgenVariantsToScan)->default_value(100000),
@@ -413,6 +415,10 @@ namespace LMM {
 	cerr << "ERROR: --pgenCacheDir requires Stage 1 --pfile input" << endl;
 	return false;
       }
+      if (!std::isfinite(cudaCacheGiB) || (cudaCacheGiB < 0 && cudaCacheGiB != -1)) {
+	cerr << "ERROR: --cudaCacheGiB must be -1 (automatic) or nonnegative" << endl;
+	return false;
+      }
 
       phenoUseFam = vm.count("phenoUseFam");
       noMapCheck = vm.count("noMapCheck");
@@ -436,6 +442,10 @@ namespace LMM {
 #else
       useCuda = vm.count("cuda");
 #endif
+      if (cudaCacheGiB != -1 && !useCuda) {
+	cerr << "ERROR: --cudaCacheGiB requires CUDA-enabled Stage 1 execution" << endl;
+	return false;
+      }
       LDscoresUseChip = vm.count("LDscoresUseChip");
       LDscoresMatchBp = vm.count("LDscoresMatchBp");
       verboseStats = vm.count("verboseStats");

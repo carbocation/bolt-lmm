@@ -9,9 +9,11 @@
 */
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -34,6 +36,17 @@ namespace LMM {
     };
 
     SharedPackedGenotypeCache sharedPackedCache;
+    uint64 packedCacheLimitBytes = std::numeric_limits<uint64>::max();
+
+    struct SharedPinnedPackedBuffers {
+      uchar *blocks[2];
+      uint64 capacityBytes, references;
+
+      SharedPinnedPackedBuffers() : blocks{nullptr, nullptr}, capacityBytes(0),
+        references(0) {}
+    };
+
+    SharedPinnedPackedBuffers sharedPinnedPackedBuffers;
 
     bool sharedCacheMatches(const uchar *hostGenotypes, uint64 M,
                             uint64 bytesPerSnp) {
@@ -57,6 +70,32 @@ namespace LMM {
         msg << operation << ": cuBLAS status " << static_cast<int>(status);
         throw std::runtime_error(msg.str());
       }
+    }
+
+    void ensureSharedPinnedPackedBuffers(uint64 capacityBytes) {
+      if (sharedPinnedPackedBuffers.blocks[0] &&
+          sharedPinnedPackedBuffers.capacityBytes >= capacityBytes)
+        return;
+      if (sharedPinnedPackedBuffers.references)
+        throw std::runtime_error("Cannot resize active CUDA packed staging buffers");
+      for (int slot = 0; slot < 2; slot++) {
+        cudaFreeHost(sharedPinnedPackedBuffers.blocks[slot]);
+        sharedPinnedPackedBuffers.blocks[slot] = nullptr;
+      }
+      for (int slot = 0; slot < 2; slot++)
+        checkCuda(cudaMallocHost(
+                    reinterpret_cast<void **>(&sharedPinnedPackedBuffers.blocks[slot]),
+                    capacityBytes),
+                  "cudaMallocHost shared packed genotype staging block");
+      sharedPinnedPackedBuffers.capacityBytes = capacityBytes;
+    }
+
+    void releaseUnownedSharedPinnedPackedBuffers() {
+      if (sharedPinnedPackedBuffers.references)
+        return;
+      for (int slot = 0; slot < 2; slot++)
+        cudaFreeHost(sharedPinnedPackedBuffers.blocks[slot]);
+      sharedPinnedPackedBuffers = SharedPinnedPackedBuffers();
     }
 
     __global__ void decodeSnpBlock(double snpBlock[], const uchar packedBlock[],
@@ -239,8 +278,9 @@ namespace LMM {
       if (freeBytes <= reserveBytes)
         return false;
 
-      uint64 candidateSnps = std::min<uint64>(M, (freeBytes - reserveBytes) /
-                                                  bytesPerSnp);
+      const uint64 availableCacheBytes = std::min<uint64>(
+        static_cast<uint64>(freeBytes - reserveBytes), packedCacheLimitBytes);
+      uint64 candidateSnps = std::min<uint64>(M, availableCacheBytes / bytesPerSnp);
       if (candidateSnps < M)
         candidateSnps -= candidateSnps % snpsPerBlock;
       if (!candidateSnps)
@@ -271,7 +311,14 @@ namespace LMM {
     uint64 batchCapacity;
 
     cublasHandle_t cublas;
-    uchar *packedBlock;
+    cudaStream_t computeStream, transferStream;
+    uchar *packedBlocks[2];
+    uchar *hostPackedBlocks[2];
+    cudaEvent_t transferDone[2], packedConsumed[2];
+    bool transferRecorded[2], consumedRecorded[2];
+    uint64 stagedM0[2], stagedBlockSize[2];
+    int nextStageSlot, currentPackedSlot;
+    bool pinnedBuffersAttached;
     double *snpBlock;
     double *maskIndivs;
     double *lookup;
@@ -294,7 +341,13 @@ namespace LMM {
       hostGenotypes(hostGenotypesIn), M(MIn), Nstride(NstrideIn), Cstride(CstrideIn),
       NCstride(NstrideIn + CstrideIn), bytesPerSnp(NstrideIn >> 2),
       snpsPerBlock(std::min<uint64>(MIn, 1024)), batchCapacity(0), cublas(nullptr),
-      packedBlock(nullptr), snpBlock(nullptr), maskIndivs(nullptr), lookup(nullptr),
+      computeStream(nullptr), transferStream(nullptr), packedBlocks{nullptr, nullptr},
+      hostPackedBlocks{nullptr, nullptr}, transferDone{nullptr, nullptr},
+      packedConsumed{nullptr, nullptr}, transferRecorded{false, false},
+      consumedRecorded{false, false}, stagedM0{0, 0}, stagedBlockSize{0, 0},
+      nextStageSlot(0), currentPackedSlot(-1), pinnedBuffersAttached(false),
+      snpBlock(nullptr), maskIndivs(nullptr),
+      lookup(nullptr),
       negCovComps(nullptr), projMaskSnps(nullptr), activeMaskSnps(nullptr),
       batchMaskSnps(nullptr), inCovCompVecs(nullptr), outCovCompVecs(nullptr),
       Xtrans(nullptr), bayesGram(nullptr), gramCapacity(0),
@@ -308,10 +361,11 @@ namespace LMM {
       checkCuda(cudaGetDevice(&device), "cudaGetDevice");
       checkCuda(cudaGetDeviceProperties(&properties, device), "cudaGetDeviceProperties");
       checkCublas(cublasCreate(&cublas), "cublasCreate");
-
-      checkCuda(cudaMalloc(reinterpret_cast<void **>(&packedBlock),
-                           snpsPerBlock * bytesPerSnp * sizeof(*packedBlock)),
-                "cudaMalloc packed genotype block");
+      checkCuda(cudaStreamCreateWithFlags(&computeStream, cudaStreamNonBlocking),
+                "create CUDA compute stream");
+      checkCuda(cudaStreamCreateWithFlags(&transferStream, cudaStreamNonBlocking),
+                "create CUDA packed transfer stream");
+      checkCublas(cublasSetStream(cublas, computeStream), "set cuBLAS compute stream");
       checkCuda(cudaMalloc(reinterpret_cast<void **>(&snpBlock),
                            snpsPerBlock * NCstride * sizeof(*snpBlock)),
                 "cudaMalloc decoded SNP block");
@@ -338,6 +392,8 @@ namespace LMM {
                            cudaMemcpyHostToDevice), "copy SNP mask to CUDA");
 
       attachPackedCache();
+      if (cachedSnps < M)
+        initializePackedStreaming();
 
       std::cout << "CUDA Step 1 enabled on " << properties.name
                 << " (compute capability " << properties.major << "." << properties.minor
@@ -345,6 +401,10 @@ namespace LMM {
     }
 
     ~Impl() {
+      if (computeStream)
+        cudaStreamSynchronize(computeStream);
+      if (transferStream)
+        cudaStreamSynchronize(transferStream);
       cudaFree(bayesGram);
       cudaFree(Xtrans);
       cudaFree(outCovCompVecs);
@@ -356,10 +416,39 @@ namespace LMM {
       cudaFree(lookup);
       cudaFree(maskIndivs);
       cudaFree(snpBlock);
-      cudaFree(packedBlock);
+      for (int slot = 0; slot < 2; slot++) {
+        if (packedConsumed[slot]) cudaEventDestroy(packedConsumed[slot]);
+        if (transferDone[slot]) cudaEventDestroy(transferDone[slot]);
+        cudaFree(packedBlocks[slot]);
+      }
+      if (pinnedBuffersAttached && --sharedPinnedPackedBuffers.references == 0)
+        releaseUnownedSharedPinnedPackedBuffers();
       releasePackedCache();
       if (cublas)
         cublasDestroy(cublas);
+      if (transferStream)
+        cudaStreamDestroy(transferStream);
+      if (computeStream)
+        cudaStreamDestroy(computeStream);
+    }
+
+    void initializePackedStreaming() {
+      const uint64 blockBytes = snpsPerBlock * bytesPerSnp;
+      ensureSharedPinnedPackedBuffers(blockBytes);
+      sharedPinnedPackedBuffers.references++;
+      pinnedBuffersAttached = true;
+      for (int slot = 0; slot < 2; slot++) {
+        hostPackedBlocks[slot] = sharedPinnedPackedBuffers.blocks[slot];
+        checkCuda(cudaMalloc(reinterpret_cast<void **>(&packedBlocks[slot]), blockBytes),
+                  "cudaMalloc streamed packed genotype block");
+        checkCuda(cudaEventCreateWithFlags(&transferDone[slot], cudaEventDisableTiming),
+                  "create packed transfer event");
+        checkCuda(cudaEventCreateWithFlags(&packedConsumed[slot], cudaEventDisableTiming),
+                  "create packed consumption event");
+      }
+      std::cout << "CUDA packed genotype streaming: two pinned "
+                << blockBytes / static_cast<double>(1ULL << 20)
+                << " MiB blocks" << std::endl;
     }
 
     void attachPackedCache() {
@@ -410,13 +499,72 @@ namespace LMM {
       packedCacheAttached = false;
     }
 
+    int findStagedBlock(uint64 m0, uint64 blockSize) const {
+      for (int slot = 0; slot < 2; slot++)
+        if (transferRecorded[slot] && stagedM0[slot] == m0 &&
+            stagedBlockSize[slot] == blockSize)
+          return slot;
+      return -1;
+    }
+
+    int stagePackedBlock(uint64 m0, uint64 blockSize, int excludedSlot) {
+      int slot = nextStageSlot;
+      if (slot == excludedSlot)
+        slot ^= 1;
+      nextStageSlot = slot ^ 1;
+
+      if (transferRecorded[slot])
+        checkCuda(cudaEventSynchronize(transferDone[slot]),
+                  "wait for pinned packed staging buffer");
+      const uint64 blockBytes = blockSize * bytesPerSnp;
+      std::memcpy(hostPackedBlocks[slot], hostGenotypes + m0 * bytesPerSnp,
+                  blockBytes);
+      if (consumedRecorded[slot])
+        checkCuda(cudaStreamWaitEvent(transferStream, packedConsumed[slot], 0),
+                  "wait before reusing streamed packed device block");
+      checkCuda(cudaMemcpyAsync(packedBlocks[slot], hostPackedBlocks[slot], blockBytes,
+                                cudaMemcpyHostToDevice, transferStream),
+                "stream packed genotype block to CUDA");
+      checkCuda(cudaEventRecord(transferDone[slot], transferStream),
+                "record packed genotype transfer");
+      transferRecorded[slot] = true;
+      consumedRecorded[slot] = false;
+      stagedM0[slot] = m0;
+      stagedBlockSize[slot] = blockSize;
+      return slot;
+    }
+
     const uchar *preparePackedBlock(uint64 m0, uint64 blockSize) {
-      if (m0 + blockSize <= cachedSnps)
+      currentPackedSlot = -1;
+      const uint64 nextM0 = m0 + blockSize;
+      if (m0 + blockSize <= cachedSnps) {
+        if (nextM0 < M && nextM0 >= cachedSnps &&
+            findStagedBlock(nextM0, std::min<uint64>(blockSize, M-nextM0)) == -1)
+          stagePackedBlock(nextM0, std::min<uint64>(blockSize, M-nextM0), -1);
         return cachedPackedGenotypes + m0 * bytesPerSnp;
-      checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
-                           blockSize * bytesPerSnp * sizeof(*packedBlock),
-                           cudaMemcpyHostToDevice), "copy packed genotype block to CUDA");
-      return packedBlock;
+      }
+
+      int slot = findStagedBlock(m0, blockSize);
+      if (slot == -1)
+        slot = stagePackedBlock(m0, blockSize, -1);
+      if (nextM0 < M) {
+        const uint64 nextBlockSize = std::min<uint64>(blockSize, M-nextM0);
+        if (nextM0 >= cachedSnps && findStagedBlock(nextM0, nextBlockSize) == -1)
+          stagePackedBlock(nextM0, nextBlockSize, slot);
+      }
+      checkCuda(cudaStreamWaitEvent(computeStream, transferDone[slot], 0),
+                "wait for streamed packed genotype block");
+      currentPackedSlot = slot;
+      return packedBlocks[slot];
+    }
+
+    void recordPackedBlockConsumed() {
+      if (currentPackedSlot == -1)
+        return;
+      checkCuda(cudaEventRecord(packedConsumed[currentPackedSlot], computeStream),
+                "record streamed packed genotype consumption");
+      consumedRecorded[currentPackedSlot] = true;
+      currentPackedSlot = -1;
     }
 
     void ensureBatchCapacity(uint64 B) {
@@ -446,11 +594,15 @@ namespace LMM {
     void multiply(double out[], const double in[], const uchar batchMask[], uint64 B) {
       ensureBatchCapacity(B);
       const size_t covCompBytes = B * NCstride * sizeof(*inCovCompVecs);
-      checkCuda(cudaMemcpy(inCovCompVecs, in, covCompBytes, cudaMemcpyHostToDevice),
+      checkCuda(cudaMemcpyAsync(inCovCompVecs, in, covCompBytes, cudaMemcpyHostToDevice,
+                                computeStream),
                 "copy input vectors to CUDA");
-      checkCuda(cudaMemset(outCovCompVecs, 0, covCompBytes), "clear CUDA output vectors");
-      checkCuda(cudaMemcpy(batchMaskSnps, batchMask, M * B * sizeof(*batchMaskSnps),
-                           cudaMemcpyHostToDevice), "copy batch SNP mask to CUDA");
+      checkCuda(cudaMemsetAsync(outCovCompVecs, 0, covCompBytes, computeStream),
+                "clear CUDA output vectors");
+      checkCuda(cudaMemcpyAsync(batchMaskSnps, batchMask,
+                                M * B * sizeof(*batchMaskSnps),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy batch SNP mask to CUDA");
 
       const unsigned int threads = 256;
       const double one = 1.0, zero = 0.0;
@@ -458,10 +610,12 @@ namespace LMM {
         const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
         const uchar *packedInput = preparePackedBlock(m0, blockSize);
 
-        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                         computeStream>>>
           (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
            nullptr, m0, blockSize, Nstride, Cstride);
         checkCuda(cudaGetLastError(), "launch CUDA genotype decoder");
+        recordPackedBlockConsumed();
 
         checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
                                 static_cast<int>(B), static_cast<int>(blockSize),
@@ -470,11 +624,12 @@ namespace LMM {
                                 static_cast<int>(NCstride), &zero, Xtrans,
                                 static_cast<int>(B)), "cuBLAS X transpose multiply");
 
-        applyBatchMask<<<numBlocks(blockSize * B, threads), threads>>>
+        applyBatchMask<<<numBlocks(blockSize * B, threads), threads, 0, computeStream>>>
           (Xtrans, batchMaskSnps, m0, blockSize, B);
         checkCuda(cudaGetLastError(), "launch CUDA SNP batch mask");
         if (Cstride) {
-          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads>>>
+          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads, 0,
+                                    computeStream>>>
             (snpBlock, blockSize, Nstride, Cstride);
           checkCuda(cudaGetLastError(), "launch CUDA covariate sign flip");
         }
@@ -487,15 +642,17 @@ namespace LMM {
                     "cuBLAS X multiply");
       }
 
-      checkCuda(cudaMemcpy(out, outCovCompVecs, covCompBytes, cudaMemcpyDeviceToHost),
+      checkCuda(cudaMemcpyAsync(out, outCovCompVecs, covCompBytes, cudaMemcpyDeviceToHost,
+                                computeStream),
                 "copy CUDA output vectors to host");
+      checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA matrix multiply");
     }
 
     void multiplyX(double out[], const double hostCoefficients[], uint64 B,
                    bool applyIndivMask, bool positiveCovariateComponents) {
       ensureBatchCapacity(B);
       const size_t covCompBytes = B * NCstride * sizeof(*outCovCompVecs);
-      checkCuda(cudaMemset(outCovCompVecs, 0, covCompBytes),
+      checkCuda(cudaMemsetAsync(outCovCompVecs, 0, covCompBytes, computeStream),
                 "clear CUDA X beta output vectors");
 
       const unsigned int threads = 256;
@@ -503,16 +660,20 @@ namespace LMM {
       for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
         const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
         const uchar *packedInput = preparePackedBlock(m0, blockSize);
-        checkCuda(cudaMemcpy(Xtrans, hostCoefficients + m0 * B,
-                             blockSize * B * sizeof(*Xtrans), cudaMemcpyHostToDevice),
+        checkCuda(cudaMemcpyAsync(Xtrans, hostCoefficients + m0 * B,
+                                  blockSize * B * sizeof(*Xtrans),
+                                  cudaMemcpyHostToDevice, computeStream),
                   "copy X beta coefficients to CUDA");
 
-        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                         computeStream>>>
           (snpBlock, packedInput, applyIndivMask ? maskIndivs : nullptr, lookup,
            negCovComps, projMaskSnps, nullptr, m0, blockSize, Nstride, Cstride);
         checkCuda(cudaGetLastError(), "launch CUDA X beta genotype decoder");
+        recordPackedBlockConsumed();
         if (positiveCovariateComponents && Cstride) {
-          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads>>>
+          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads, 0,
+                                    computeStream>>>
             (snpBlock, blockSize, Nstride, Cstride);
           checkCuda(cudaGetLastError(), "launch CUDA X beta covariate sign flip");
         }
@@ -525,14 +686,17 @@ namespace LMM {
                     "cuBLAS X beta multiply");
       }
 
-      checkCuda(cudaMemcpy(out, outCovCompVecs, covCompBytes, cudaMemcpyDeviceToHost),
+      checkCuda(cudaMemcpyAsync(out, outCovCompVecs, covCompBytes, cudaMemcpyDeviceToHost,
+                                computeStream),
                 "copy CUDA X beta output vectors to host");
+      checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA X beta multiply");
     }
 
     void multiplyXtrans(double hostOut[], const double hostIn[], uint64 B) {
       ensureBatchCapacity(B);
-      checkCuda(cudaMemcpy(inCovCompVecs, hostIn,
-                           B * NCstride * sizeof(*inCovCompVecs), cudaMemcpyHostToDevice),
+      checkCuda(cudaMemcpyAsync(inCovCompVecs, hostIn,
+                                B * NCstride * sizeof(*inCovCompVecs),
+                                cudaMemcpyHostToDevice, computeStream),
                 "copy X transpose input vectors to CUDA");
 
       const unsigned int threads = 256;
@@ -541,10 +705,12 @@ namespace LMM {
         const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
         const uchar *packedInput = preparePackedBlock(m0, blockSize);
 
-        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                         computeStream>>>
           (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
            nullptr, m0, blockSize, Nstride, Cstride);
         checkCuda(cudaGetLastError(), "launch CUDA X transpose genotype decoder");
+        recordPackedBlockConsumed();
 
         checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
                                 static_cast<int>(B), static_cast<int>(blockSize),
@@ -552,18 +718,24 @@ namespace LMM {
                                 static_cast<int>(NCstride), snpBlock,
                                 static_cast<int>(NCstride), &zero, Xtrans,
                                 static_cast<int>(B)), "cuBLAS X transpose multiply");
-        checkCuda(cudaMemcpy(hostOut + m0 * B, Xtrans,
-                             blockSize * B * sizeof(*Xtrans), cudaMemcpyDeviceToHost),
+        checkCuda(cudaMemcpyAsync(hostOut + m0 * B, Xtrans,
+                                  blockSize * B * sizeof(*Xtrans),
+                                  cudaMemcpyDeviceToHost, computeStream),
                   "copy CUDA X transpose products to host");
       }
+      checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA X transpose multiply");
     }
 
     void beginBayes(const double yResid[], const uchar activeMask[], uint64 B) {
       ensureBatchCapacity(B);
-      checkCuda(cudaMemcpy(inCovCompVecs, yResid, B * NCstride * sizeof(*inCovCompVecs),
-                           cudaMemcpyHostToDevice), "copy Bayesian residuals to CUDA");
-      checkCuda(cudaMemcpy(activeMaskSnps, activeMask, M * sizeof(*activeMaskSnps),
-                           cudaMemcpyHostToDevice), "copy active SNP mask to CUDA");
+      checkCuda(cudaMemcpyAsync(inCovCompVecs, yResid,
+                                B * NCstride * sizeof(*inCovCompVecs),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy Bayesian residuals to CUDA");
+      checkCuda(cudaMemcpyAsync(activeMaskSnps, activeMask, M * sizeof(*activeMaskSnps),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy active SNP mask to CUDA");
+      checkCuda(cudaStreamSynchronize(computeStream), "finish Bayesian initialization");
     }
 
     void computeBayes(double hostXtrans[], double hostSnpDots[], uint64 snpDotsStride,
@@ -574,10 +746,12 @@ namespace LMM {
 
       const uchar *packedInput = preparePackedBlock(m0, blockSize);
       const unsigned int threads = 256;
-      decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+      decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                       computeStream>>>
         (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
          activeMaskSnps, m0, blockSize, Nstride, Cstride);
       checkCuda(cudaGetLastError(), "launch Bayesian CUDA genotype decoder");
+      recordPackedBlockConsumed();
 
       const double one = 1.0, zero = 0.0, minusOne = -1.0;
       checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -586,8 +760,9 @@ namespace LMM {
                               static_cast<int>(NCstride), snpBlock,
                               static_cast<int>(NCstride), &zero, Xtrans,
                               static_cast<int>(B)), "cuBLAS Bayesian X transpose multiply");
-      checkCuda(cudaMemcpy(hostXtrans, Xtrans, blockSize * B * sizeof(*Xtrans),
-                           cudaMemcpyDeviceToHost), "copy Bayesian X transpose product to host");
+      checkCuda(cudaMemcpyAsync(hostXtrans, Xtrans, blockSize * B * sizeof(*Xtrans),
+                                cudaMemcpyDeviceToHost, computeStream),
+                "copy Bayesian X transpose product to host");
 
       if (computeSnpDots) {
         if (snpDotsStride > gramCapacity) {
@@ -613,20 +788,24 @@ namespace LMM {
                                   static_cast<int>(NCstride), &one, bayesGram,
                                   static_cast<int>(snpDotsStride)),
                       "cuBLAS Bayesian covariate Gram correction");
-        checkCuda(cudaMemcpy2D(hostSnpDots, snpDotsStride * sizeof(*hostSnpDots),
-                               bayesGram, snpDotsStride * sizeof(*bayesGram),
-                               blockSize * sizeof(*hostSnpDots), blockSize,
-                               cudaMemcpyDeviceToHost), "copy Bayesian SNP Gram matrix to host");
+        checkCuda(cudaMemcpy2DAsync(hostSnpDots, snpDotsStride * sizeof(*hostSnpDots),
+                                    bayesGram, snpDotsStride * sizeof(*bayesGram),
+                                    blockSize * sizeof(*hostSnpDots), blockSize,
+                                    cudaMemcpyDeviceToHost, computeStream),
+                  "copy Bayesian SNP Gram matrix to host");
       }
+      checkCuda(cudaStreamSynchronize(computeStream), "finish Bayesian block computation");
     }
 
     void updateBayes(const double hostBetaUpdates[], uint64 blockSize,
                      uint64 B, uint64 Bleft) {
-      checkCuda(cudaMemcpy(Xtrans, hostBetaUpdates, blockSize * B * sizeof(*Xtrans),
-                           cudaMemcpyHostToDevice), "copy Bayesian beta updates to CUDA");
+      checkCuda(cudaMemcpyAsync(Xtrans, hostBetaUpdates, blockSize * B * sizeof(*Xtrans),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy Bayesian beta updates to CUDA");
       const unsigned int threads = 256;
       if (Cstride) {
-        flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads>>>
+        flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads, 0,
+                                  computeStream>>>
           (snpBlock, blockSize, Nstride, Cstride);
         checkCuda(cudaGetLastError(), "launch Bayesian CUDA covariate sign flip");
       }
@@ -637,14 +816,32 @@ namespace LMM {
                               static_cast<int>(NCstride), Xtrans, static_cast<int>(B),
                               &one, inCovCompVecs, static_cast<int>(NCstride)),
                   "cuBLAS Bayesian residual update");
+      checkCuda(cudaStreamSynchronize(computeStream), "finish Bayesian residual update");
     }
 
     void endBayes(double hostYResid[], uint64 B) {
-      checkCuda(cudaMemcpy(hostYResid, inCovCompVecs,
-                           B * NCstride * sizeof(*inCovCompVecs), cudaMemcpyDeviceToHost),
+      checkCuda(cudaMemcpyAsync(hostYResid, inCovCompVecs,
+                                B * NCstride * sizeof(*inCovCompVecs),
+                                cudaMemcpyDeviceToHost, computeStream),
                 "copy Bayesian residuals from CUDA");
+      checkCuda(cudaStreamSynchronize(computeStream), "finish Bayesian iteration");
     }
   };
+
+  void CudaStep1::setPackedCacheLimitGiB(double limitGiB) {
+    if (sharedPackedCache.deviceGenotypes != nullptr)
+      throw std::runtime_error("CUDA packed cache limit changed after cache allocation");
+    if (!std::isfinite(limitGiB))
+      throw std::runtime_error("CUDA packed cache limit must be finite");
+    if (limitGiB < 0) {
+      packedCacheLimitBytes = std::numeric_limits<uint64>::max();
+      return;
+    }
+    const long double bytes = static_cast<long double>(limitGiB) * (1ULL << 30);
+    if (bytes > std::numeric_limits<uint64>::max())
+      throw std::runtime_error("CUDA packed cache limit is too large");
+    packedCacheLimitBytes = static_cast<uint64>(bytes);
+  }
 
   void CudaStep1::initializeMarkers
   (const uchar hostGenotypes[], const double hostMaskIndivs[], const double hostCovBasis[],
@@ -658,15 +855,27 @@ namespace LMM {
     const uint64 bytesPerSnp = Nstride >> 2;
     const uint64 NCstride = Nstride + Cstride;
     const uint64 snpsPerBlock = std::min<uint64>(M, 1024);
-    uchar *packedBlock = nullptr, *projMaskSnps = nullptr;
+    const uint64 packedBlockBytes = snpsPerBlock * bytesPerSnp;
+    uchar *packedBlocks[2] = {nullptr, nullptr};
+    uchar *hostPackedBlocks[2] = {nullptr, nullptr};
+    uchar *projMaskSnps = nullptr;
+    cudaEvent_t transferDone[2] = {nullptr, nullptr};
+    cudaEvent_t packedConsumed[2] = {nullptr, nullptr};
+    bool transferRecorded[2] = {false, false};
+    bool consumedRecorded[2] = {false, false};
+    uint64 stagedM0[2] = {M, M};
     double *snpBlock = nullptr, *maskIndivs = nullptr, *covBasis = nullptr;
     double *lookup = nullptr, *negCovComps = nullptr, *Xnorm2s = nullptr;
     cublasHandle_t cublas = nullptr;
+    cudaStream_t computeStream = nullptr, transferStream = nullptr;
 
     checkCublas(cublasCreate(&cublas), "cublasCreate for marker initialization");
-    checkCuda(cudaMalloc(reinterpret_cast<void **>(&packedBlock),
-                         snpsPerBlock * bytesPerSnp * sizeof(*packedBlock)),
-              "cudaMalloc marker initialization packed block");
+    checkCuda(cudaStreamCreateWithFlags(&computeStream, cudaStreamNonBlocking),
+              "create marker initialization compute stream");
+    checkCuda(cudaStreamCreateWithFlags(&transferStream, cudaStreamNonBlocking),
+              "create marker initialization transfer stream");
+    checkCublas(cublasSetStream(cublas, computeStream),
+                "set marker initialization cuBLAS stream");
     checkCuda(cudaMalloc(reinterpret_cast<void **>(&snpBlock),
                          snpsPerBlock * NCstride * sizeof(*snpBlock)),
               "cudaMalloc marker initialization decoded block");
@@ -715,33 +924,86 @@ namespace LMM {
                 << cacheBytes / static_cast<double>(1ULL << 30)
                 << " GiB), populated during marker initialization" << std::endl;
     }
+    const bool needsPackedTransfers = populateSharedCache || !useSharedCache ||
+                                      sharedPackedCache.cachedSnps < M;
+    if (needsPackedTransfers) {
+      ensureSharedPinnedPackedBuffers(packedBlockBytes);
+      for (int slot = 0; slot < 2; slot++) {
+        hostPackedBlocks[slot] = sharedPinnedPackedBuffers.blocks[slot];
+        checkCuda(cudaMalloc(reinterpret_cast<void **>(&packedBlocks[slot]),
+                             packedBlockBytes),
+                  "cudaMalloc marker initialization packed block");
+        checkCuda(cudaEventCreateWithFlags(&transferDone[slot], cudaEventDisableTiming),
+                  "create marker initialization transfer event");
+        checkCuda(cudaEventCreateWithFlags(&packedConsumed[slot], cudaEventDisableTiming),
+                  "create marker initialization consumption event");
+      }
+    }
 
     const unsigned int threads = 256;
     const double one = 1.0, zero = 0.0;
+    const auto blockIsCached = [&](uint64 m0, uint64 blockSize) {
+      return useSharedCache && m0 + blockSize <= sharedPackedCache.cachedSnps;
+    };
+    const auto blockNeedsTransfer = [&](uint64 m0, uint64 blockSize) {
+      return !blockIsCached(m0, blockSize) || populateSharedCache;
+    };
+    const auto stageBlock = [&](uint64 m0, uint64 blockSize) {
+      if (!blockNeedsTransfer(m0, blockSize))
+        return;
+      const int slot = static_cast<int>((m0 / snpsPerBlock) & 1);
+      if (transferRecorded[slot] && stagedM0[slot] == m0)
+        return;
+      if (transferRecorded[slot])
+        checkCuda(cudaEventSynchronize(transferDone[slot]),
+                  "wait for marker initialization pinned block");
+      const bool cachedDestination = blockIsCached(m0, blockSize);
+      if (!cachedDestination && consumedRecorded[slot])
+        checkCuda(cudaStreamWaitEvent(transferStream, packedConsumed[slot], 0),
+                  "wait before reusing marker initialization packed block");
+      const uint64 blockBytes = blockSize * bytesPerSnp;
+      std::memcpy(hostPackedBlocks[slot], hostGenotypes + m0 * bytesPerSnp,
+                  blockBytes);
+      uchar *destination = cachedDestination ?
+        sharedPackedCache.deviceGenotypes + m0 * bytesPerSnp : packedBlocks[slot];
+      checkCuda(cudaMemcpyAsync(destination, hostPackedBlocks[slot], blockBytes,
+                                cudaMemcpyHostToDevice, transferStream),
+                "stream packed genotypes for marker initialization");
+      checkCuda(cudaEventRecord(transferDone[slot], transferStream),
+                "record marker initialization packed transfer");
+      transferRecorded[slot] = true;
+      consumedRecorded[slot] = false;
+      stagedM0[slot] = m0;
+    };
+
     for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
       const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
-      const uint64 blockBytes = blockSize * bytesPerSnp * sizeof(*packedBlock);
-      const bool blockCached = useSharedCache &&
-                               m0 + blockSize <= sharedPackedCache.cachedSnps;
-      uchar *packedInput = packedBlock;
-      if (blockCached) {
-        packedInput = sharedPackedCache.deviceGenotypes + m0 * bytesPerSnp;
-        if (populateSharedCache)
-          checkCuda(cudaMemcpy(packedInput, hostGenotypes + m0 * bytesPerSnp,
-                               blockBytes, cudaMemcpyHostToDevice),
-                    "populate CUDA packed genotype cache during marker initialization");
-      }
-      else
-        checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
-                             blockBytes, cudaMemcpyHostToDevice),
-                  "copy packed genotypes for marker initialization");
-      computeMarkerLookup<<<static_cast<unsigned int>(blockSize), threads>>>
+      stageBlock(m0, blockSize);
+      const uint64 nextM0 = m0 + blockSize;
+      if (nextM0 < M)
+        stageBlock(nextM0, std::min<uint64>(snpsPerBlock, M-nextM0));
+
+      const int slot = static_cast<int>((m0 / snpsPerBlock) & 1);
+      if (blockNeedsTransfer(m0, blockSize))
+        checkCuda(cudaStreamWaitEvent(computeStream, transferDone[slot], 0),
+                  "wait for marker initialization packed transfer");
+      const bool blockCached = blockIsCached(m0, blockSize);
+      const uchar *packedInput = blockCached ?
+        sharedPackedCache.deviceGenotypes + m0 * bytesPerSnp : packedBlocks[slot];
+      computeMarkerLookup<<<static_cast<unsigned int>(blockSize), threads, 0,
+                            computeStream>>>
         (packedInput, maskIndivs, lookup, projMaskSnps, m0, blockSize, Nstride, Nused);
       checkCuda(cudaGetLastError(), "launch marker lookup initialization");
-      decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+      decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                       computeStream>>>
         (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
          nullptr, m0, blockSize, Nstride, Cstride);
       checkCuda(cudaGetLastError(), "launch marker initialization decoder");
+      if (!blockCached) {
+        checkCuda(cudaEventRecord(packedConsumed[slot], computeStream),
+                  "record marker initialization packed consumption");
+        consumedRecorded[slot] = true;
+      }
       if (Cindep)
         checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
                                 static_cast<int>(Cindep), static_cast<int>(blockSize),
@@ -750,24 +1012,30 @@ namespace LMM {
                                 static_cast<int>(NCstride), &zero,
                                 negCovComps + m0 * Cstride, static_cast<int>(Cstride)),
                     "cuBLAS marker covariate projection");
-      finalizeMarkerInitialization<<<numBlocks(blockSize, threads), threads>>>
+      finalizeMarkerInitialization<<<numBlocks(blockSize, threads), threads, 0,
+                                     computeStream>>>
         (lookup, negCovComps, Xnorm2s, projMaskSnps, m0, blockSize,
          Cindep, Cstride, Nused);
       checkCuda(cudaGetLastError(), "launch marker initialization finalizer");
     }
 
-    checkCuda(cudaMemcpy(hostLookup, lookup, M * 4 * sizeof(*lookup),
-                         cudaMemcpyDeviceToHost),
+    checkCuda(cudaMemcpyAsync(hostLookup, lookup, M * 4 * sizeof(*lookup),
+                              cudaMemcpyDeviceToHost, computeStream),
               "copy initialized marker lookup from CUDA");
-    checkCuda(cudaMemcpy(hostNegCovComps, negCovComps,
-                         M * Cstride * sizeof(*negCovComps), cudaMemcpyDeviceToHost),
+    checkCuda(cudaMemcpyAsync(hostNegCovComps, negCovComps,
+                              M * Cstride * sizeof(*negCovComps),
+                              cudaMemcpyDeviceToHost, computeStream),
               "copy initialized marker covariate components from CUDA");
-    checkCuda(cudaMemcpy(hostXnorm2s, Xnorm2s, M * sizeof(*Xnorm2s),
-                         cudaMemcpyDeviceToHost),
+    checkCuda(cudaMemcpyAsync(hostXnorm2s, Xnorm2s, M * sizeof(*Xnorm2s),
+                              cudaMemcpyDeviceToHost, computeStream),
               "copy initialized marker norms from CUDA");
-    checkCuda(cudaMemcpy(hostProjMaskSnps, projMaskSnps, M * sizeof(*projMaskSnps),
-                         cudaMemcpyDeviceToHost),
+    checkCuda(cudaMemcpyAsync(hostProjMaskSnps, projMaskSnps,
+                              M * sizeof(*projMaskSnps), cudaMemcpyDeviceToHost,
+                              computeStream),
               "copy initialized marker mask from CUDA");
+    checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA marker initialization");
+    checkCuda(cudaStreamSynchronize(transferStream),
+              "finish CUDA marker initialization transfers");
 
     cudaFree(projMaskSnps);
     cudaFree(Xnorm2s);
@@ -776,8 +1044,17 @@ namespace LMM {
     cudaFree(covBasis);
     cudaFree(maskIndivs);
     cudaFree(snpBlock);
-    cudaFree(packedBlock);
+    for (int slot = 0; slot < 2; slot++) {
+      if (packedConsumed[slot]) cudaEventDestroy(packedConsumed[slot]);
+      if (transferDone[slot]) cudaEventDestroy(transferDone[slot]);
+      cudaFree(packedBlocks[slot]);
+    }
+    if (needsPackedTransfers && sharedPinnedPackedBuffers.references == 0 &&
+        useSharedCache && sharedPackedCache.cachedSnps == M)
+      releaseUnownedSharedPinnedPackedBuffers();
     cublasDestroy(cublas);
+    cudaStreamDestroy(transferStream);
+    cudaStreamDestroy(computeStream);
   }
 
   CudaStep1::CudaStep1(const uchar genotypes[], const double maskIndivs[],

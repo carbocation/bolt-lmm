@@ -197,7 +197,8 @@ namespace LMM {
     //   (presumably obtained by using writeMaskIndivs and taking a subset)
     // work: 256x4 aligned work array
     void buildMaskedSnpVector(double out[], const double subMaskIndivs[], uint64 m,
-			      const double lut0129[4], double (*work)[4]) const;
+			      const double lut0129[4], double (*work)[4],
+			      bool allIndivsIncluded=false) const;
     
     /**
      * performs fast rough computation of LD Scores among chip snps to use in regression weights

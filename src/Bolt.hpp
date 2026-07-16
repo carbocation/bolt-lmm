@@ -72,6 +72,7 @@ namespace LMM {
     const SnpData &snpData; // use to obtain snp vectors via buildMaskedGenotypeVector
     CovariateBasis covBasis; // contains covariates and maskIndivs
     const double *maskIndivs; // [VECTOR PTR]: NOT copied; set to point to covBasis.maskIndivs
+    bool maskCoversAllIndivs;
     uint64 M, Nstride, Nused, Cindep, Cstride; // likewise inherited from snpData, covBasis
 
     double *Xnorm2s; // [VECTOR]: M (square norms of columns of X, i.e., normalized SNPs)
@@ -92,7 +93,8 @@ namespace LMM {
 
     inline void buildMaskedSnpNegCovCompVec(double snpCovCompVec[], uint64 m, double (*work)[4])
       const {
-      snpData.buildMaskedSnpVector(snpCovCompVec, maskIndivs, m, snpValueLookup[m], work);
+      snpData.buildMaskedSnpVector(snpCovCompVec, maskIndivs, m, snpValueLookup[m], work,
+				   maskCoversAllIndivs);
       // check: project out covariates immediately
       /*
       covBasis.projectCovars(snpCovCompVec);

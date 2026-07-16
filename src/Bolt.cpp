@@ -1259,6 +1259,7 @@ namespace LMM {
     Nstride = snpData.getNstride();
     maskIndivs = covBasis.getMaskIndivs();
     Nused = covBasis.getNused();
+    maskCoversAllIndivs = snpData.allIndivsIncluded(maskIndivs);
     Cindep = covBasis.getCindep();
     Cstride = (Cindep+3)&~3;
     numChromsProjMask = 0;
@@ -1280,6 +1281,7 @@ namespace LMM {
     Nstride = snpData.getNstride();
     maskIndivs = covBasis.getMaskIndivs();
     Nused = covBasis.getNused();
+    maskCoversAllIndivs = snpData.allIndivsIncluded(maskIndivs);
     Cindep = covBasis.getCindep();
     //Cstride = (Nstride+Cindep+7)&~7 - Nstride; // 64-byte alignment of covCompVecs
     Cstride = (Cindep+3)&~3;
@@ -1314,7 +1316,8 @@ namespace LMM {
     for (uint64 m = 0; m < M; m++)
       if (projMaskSnps[m]) {
 	// build masked snp vector with default 0129 values (note 0 can mean masked!)
-	snpData.buildMaskedSnpVector(snpVector, maskIndivs, m, lut0129, work);
+	snpData.buildMaskedSnpVector(snpVector, maskIndivs, m, lut0129, work,
+				     maskCoversAllIndivs);
 	projMaskSnps[m] = initMarker(m, snpVector);
 
 	if (projMaskSnps[m]) { // may have been masked by initMarker!
@@ -1370,7 +1373,8 @@ namespace LMM {
   
     for (uint64 m = 0; m < M; m++)
       if (projMaskSnps[m]) {
-	snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m], work);
+	snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m], work,
+				     maskCoversAllIndivs);
 	// pheno has vector norm 1 and is orthogonal to covariates
 	// ||snpVec||^2 = Xnorm2s[m]
 	// dot product is really taking place in Nused-Cindep free dimensions: scale to get chisq
@@ -1660,7 +1664,7 @@ namespace LMM {
 	if (projMaskSnps[m]) {
 	  // build snp vector with mask of choice (no mask if extAllIndivs)
 	  snpData.buildMaskedSnpVector(snpNegCovCompVec, maskIndivsChoice, m, snpValueLookup[m],
-				       work);
+				       work, !extAllIndivs && maskCoversAllIndivs);
 	  // copy negative covar comps
 	  memcpy(snpNegCovCompVec + Nstride, snpCovBasisNegComps + m*Cstride,
 		 Cstride*sizeof(snpNegCovCompVec[0]));

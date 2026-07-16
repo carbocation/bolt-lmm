@@ -7,6 +7,7 @@ legacy Intel/Linux release environments.
 ## Dependencies
 
 - A C++14 compiler and CMake 3.18 or newer
+- The bundled pgenlib sources (no separate PLINK 2 installation is required)
 - Boost.Program_options and Boost.Iostreams
 - zlib and zstd
 - NLopt, including its C++ header (`nlopt.hpp`)
@@ -23,6 +24,13 @@ ctest --test-dir build --output-on-failure
 
 The executable is written to `build/bolt`. The equivalent convenience command
 is `make`; additional CMake options can be supplied through `CMAKE_ARGS`.
+
+## PLINK 2 hardcall input
+
+Use `--pfile PREFIX` in either Stage 1 or Stage 2 to read
+`PREFIX.pgen`, `PREFIX.pvar` (or `.pvar.gz`), and `PREFIX.psam` (or `.psam.gz`).
+BOLT accepts biallelic variants and intentionally reads the PGEN hardcall
+component; dosage overrides in the PGEN are reported and ignored.
 
 ## macOS on Apple Silicon
 

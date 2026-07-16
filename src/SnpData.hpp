@@ -21,7 +21,7 @@
 
 #include <vector>
 #include <string>
-#include <map>
+#include <unordered_map>
 #include <unordered_set>
 #include <boost/utility.hpp>
 
@@ -57,9 +57,10 @@ namespace LMM {
 
     std::vector <SnpInfo> snps; // [VECTOR]: M
     bool mapAvailable;
+    bool bedIndivsIdentity;
     int Nautosomes;
     
-    std::map <std::string, uint64> FID_IID_to_ind;
+    std::unordered_map <std::string, uint64> FID_IID_to_ind;
   
     struct IndivInfo {
       std::string famID;
@@ -86,16 +87,23 @@ namespace LMM {
     bool fillSnpSubRowNorm1(float x[], uint64 m, const std::vector <int> &indivs) const;
     
 
-    void processIndivs(const std::string &famFile, const std::vector <std::string> &removeFiles);
+    void processIndivs(const std::string &sampleFile,
+                       const std::vector <std::string> &removeFiles,
+                       bool psamFormat);
     std::vector <SnpInfo> processSnps(std::vector <uint64> &Mfiles,
-				      const std::vector <std::string> &bimFiles,
+				      const std::vector <std::string> &variantFiles,
 				      const std::vector <std::string> &excludeFiles,
 				      const std::vector <std::string> &modelSnpsFiles,
 				      const std::vector <std::string> &vcNamesIn,
-				      bool loadNonModelSnps);
+				      bool loadNonModelSnps, bool pvarFormat);
     void processMap(std::vector <SnpInfo> &bedSnps, const std::string &geneticMapFile,
 		    bool noMapCheck);
-    void storeBedLine(uchar bedLineOut[], const uchar genoLine[]);
+    void storeBedLineAndCountMissing(uchar bedLineOut[], const uchar genoLine[],
+				     int numMissingPerIndiv[]);
+    void storeIdentityBedLineAndCountMissing(uchar bedLineOut[], const uchar bedLineIn[],
+					     int numMissingPerIndiv[]) const;
+    void finishGenoQc(const std::vector <int> &numMissingPerIndiv,
+                      double maxMissingPerIndiv);
 
   public:
     /**    
@@ -112,10 +120,20 @@ namespace LMM {
 	    std::vector <std::string> vcNamesIn=std::vector <std::string> (),
 	    bool loadNonModelSnps=true, int _Nautosomes=22);
 
-    // Stage 2 sample state. If famFile is set, also initializes PLINK BED sample mapping.
+    /** Reads biallelic hardcalls from a PLINK 2 pgen/pvar/psam file set. */
+    SnpData(const std::string &pgenFile, const std::string &pvarFile,
+            const std::string &psamFile, const std::string &geneticMapFile,
+            const std::vector <std::string> &excludeFiles,
+            const std::vector <std::string> &modelSnpsFiles,
+            const std::vector <std::string> &removeFiles,
+            double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
+            std::vector <std::string> vcNamesIn=std::vector <std::string> (),
+            bool loadNonModelSnps=true, int _Nautosomes=22);
+
+    // Stage 2 sample state. If sampleFile is set, also initializes input sample mapping.
     SnpData(const std::vector < std::pair <std::string, std::string> > &_indivIds,
 	    const std::vector <double> &_maskIndivs, uint64 _Nstride,
-	    const std::string &famFile, int _Nautosomes=22);
+	    const std::string &sampleFile, int _Nautosomes=22, bool psamFormat=false);
 
     ~SnpData();
 
@@ -132,6 +150,13 @@ namespace LMM {
      */
     void readBedLine(uchar genoLine[], uchar bedLineIn[], FileUtils::AutoGzIfstream &fin,
 		     bool loadGenoLine) const;
+    bool getBedIndivsIdentity(void) const;
+    double computeIdentityBedAlleleFreqAndMissing(const uchar bedLine[], double *missing) const;
+    void identityBedLineToSnpVector(double out[], const uchar bedLine[], double alleleFreq,
+				    double (*work)[4]) const;
+    bool allIndivsIncluded(const double subMaskIndivs[]) const;
+    double computeAlleleFreqAndMissing(const uchar genoLine[], const double subMaskIndivs[],
+				       double *missing, bool allIndivsIncluded=false) const;
     double computeAlleleFreq(const uchar genoLine[], const double subMaskIndivs[]) const;
     double computeAlleleFreq(const double genoLine[], const double subMaskIndivs[]) const;
     double computeMAF(const uchar genoLine[], const double subMaskIndivs[]) const;
@@ -139,15 +164,17 @@ namespace LMM {
     double computeSnpMissing(const double dosageLine[], const double subMaskIndivs[]) const;
     // assumes maskedSnpVector has dimension Nstride; zero-fills
     void genoLineToMaskedSnpVector(double maskedSnpVector[], const uchar genoLine[],
-				   const double subMaskIndivs[], double MAF) const;
+				   const double subMaskIndivs[], double MAF,
+				   bool allIndivsIncluded=false) const;
     // assumes maskedSnpVector has dimension Nstride; zero-fills
     void dosageLineToMaskedSnpVector(double dosageLineVec[], const double subMaskIndivs[],
-				     double MAF) const;
+				     double MAF, bool allIndivsIncluded=false) const;
 
     uint64 getM(void) const;
     // don't provide getN: don't want the rest of the program to even know N!
     uint64 getNstride(void) const;
     uint64 getNbed(void) const;
+    const std::vector <int> &getInputIndivToModelIndex(void) const;
     const double* getMaskIndivs(void) const;
     uint64 getNumIndivsQC(void) const;
     void writeMaskSnps(uchar out[]) const;
@@ -188,7 +215,8 @@ namespace LMM {
     //   (presumably obtained by using writeMaskIndivs and taking a subset)
     // work: 256x4 aligned work array
     void buildMaskedSnpVector(double out[], const double subMaskIndivs[], uint64 m,
-			      const double lut0129[4], double (*work)[4]) const;
+			      const double lut0129[4], double (*work)[4],
+			      bool allIndivsIncluded=false) const;
     
     /**
      * performs fast rough computation of LD Scores among chip snps to use in regression weights

@@ -29,8 +29,8 @@ set(BOLT_OPENMP "AUTO" CACHE STRING
 set_property(CACHE BOLT_OPENMP PROPERTY STRINGS AUTO ON OFF)
 
 set(BOLT_SIMD "AUTO" CACHE STRING
-  "Genotype decoding implementation: AUTO, SSE2, or SCALAR")
-set_property(CACHE BOLT_SIMD PROPERTY STRINGS AUTO SSE2 SCALAR)
+  "Genotype decoding implementation: AUTO, SSE2, NEON, or SCALAR")
+set_property(CACHE BOLT_SIMD PROPERTY STRINGS AUTO SSE2 NEON SCALAR)
 
 set(BOLT_CPU_TARGET "portable" CACHE STRING
   "CPU target: portable, native, or a compiler target such as x86-64-v3 or apple-m1")
@@ -58,7 +58,7 @@ endif()
 if(NOT BOLT_OPENMP MATCHES "^(AUTO|ON|OFF)$")
   message(FATAL_ERROR "Unsupported BOLT_OPENMP='${BOLT_OPENMP}'")
 endif()
-if(NOT BOLT_SIMD MATCHES "^(AUTO|SSE2|SCALAR)$")
+if(NOT BOLT_SIMD MATCHES "^(AUTO|SSE2|NEON|SCALAR)$")
   message(FATAL_ERROR "Unsupported BOLT_SIMD='${BOLT_SIMD}'")
 endif()
 
@@ -96,6 +96,8 @@ target_compile_options(bolt_build_options INTERFACE
 if(BOLT_SIMD STREQUAL "AUTO")
   if(BOLT_X86)
     set(BOLT_SIMD "SSE2")
+  elseif(BOLT_ARM AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(BOLT_SIMD "NEON")
   else()
     set(BOLT_SIMD "SCALAR")
   endif()
@@ -108,6 +110,11 @@ if(BOLT_SIMD STREQUAL "SSE2")
   if(CMAKE_SIZEOF_VOID_P EQUAL 4)
     target_compile_options(bolt_build_options INTERFACE -msse2)
   endif()
+elseif(BOLT_SIMD STREQUAL "NEON")
+  if(NOT BOLT_ARM OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "BOLT_SIMD=NEON is only valid for 64-bit ARM processors")
+  endif()
+  target_compile_definitions(bolt_build_options INTERFACE USE_NEON)
 endif()
 
 if(NOT BOLT_CPU_TARGET STREQUAL "portable")
@@ -149,6 +156,24 @@ endif()
 find_package(Threads REQUIRED)
 find_package(Boost 1.58 REQUIRED COMPONENTS program_options iostreams)
 find_package(ZLIB REQUIRED)
+
+set(BOLT_PGENLIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pgenlib")
+add_library(bolt_pgenlib STATIC
+  ${BOLT_PGENLIB_ROOT}/pgenlibr.cpp
+  ${BOLT_PGENLIB_ROOT}/pgenlib_ffi_support.cpp
+  ${BOLT_PGENLIB_ROOT}/pvar_ffi_support.cc
+  ${BOLT_PGENLIB_ROOT}/include/pgenlib_misc.cc
+  ${BOLT_PGENLIB_ROOT}/include/pgenlib_read.cc
+  ${BOLT_PGENLIB_ROOT}/include/plink2_base.cc
+  ${BOLT_PGENLIB_ROOT}/include/plink2_bits.cc)
+target_compile_features(bolt_pgenlib PUBLIC cxx_std_11)
+target_include_directories(bolt_pgenlib PUBLIC
+  "${BOLT_PGENLIB_ROOT}"
+  "${BOLT_PGENLIB_ROOT}/include"
+  "${BOLT_PGENLIB_ROOT}/simde")
+# pgenlib is vendored third-party code and has its own warning policy.
+target_compile_options(bolt_pgenlib PRIVATE
+  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-w>)
 
 add_library(bolt_zstd INTERFACE)
 find_package(zstd CONFIG QUIET)
@@ -317,6 +342,7 @@ set(BOLT_SOURCES
   src/NonlinearOptMulti.cpp
   src/NumericUtils.cpp
   src/PhenoBuilder.cpp
+  src/PgenUtils.cpp
   src/RestrictSnpSet.cpp
   src/SnpData.cpp
   src/SnpInfo.cpp
@@ -337,6 +363,7 @@ add_executable(bolt ${BOLT_SOURCES})
 target_include_directories(bolt PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(bolt PRIVATE
   bolt_build_options
+  bolt_pgenlib
   bolt_linear_algebra
   bolt_nlopt
   bolt_openmp
@@ -355,6 +382,58 @@ install(TARGETS bolt RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 if(BUILD_TESTING)
   add_test(NAME bolt_help COMMAND bolt --help)
+
+  add_executable(pgen_stage1_parity_test
+    tests/PgenStage1Parity.cpp
+    src/FileUtils.cpp
+    src/MapInterpolater.cpp
+    src/MemoryUtils.cpp
+    src/NumericUtils.cpp
+    src/PgenUtils.cpp
+    src/RestrictSnpSet.cpp
+    src/SnpData.cpp
+    src/SnpInfo.cpp
+    src/StringUtils.cpp)
+  target_include_directories(pgen_stage1_parity_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(pgen_stage1_parity_test PRIVATE
+    bolt_build_options
+    bolt_pgenlib
+    bolt_linear_algebra
+    bolt_openmp
+    bolt_zstd
+    Boost::iostreams
+    ZLIB::ZLIB
+    Threads::Threads
+    ${CMAKE_DL_LIBS})
+  add_test(NAME pgen_stage1_hardcall_parity
+    COMMAND pgen_stage1_parity_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity")
+
+  set(BOLT_STAGE2_TEST_SOURCES ${BOLT_SOURCES})
+  list(REMOVE_ITEM BOLT_STAGE2_TEST_SOURCES
+    src/BoltMain.cpp
+    src/BoltParams.cpp)
+  add_executable(pgen_stage2_parity_test
+    tests/PgenStage2Parity.cpp
+    ${BOLT_STAGE2_TEST_SOURCES})
+  target_include_directories(pgen_stage2_parity_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(pgen_stage2_parity_test PRIVATE
+    bolt_build_options
+    bolt_pgenlib
+    bolt_linear_algebra
+    bolt_nlopt
+    bolt_openmp
+    bolt_zstd
+    Boost::iostreams
+    ZLIB::ZLIB
+    Threads::Threads
+    ${CMAKE_DL_LIBS})
+  add_test(NAME pgen_stage2_hardcall_parity
+    COMMAND pgen_stage2_parity_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity"
+      "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 
 message(STATUS "BOLT platform: ${CMAKE_SYSTEM_NAME}/${BOLT_TARGET_PROCESSOR}")

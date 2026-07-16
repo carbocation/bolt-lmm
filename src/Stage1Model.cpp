@@ -4,6 +4,7 @@
 */
 
 #include <cstdio>
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
@@ -11,7 +12,11 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <set>
+#include <functional>
+#include <unordered_set>
+#include <utility>
+
+#include <zlib.h>
 
 #include "Stage1Model.hpp"
 
@@ -24,7 +29,9 @@ namespace LMM {
 
   namespace {
     const char MAGIC[8] = {'B','O','L','T','S','T','G','1'};
-    const uint32_t VERSION = 1;
+    const uint32_t VERSION_FNV = 1;
+    const uint32_t VERSION_FAST = 2;
+    const uint32_t VERSION = VERSION_FAST;
     const uint32_t ENDIAN_MARKER = 0x01020304;
     const uint64 MAX_COUNT = 1ULL<<40;
 
@@ -33,19 +40,39 @@ namespace LMM {
       exit(1);
     }
 
+    struct FastChecksum {
+      uLong crc;
+      uLong adler;
+      FastChecksum() : crc(crc32(0L, Z_NULL, 0)), adler(adler32(0L, Z_NULL, 0)) {}
+      void update(const void *data, size_t size) {
+	const Bytef *p = static_cast<const Bytef *>(data);
+	while (size) {
+	  const uInt chunk = static_cast<uInt>(
+	    std::min<size_t>(size, std::numeric_limits<uInt>::max()));
+	  crc = crc32(crc, p, chunk);
+	  adler = adler32(adler, p, chunk);
+	  p += chunk;
+	  size -= chunk;
+	}
+      }
+      uint64 value() const {
+	return (static_cast<uint64>(static_cast<uint32_t>(crc)) << 32) |
+	  static_cast<uint32_t>(adler);
+      }
+    };
+
     struct CheckedWriter {
       std::ofstream out;
-      uint64 hash;
+      FastChecksum checksum;
       string file;
-      explicit CheckedWriter(const string &_file) : hash(14695981039346656037ULL), file(_file) {
+      explicit CheckedWriter(const string &_file) : file(_file) {
 	out.open(file.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
 	if (!out) fail(file, "could not open temporary output file");
       }
       void bytes(const void *data, size_t size) {
 	out.write((const char *) data, size);
 	if (!out) fail(file, "write failed");
-	const unsigned char *p = (const unsigned char *) data;
-	for (size_t i = 0; i < size; i++) { hash ^= p[i]; hash *= 1099511628211ULL; }
+	checksum.update(data, size);
       }
       template <class T> void value(const T &x) { bytes(&x, sizeof(x)); }
       void text(const string &x) {
@@ -54,6 +81,7 @@ namespace LMM {
 	if (size) bytes(x.data(), size);
       }
       void finish() {
+	const uint64 hash = checksum.value();
 	out.write((const char *) &hash, sizeof(hash));
 	out.close();
 	if (!out) fail(file, "could not finish output file");
@@ -61,20 +89,30 @@ namespace LMM {
     };
 
     struct CheckedReader {
+      enum ChecksumMode { UNDECIDED, FNV, FAST };
       std::ifstream in;
-      uint64 hash;
+      uint64 fnvHash;
+      FastChecksum fastChecksum;
+      ChecksumMode checksumMode;
       string file;
-      explicit CheckedReader(const string &_file) : hash(14695981039346656037ULL), file(_file) {
+      explicit CheckedReader(const string &_file) : fnvHash(14695981039346656037ULL),
+	checksumMode(UNDECIDED), file(_file) {
 	in.open(file.c_str(), std::ios::in | std::ios::binary);
 	if (!in) fail(file, "could not open file");
       }
       void bytes(void *data, size_t size) {
 	in.read((char *) data, size);
 	if (!in) fail(file, "file is truncated");
-	const unsigned char *p = (const unsigned char *) data;
-	for (size_t i = 0; i < size; i++) { hash ^= p[i]; hash *= 1099511628211ULL; }
+	if (checksumMode != FAST) {
+	  const unsigned char *p = static_cast<const unsigned char *>(data);
+	  for (size_t i = 0; i < size; i++) { fnvHash ^= p[i]; fnvHash *= 1099511628211ULL; }
+	}
+	if (checksumMode != FNV) fastChecksum.update(data, size);
       }
       template <class T> T value() { T x; bytes(&x, sizeof(x)); return x; }
+      void setVersion(uint32_t version) {
+	checksumMode = version == VERSION_FNV ? FNV : FAST;
+      }
       string text() {
 	uint32_t size = value<uint32_t>();
 	if (size > (1U<<24)) fail(file, "invalid string length");
@@ -86,7 +124,8 @@ namespace LMM {
 	uint64 expected;
 	in.read((char *) &expected, sizeof(expected));
 	if (!in) fail(file, "file is truncated before checksum");
-	if (expected != hash) fail(file, "checksum mismatch (file is corrupt or incomplete)");
+	const uint64 actual = checksumMode == FNV ? fnvHash : fastChecksum.value();
+	if (expected != actual) fail(file, "checksum mismatch (file is corrupt or incomplete)");
 	if (in.get() != EOF) fail(file, "unexpected trailing data");
       }
     };
@@ -96,6 +135,14 @@ namespace LMM {
 	fail(file, "invalid array dimensions");
       return a*b;
     }
+
+    struct SampleIdHash {
+      size_t operator()(const std::pair<string, string> &id) const {
+	size_t first = std::hash<string>()(id.first);
+	size_t second = std::hash<string>()(id.second);
+	return first ^ (second + 0x9e3779b9 + (first << 6) + (first >> 2));
+      }
+    };
   }
 
   void Stage1Model::save(const string &file, const SnpData &snpData, const Bolt &bolt,
@@ -150,7 +197,9 @@ namespace LMM {
     char magic[sizeof(MAGIC)]; in.bytes(magic, sizeof(magic));
     if (memcmp(magic, MAGIC, sizeof(MAGIC)) != 0) fail(file, "not a BOLT Stage 1 model");
     uint32_t version = in.value<uint32_t>();
-    if (version != VERSION) fail(file, "unsupported model version");
+    if (version != VERSION_FNV && version != VERSION_FAST)
+      fail(file, "unsupported model version");
+    in.setVersion(version);
     if (in.value<uint32_t>() != ENDIAN_MARKER) fail(file, "incompatible byte order");
 
     Stage1Model model;
@@ -166,13 +215,14 @@ namespace LMM {
     checkedProduct(file, model.Cindep, model.Nstride);
 
     model.indivIds.reserve(N);
-    std::set < std::pair <string, string> > seenIds;
+    std::unordered_set < std::pair <string, string>, SampleIdHash > seenIds;
+    seenIds.reserve(N);
     for (uint64 n = 0; n < N; n++) {
       string FID = in.text();
       string IID = in.text();
       if (FID.empty() || IID.empty() || !seenIds.insert(std::make_pair(FID, IID)).second)
 	fail(file, "invalid or duplicate sample ID");
-      model.indivIds.push_back(std::make_pair(FID, IID));
+      model.indivIds.emplace_back(std::move(FID), std::move(IID));
     }
     model.maskIndivs.resize(model.Nstride);
     if (model.Nstride) in.bytes(&model.maskIndivs[0], model.Nstride*sizeof(double));

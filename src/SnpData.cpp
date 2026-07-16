@@ -19,15 +19,21 @@
 #include <cstring>
 #include <cmath>
 #include <cassert>
+#include <array>
+#include <climits>
 #include <iomanip>
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <map>
 #include <unordered_set>
+#include <utility>
 
 #ifdef USE_SSE
 #include <emmintrin.h> // SSE2 for packed doubles
+#endif
+#ifdef USE_NEON
+#include <arm_neon.h>
 #endif
 
 #include "Types.hpp"
@@ -38,6 +44,8 @@
 #include "MemoryUtils.hpp"
 #include "MapInterpolater.hpp"
 #include "LapackConst.hpp"
+#include "PgenUtils.hpp"
+#include "pgenlibr.h"
 
 namespace LMM {
 
@@ -48,6 +56,43 @@ namespace LMM {
   using std::cerr;
   using std::endl;
   using FileUtils::getline;
+
+  namespace {
+
+    typedef std::array<uchar, 4> DecodedBedByte;
+
+    struct BedByteStats {
+      uchar alleleSum;
+      uchar numMissing;
+    };
+
+    std::array<DecodedBedByte, 256> makeBedByteLookup() {
+      const uchar bedToGeno[4] = {2, 9, 1, 0};
+      std::array<DecodedBedByte, 256> lookup = {};
+      for (uint byte = 0; byte < lookup.size(); byte++)
+	for (uint k = 0; k < 4; k++)
+	  lookup[byte][k] = bedToGeno[(byte >> (2*k)) & 3];
+      return lookup;
+    }
+
+    const std::array<DecodedBedByte, 256> BED_BYTE_LOOKUP = makeBedByteLookup();
+
+    std::array<BedByteStats, 256> makeBedByteStats() {
+      std::array<BedByteStats, 256> stats = {};
+      for (uint byte = 0; byte < stats.size(); byte++)
+	for (uint k = 0; k < 4; k++) {
+	  const uchar geno = BED_BYTE_LOOKUP[byte][k];
+	  if (geno == 9)
+	    stats[byte].numMissing++;
+	  else
+	    stats[byte].alleleSum += geno;
+	}
+      return stats;
+    }
+
+    const std::array<BedByteStats, 256> BED_BYTE_STATS = makeBedByteStats();
+
+  }
 
   const uint64 SnpData::IND_MISSING = (uint64) -1;
 
@@ -203,33 +248,55 @@ namespace LMM {
     }
   }
 
-  void SnpData::processIndivs(const string &famFile, const vector <string> &removeFiles) {
+  void SnpData::processIndivs(const string &sampleFile, const vector <string> &removeFiles,
+                              bool psamFormat) {
     string line;
 
     vector <IndivInfo> bedIndivs;
-    FileUtils::AutoGzIfstream fin; fin.openOrExit(famFile);
-    while (getline(fin, line)) {
-      std::istringstream iss(line);
-      IndivInfo indiv; string phenoStr;
-      if (!(iss >> indiv.famID >> indiv.indivID >> indiv.paternalID >> indiv.maternalID
-	    >> indiv.sex >> phenoStr)) {
-	cerr << "ERROR: Incorrectly formatted fam file: " << famFile << endl;
-	cerr << "Line " << bedIndivs.size()+1 << ":" << endl;
-	cerr << line << endl;
-	cerr << "Unable to input 6 values (4 string, 1 int, 1 double/string)" << endl;
-	exit(1);
+    FileUtils::AutoGzIfstream fin;
+    if (psamFormat) {
+      vector <PgenUtils::SampleInfo> psamIndivs = PgenUtils::readPsamFile(sampleFile);
+      bedIndivs.reserve(psamIndivs.size());
+      for (uint64 n = 0; n < psamIndivs.size(); n++) {
+	IndivInfo indiv;
+	indiv.famID = psamIndivs[n].famID;
+	indiv.indivID = psamIndivs[n].indivID;
+	indiv.paternalID = psamIndivs[n].paternalID;
+	indiv.maternalID = psamIndivs[n].maternalID;
+	indiv.sex = psamIndivs[n].sex;
+	indiv.pheno = psamIndivs[n].pheno;
+	bedIndivs.push_back(std::move(indiv));
       }
-      if (sscanf(phenoStr.c_str(), "%lf", &indiv.pheno) != 1)
-	indiv.pheno = -9;
-      string combined_ID = indiv.famID + " " + indiv.indivID;
-      if (FID_IID_to_ind.find(combined_ID) != FID_IID_to_ind.end()) {
-	cerr << "ERROR: Duplicate individual in fam file at line " << bedIndivs.size()+1 << endl;
-	exit(1);
-      }
-      FID_IID_to_ind[combined_ID] = bedIndivs.size();
-      bedIndivs.push_back(indiv);
     }
-    fin.close();
+    else {
+      fin.openOrExit(sampleFile);
+      while (getline(fin, line)) {
+	std::istringstream iss(line);
+	IndivInfo indiv; string phenoStr;
+	if (!(iss >> indiv.famID >> indiv.indivID >> indiv.paternalID >> indiv.maternalID
+	      >> indiv.sex >> phenoStr)) {
+	  cerr << "ERROR: Incorrectly formatted fam file: " << sampleFile << endl;
+	  cerr << "Line " << bedIndivs.size()+1 << ":" << endl;
+	  cerr << line << endl;
+	  cerr << "Unable to input 6 values (4 string, 1 int, 1 double/string)" << endl;
+	  exit(1);
+	}
+	if (sscanf(phenoStr.c_str(), "%lf", &indiv.pheno) != 1)
+	  indiv.pheno = -9;
+	bedIndivs.push_back(std::move(indiv));
+      }
+      fin.close();
+    }
+
+    FID_IID_to_ind.reserve(bedIndivs.size());
+    for (uint64 n = 0; n < bedIndivs.size(); n++) {
+      string combined_ID = bedIndivs[n].famID + " " + bedIndivs[n].indivID;
+      if (!FID_IID_to_ind.emplace(combined_ID, n).second) {
+	cerr << "ERROR: Duplicate individual in " << (psamFormat ? "psam" : "fam")
+	     << " file at sample " << n+1 << endl;
+	exit(1);
+      }
+    }
     Nbed = bedIndivs.size();
 
     cout << "Total indivs in PLINK data: Nbed = " << Nbed << endl;
@@ -255,13 +322,14 @@ namespace LMM {
 	  exit(1);
 	}
 	string combined_ID = FID + " " + IID;
-	if (FID_IID_to_ind.find(combined_ID) == FID_IID_to_ind.end()) {
+	std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(combined_ID);
+	if (it == FID_IID_to_ind.end()) {
 	  if (numAbsent < 5)
 	    cerr << "WARNING: Unable to find individual to remove: " << combined_ID << endl;
 	  numAbsent++;
 	}
-	else if (useIndiv[FID_IID_to_ind[combined_ID]]) {
-	  useIndiv[FID_IID_to_ind[combined_ID]] = false;
+	else if (useIndiv[it->second]) {
+	  useIndiv[it->second] = false;
 	  numRemoved++;
 	}
       }
@@ -274,16 +342,21 @@ namespace LMM {
     // determine number of indivs remaining post-removal and set up indices
     bedIndivToRemoveIndex.resize(Nbed);
     FID_IID_to_ind.clear(); // redo FID_IID -> indiv index
+    FID_IID_to_ind.reserve(Nbed);
+    indivs.reserve(Nbed);
     for (uint64 nbed = 0; nbed < Nbed; nbed++) {
       if (useIndiv[nbed]) {
 	bedIndivToRemoveIndex[nbed] = indivs.size();
 	FID_IID_to_ind[bedIndivs[nbed].famID + " " + bedIndivs[nbed].indivID] = indivs.size();
-	indivs.push_back(bedIndivs[nbed]);
+	indivs.push_back(std::move(bedIndivs[nbed]));
       }
       else
 	bedIndivToRemoveIndex[nbed] = -1;
     }
     N = indivs.size();
+    bedIndivsIdentity = Nbed == N;
+    for (uint64 nbed = 0; bedIndivsIdentity && nbed < Nbed; nbed++)
+      bedIndivsIdentity = bedIndivToRemoveIndex[nbed] == static_cast<int>(nbed);
     cout << "Total indivs stored in memory: N = " << N << endl;
 
     // allocate and initialize maskIndivs to all good (aside from filler at end)
@@ -293,10 +366,12 @@ namespace LMM {
     for (uint64 n = N; n < Nstride; n++) maskIndivs[n] = 0;
   }
 
-  vector <SnpInfo> SnpData::processSnps(vector <uint64> &Mfiles, const vector <string> &bimFiles,
+  vector <SnpInfo> SnpData::processSnps(vector <uint64> &Mfiles,
+					const vector <string> &variantFiles,
 					const vector <string> &excludeFiles,
 					const vector <string> &modelSnpsFiles,
-					const vector <string> &vcNamesIn, bool loadNonModelSnps) {
+					const vector <string> &vcNamesIn, bool loadNonModelSnps,
+					bool pvarFormat) {
     FileUtils::AutoGzIfstream fin;
     string line;
 
@@ -316,10 +391,13 @@ namespace LMM {
     }
 
     vector <SnpInfo> bedSnps;
-    // read bim files
-    for (uint i = 0; i < bimFiles.size(); i++) {
-      cout << "Reading bim file #" << (i+1) << ": " << bimFiles[i] << endl;
-      vector <SnpInfo> snps_i = readBimFile(bimFiles[i], Nautosomes, &excludeSnps);
+    // read variant metadata files
+    for (uint i = 0; i < variantFiles.size(); i++) {
+      cout << "Reading " << (pvarFormat ? "pvar" : "bim") << " file #" << (i+1)
+	   << ": " << variantFiles[i] << endl;
+      vector <SnpInfo> snps_i = pvarFormat ?
+	PgenUtils::readPvarFile(variantFiles[i], Nautosomes, &excludeSnps) :
+	readBimFile(variantFiles[i], Nautosomes, &excludeSnps);
       bedSnps.insert(bedSnps.end(), snps_i.begin(), snps_i.end());
       Mfiles.push_back(snps_i.size());
       cout << "    Read " << Mfiles.back() << " snps" << endl;
@@ -346,15 +424,14 @@ namespace LMM {
 
     // check for duplicate snps
     {
-      std::set <string> rsIDs;
+      std::unordered_set <string> rsIDs;
+      rsIDs.reserve(Mbed);
       for (uint64 mbed = 0; mbed < Mbed; mbed++) {
-	if (rsIDs.find(bedSnps[mbed].ID) != rsIDs.end()) {
+	if (!rsIDs.insert(bedSnps[mbed].ID).second) {
 	  cerr << "WARNING: Duplicate snp ID " << bedSnps[mbed].ID
 	       << " -- masking duplicate" << endl;
 	  snpVCnum[mbed] = excludeVCnum;
 	}
-	else
-	  rsIDs.insert(bedSnps[mbed].ID);
       }
     }
 
@@ -362,10 +439,10 @@ namespace LMM {
     if (!excludeFiles.empty() || !modelSnpsFiles.empty()) {
 
       // create dictionary rsID -> index in full bed snp list
-      std::map <string, uint64> rsID_to_ind;
+      std::unordered_map <string, uint64> rsID_to_ind;
+      rsID_to_ind.reserve(Mbed);
       for (uint64 mbed = 0; mbed < Mbed; mbed++)
-	if (rsID_to_ind.find(bedSnps[mbed].ID) == rsID_to_ind.end()) // only use first of dupe IDs
-	  rsID_to_ind[bedSnps[mbed].ID] = mbed;
+	rsID_to_ind.emplace(bedSnps[mbed].ID, mbed); // only use first of dupe IDs
 
       // exclude snps
       for (uint f = 0; f < excludeFiles.size(); f++) {
@@ -377,13 +454,14 @@ namespace LMM {
 	while (getline(fin, line)) {
 	  std::istringstream iss(line);
 	  string rsID; iss >> rsID;
-	  if (rsID_to_ind.find(rsID) == rsID_to_ind.end()) {
+	  std::unordered_map <string, uint64>::const_iterator it = rsID_to_ind.find(rsID);
+	  if (it == rsID_to_ind.end()) {
 	    if (numAbsent < 5)
 	      cerr << "WARNING: Unable to find SNP to exclude: " << rsID << endl;
 	    numAbsent++;
 	  }
-	  else if (snpVCnum[rsID_to_ind[rsID]] != excludeVCnum) {
-	    snpVCnum[rsID_to_ind[rsID]] = excludeVCnum;
+	  else if (snpVCnum[it->second] != excludeVCnum) {
+	    snpVCnum[it->second] = excludeVCnum;
 	    numExcluded++;
 	  }
 	}
@@ -410,17 +488,18 @@ namespace LMM {
 	while (getline(fin, line)) {
 	  std::istringstream iss(line);
 	  string rsID; iss >> rsID;
-	  if (rsID_to_ind.find(rsID) == rsID_to_ind.end()) {
+	  std::unordered_map <string, uint64>::const_iterator it = rsID_to_ind.find(rsID);
+	  if (it == rsID_to_ind.end()) {
 	    if (numAbsent < 5)
 	      cerr << "WARNING: Unable to find SNP to include in model: " << rsID << endl;
 	    numAbsent++;
 	  }
-	  else if (snpVCnum[rsID_to_ind[rsID]] == excludeVCnum) {
+	  else if (snpVCnum[it->second] == excludeVCnum) {
 	    if (numAlreadyExcluded < 5)
 	      cerr << "WARNING: SNP has been excluded: " << rsID << endl;
 	    numAlreadyExcluded++;
 	  }
-	  else if (snpVCnum[rsID_to_ind[rsID]] == nonGrmVCnum) {
+	  else if (snpVCnum[it->second] == nonGrmVCnum) {
 	    string vcName; iss >> vcName; // ok if all lines have no other fields; then vcName=""
 	    if (vcName.empty()) vcName = "modelSnps";
 	    if (vcNamesToInds.find(vcName) == vcNamesToInds.end()) {
@@ -440,7 +519,7 @@ namespace LMM {
 		   << SnpInfo::MAX_VC_NUM << endl;
 	      exit(1);
 	    }
-	    snpVCnum[rsID_to_ind[rsID]] = vcNum;
+	    snpVCnum[it->second] = vcNum;
 	    numIncluded++;
 	  }
 	  else {
@@ -540,11 +619,71 @@ namespace LMM {
       }
   }
 
-  void SnpData::storeBedLine(uchar bedLineOut[], const uchar genoLine[]) {
-    const int genoToBed[10] = {3, 2, 0, 0, 0, 0, 0, 0, 0, 1};
-    memset(bedLineOut, 0, (Nstride>>2) * sizeof(bedLineOut[0]));
-    for (uint64 n = 0; n < N; n++)
-      bedLineOut[n>>2] = (uchar) (bedLineOut[n>>2] | genoToBed[genoLine[n]]<<((n&3)<<1));
+  void SnpData::storeBedLineAndCountMissing(uchar bedLineOut[], const uchar genoLine[],
+					     int numMissingPerIndiv[]) {
+    const uchar genoToBed[10] = {3, 2, 0, 0, 0, 0, 0, 0, 0, 1};
+    const uint64 fullBytes = N >> 2;
+    for (uint64 byte = 0; byte < fullBytes; byte++) {
+      const uchar *geno = genoLine + (byte << 2);
+      bedLineOut[byte] = genoToBed[geno[0]] | (genoToBed[geno[1]] << 2) |
+	(genoToBed[geno[2]] << 4) | (genoToBed[geno[3]] << 6);
+      for (uint64 offset = 0; offset < 4; offset++)
+	if (geno[offset] == 9)
+	  numMissingPerIndiv[(byte << 2) + offset]++;
+    }
+
+    const uint64 packedBytes = (N+3) >> 2;
+    if (fullBytes != packedBytes) {
+      uchar packed = 0;
+      for (uint64 n = fullBytes << 2; n < N; n++) {
+	packed |= genoToBed[genoLine[n]] << ((n&3) << 1);
+	if (genoLine[n] == 9)
+	  numMissingPerIndiv[n]++;
+      }
+      bedLineOut[fullBytes] = packed;
+    }
+    memset(bedLineOut + packedBytes, 0, (Nstride/4-packedBytes) * sizeof(bedLineOut[0]));
+  }
+
+  double SnpData::computeIdentityBedAlleleFreqAndMissing(const uchar bedLine[],
+						  double *missing) const {
+    uint64 alleleSum = 0, numMissing = 0;
+    const uint64 fullBytes = N >> 2;
+    for (uint64 byte = 0; byte < fullBytes; byte++) {
+      const BedByteStats &stats = BED_BYTE_STATS[bedLine[byte]];
+      alleleSum += stats.alleleSum;
+      numMissing += stats.numMissing;
+    }
+    for (uint64 n = fullBytes << 2; n < N; n++) {
+      const uchar geno = BED_BYTE_LOOKUP[bedLine[n>>2]][n&3];
+      if (geno == 9)
+	numMissing++;
+      else
+	alleleSum += geno;
+    }
+    *missing = static_cast<double>(numMissing) / N;
+    return 0.5 * alleleSum / (N-numMissing);
+  }
+
+  void SnpData::storeIdentityBedLineAndCountMissing(uchar bedLineOut[],
+						     const uchar bedLineIn[],
+						     int numMissingPerIndiv[]) const {
+    const uint64 fullBytes = N >> 2;
+    for (uint64 byte = 0; byte < fullBytes; byte++) {
+      const uchar packed = bedLineIn[byte];
+      bedLineOut[byte] = packed;
+      for (uint64 offset = 0; offset < 4; offset++)
+	if (((packed >> (offset << 1)) & 3) == 1)
+	  numMissingPerIndiv[(byte << 2) + offset]++;
+    }
+    if (N & 3) {
+      const uint64 byte = fullBytes;
+      const uchar paddingMask = (1U << (2*(N&3))) - 1;
+      bedLineOut[byte] = bedLineIn[byte] & paddingMask;
+      for (uint64 n = byte << 2; n < N; n++)
+	if (((bedLineIn[byte] >> ((n&3) << 1)) & 3) == 1)
+	  numMissingPerIndiv[n]++;
+    }
   }
 
   /**
@@ -555,6 +694,14 @@ namespace LMM {
 			    bool loadGenoLine) const {
     fin.read((char *) bedLineIn, (Nbed+3)>>2);
     if (loadGenoLine) {
+      if (bedIndivsIdentity) {
+	const uint64 fullBytes = N >> 2;
+	for (uint64 byte = 0; byte < fullBytes; byte++)
+	  memcpy(genoLine + (byte << 2), BED_BYTE_LOOKUP[bedLineIn[byte]].data(), 4);
+	for (uint64 n = fullBytes << 2; n < N; n++)
+	  genoLine[n] = BED_BYTE_LOOKUP[bedLineIn[n>>2]][n&3];
+	return;
+      }
       const int bedToGeno[4] = {2, 9, 1, 0};
       for (uint64 nbed = 0; nbed < Nbed; nbed++)
 	if (bedIndivToRemoveIndex[nbed] != -1) {
@@ -567,6 +714,47 @@ namespace LMM {
   bool SnpData::dosageValid(double dosage) {
     const double eps = 1e-6;
     return -eps <= dosage && dosage <= 2+eps;
+  }
+
+  bool SnpData::allIndivsIncluded(const double subMaskIndivs[]) const {
+    for (uint64 n = 0; n < N; n++)
+      if (!subMaskIndivs[n]) return false;
+    return true;
+  }
+
+  bool SnpData::getBedIndivsIdentity(void) const { return bedIndivsIdentity; }
+
+  double SnpData::computeAlleleFreqAndMissing(const uchar genoLine[],
+					      const double subMaskIndivs[],
+					      double *missing,
+					      bool allIndivsIncluded) const {
+    double alleleSum = 0, missingSum = 0;
+    int numObserved = 0, numMasked = 0;
+    if (allIndivsIncluded) {
+      for (size_t n = 0; n < N; n++) {
+	const bool isMissing = genoLine[n] == 9;
+	missingSum += isMissing;
+	if (!isMissing) {
+	  alleleSum += genoLine[n];
+	  numObserved++;
+	}
+      }
+      *missing = missingSum / N;
+      return 0.5 * alleleSum / numObserved;
+    }
+    for (size_t n = 0; n < N; n++) {
+      if (subMaskIndivs[n]) {
+	const bool isMissing = genoLine[n] == 9;
+	missingSum += isMissing;
+	numMasked++;
+	if (!isMissing) {
+	  alleleSum += genoLine[n];
+	  numObserved++;
+	}
+      }
+    }
+    *missing = missingSum / numMasked;
+    return 0.5 * alleleSum / numObserved;
   }
 
   double SnpData::computeAlleleFreq(const uchar genoLine[], const double subMaskIndivs[]) const {
@@ -617,7 +805,14 @@ namespace LMM {
   // assumes maskedSnpVector has dimension Nstride; zero-fills
   // note alleleFreq != MAF: alleleFreq = (mean allele count) / 2 and has full range [0..1]!
   void SnpData::genoLineToMaskedSnpVector(double maskedSnpVector[], const uchar genoLine[],
-					  const double subMaskIndivs[], double alleleFreq) const {
+					  const double subMaskIndivs[], double alleleFreq,
+					  bool allIndivsIncluded) const {
+    if (allIndivsIncluded) {
+      for (size_t n = 0; n < N; n++)
+	maskedSnpVector[n] = genoLine[n] != 9 ? genoLine[n] - 2*alleleFreq : 0;
+      for (uint64 n = N; n < Nstride; n++) maskedSnpVector[n] = 0;
+      return;
+    }
     for (size_t n = 0; n < N; n++) {
       if (subMaskIndivs[n] && genoLine[n] != 9)
 	maskedSnpVector[n] = genoLine[n] - 2*alleleFreq;
@@ -627,10 +822,44 @@ namespace LMM {
     for (uint64 n = N; n < Nstride; n++)
       maskedSnpVector[n] = 0;
   }
+
+  void SnpData::identityBedLineToSnpVector(double out[], const uchar bedLine[],
+					    double alleleFreq, double (*work)[4]) const {
+    const double mean = 2*alleleFreq;
+    const double lookupBedCode[4] = {2-mean, 0, 1-mean, -mean};
+    buildByteLookup(work, lookupBedCode);
+
+    const uint64 Nfull = N & ~(uint64) 3;
+    const uchar *ptr = bedLine;
+    for (uint64 n4 = 0; n4 < Nfull; n4 += 4) {
+#if defined(USE_SSE)
+      _mm_store_pd(&out[n4], _mm_load_pd(&work[*ptr][0]));
+      _mm_store_pd(&out[n4+2], _mm_load_pd(&work[*ptr][2]));
+#elif defined(USE_NEON)
+      vst1q_f64(&out[n4], vld1q_f64(&work[*ptr][0]));
+      vst1q_f64(&out[n4+2], vld1q_f64(&work[*ptr][2]));
+#else
+      memcpy(out + n4, work[*ptr], sizeof(work[0]));
+#endif
+      ptr++;
+    }
+    if (Nfull != N) {
+      for (uint64 n = Nfull; n < N; n++)
+	out[n] = work[*ptr][n&3];
+    }
+    for (uint64 n = N; n < Nstride; n++)
+      out[n] = 0;
+  }
   // assumes maskedSnpVector has dimension Nstride; zero-fills
   // note alleleFreq != MAF: alleleFreq = (mean allele count) / 2 and has full range [0..1]!
   void SnpData::dosageLineToMaskedSnpVector(double dosageLineVec[], const double subMaskIndivs[],
-					    double alleleFreq) const {
+					    double alleleFreq, bool allIndivsIncluded) const {
+    if (allIndivsIncluded) {
+      for (size_t n = 0; n < N; n++)
+	dosageLineVec[n] = dosageValid(dosageLineVec[n]) ? dosageLineVec[n] - 2*alleleFreq : 0;
+      for (uint64 n = N; n < Nstride; n++) dosageLineVec[n] = 0;
+      return;
+    }
     for (size_t n = 0; n < N; n++) {
       if (subMaskIndivs[n] && dosageValid(dosageLineVec[n]))
 	dosageLineVec[n] = dosageLineVec[n] - 2*alleleFreq;
@@ -653,13 +882,14 @@ namespace LMM {
 		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
 		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes)
     : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL), maskSnps(NULL),
-      maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), Nautosomes(_Nautosomes) {
+      maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
+      Nautosomes(_Nautosomes) {
     
-    processIndivs(famFile, removeFiles);
+    processIndivs(famFile, removeFiles, false);
     // bedSnps = all snps in PLINK data; will filter and QC to create class member 'snps'
     vector <uint64> Mfiles;
     vector <SnpInfo> bedSnps = processSnps(Mfiles, bimFiles, excludeFiles, modelSnpsFiles,
-					   vcNamesIn, loadNonModelSnps);
+					   vcNamesIn, loadNonModelSnps, false);
     processMap(bedSnps, geneticMapFile, noMapCheck);
 
     // allocate genotypes
@@ -690,25 +920,31 @@ namespace LMM {
       }
 
       // read genotypes
-      uchar *genoLine = ALIGNED_MALLOC_UCHARS(N);
+      uchar *genoLine = bedIndivsIdentity ? NULL : ALIGNED_MALLOC_UCHARS(N);
       uchar *bedLineIn = ALIGNED_MALLOC_UCHARS((Nbed+3)>>2);
       int numSnpsFailedQC = 0;
       for (uint64 mfile = 0; mfile < Mfiles[i]; mfile++, mbed++) {
-	readBedLine(genoLine, bedLineIn, fin, bedSnpToGrmIndex[mbed] != -2);
+	if (bedIndivsIdentity)
+	  fin.read((char *) bedLineIn, (Nbed+3)>>2);
+	else
+	  readBedLine(genoLine, bedLineIn, fin, bedSnpToGrmIndex[mbed] != -2);
 	if (bedSnpToGrmIndex[mbed] != -2) { // not excluded
-	  double snpMissing = computeSnpMissing(genoLine, maskIndivs);
+	  double snpMissing;
+	  const double alleleFreq = bedIndivsIdentity ?
+	    computeIdentityBedAlleleFreqAndMissing(bedLineIn, &snpMissing) :
+	    computeAlleleFreqAndMissing(genoLine, maskIndivs, &snpMissing, true);
 	  bool snpPassQC = snpMissing <= maxMissingPerSnp;
 	  if (snpPassQC) {
 	    if (bedSnpToGrmIndex[mbed] >= 0) { // use in GRM
-	      storeBedLine(bedLineOut, genoLine);
+	      if (bedIndivsIdentity)
+		storeIdentityBedLineAndCountMissing(bedLineOut, bedLineIn,
+						   numMissingPerIndiv.data());
+	      else
+		storeBedLineAndCountMissing(bedLineOut, genoLine, numMissingPerIndiv.data());
 	      bedLineOut += Nstride>>2;
 	      bedSnpToGrmIndex[mbed] = snps.size(); // reassign to final value
 	      snps.push_back(bedSnps[mbed]);
-	      snps.back().MAF = computeMAF(genoLine, maskIndivs);
-	      // update indiv QC info
-	      for (uint64 n = 0; n < N; n++)
-		if (genoLine[n] == 9)
-		  numMissingPerIndiv[n]++;
+	      snps.back().MAF = std::min(alleleFreq, 1.0-alleleFreq);
 	    }
 	    // if bedSnpToGrmIndex[mbed] == -1 (don't use in GRM), leave as-is
 	  }
@@ -722,7 +958,7 @@ namespace LMM {
 	}
       }
       ALIGNED_FREE(bedLineIn);
-      ALIGNED_FREE(genoLine);
+      if (genoLine != NULL) ALIGNED_FREE(genoLine);
 
       if (numSnpsFailedQC)
 	cout << "Filtered " << numSnpsFailedQC << " SNPs with > " << maxMissingPerSnp << " missing"
@@ -736,6 +972,11 @@ namespace LMM {
       fin.close();
     }
 
+    finishGenoQc(numMissingPerIndiv, maxMissingPerIndiv);
+  }
+
+  void SnpData::finishGenoQc(const vector <int> &numMissingPerIndiv,
+			     double maxMissingPerIndiv) {
     M = snps.size();
 
     // allocate and initialize maskSnps to all good
@@ -776,12 +1017,114 @@ namespace LMM {
     }
   }
 
+  SnpData::SnpData(const string &pgenFile, const string &pvarFile,
+		   const string &psamFile, const string &geneticMapFile,
+		   const vector <string> &excludeFiles,
+		   const vector <string> &modelSnpsFiles,
+		   const vector <string> &removeFiles,
+		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
+		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes)
+    : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL), maskSnps(NULL),
+      maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
+      Nautosomes(_Nautosomes) {
+
+    processIndivs(psamFile, removeFiles, true);
+    vector <uint64> Mfiles;
+    vector <string> pvarFiles(1, pvarFile);
+    vector <SnpInfo> bedSnps = processSnps(Mfiles, pvarFiles, excludeFiles,
+					   modelSnpsFiles, vcNamesIn,
+					   loadNonModelSnps, true);
+    processMap(bedSnps, geneticMapFile, noMapCheck);
+
+    if (N == 0) {
+      cerr << "ERROR: No samples remain after applying remove files" << endl;
+      exit(1);
+    }
+    if (Nbed > INT_MAX || Mbed > INT_MAX) {
+      cerr << "ERROR: PGEN dimensions exceed the range supported by the bundled reader"
+	   << endl;
+      exit(1);
+    }
+
+    cout << "Allocating " << M << " x " << Nstride << "/4 bytes to store genotypes" << endl;
+    genotypes = ALIGNED_MALLOC_UCHARS(M * Nstride/4);
+    numIndivsQC = N;
+
+    vector <int> subsetIndices1based;
+    if (!bedIndivsIdentity) {
+      subsetIndices1based.reserve(N);
+      for (uint64 nbed = 0; nbed < Nbed; nbed++)
+	if (bedIndivToRemoveIndex[nbed] != -1)
+	  subsetIndices1based.push_back(static_cast<int>(nbed+1));
+    }
+
+    ::PgenReader pgenReader;
+    pgenReader.Load(pgenFile, static_cast<uint32_t>(Nbed), subsetIndices1based, 1);
+    if (pgenReader.GetRawSampleCt() != Nbed) {
+      cerr << "ERROR: Number of samples in pgen file (" << pgenReader.GetRawSampleCt()
+	   << ") does not match psam file (" << Nbed << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetVariantCt() != Mbed) {
+      cerr << "ERROR: Number of variants in pgen file (" << pgenReader.GetVariantCt()
+	   << ") does not match pvar file (" << Mbed << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetMaxAlleleCt() != 2) {
+      cerr << "ERROR: Only biallelic PGEN variants are supported" << endl;
+      exit(1);
+    }
+    if (pgenReader.DosagePresent())
+      cout << "NOTE: PGEN dosages are present; Stage 1 uses hardcalls and ignores dosage overrides"
+	   << endl;
+
+    cout << "Reading PGEN hardcalls and performing QC filtering on snps and indivs..." << endl;
+    const uint64 packedBytes = (N+3)>>2;
+    vector <uchar> pgenLine(packedBytes);
+    vector <uchar> bedLine(Nstride/4);
+    vector <int> numMissingPerIndiv(N);
+    uchar *bedLineOut = genotypes;
+    int numSnpsFailedQC = 0;
+    for (uint64 mbed = 0; mbed < Mbed; mbed++) {
+      if (bedSnpToGrmIndex[mbed] == -2) continue;
+
+      pgenReader.ReadHardcallsPacked(pgenLine.data(), packedBytes, N, 0, mbed, 1);
+      PgenUtils::packedPgenToBed(bedLine.data(), pgenLine.data(), N, Nstride);
+      double snpMissing;
+      const double alleleFreq = computeIdentityBedAlleleFreqAndMissing(bedLine.data(),
+							       &snpMissing);
+      if (snpMissing <= maxMissingPerSnp) {
+	if (bedSnpToGrmIndex[mbed] >= 0) {
+	  storeIdentityBedLineAndCountMissing(bedLineOut, bedLine.data(),
+					       numMissingPerIndiv.data());
+	  bedLineOut += Nstride>>2;
+	  bedSnpToGrmIndex[mbed] = snps.size();
+	  snps.push_back(bedSnps[mbed]);
+	  snps.back().MAF = std::min(alleleFreq, 1.0-alleleFreq);
+	}
+      }
+      else {
+	bedSnpToGrmIndex[mbed] = -2;
+	if (numSnpsFailedQC < 5)
+	  cout << "Filtering snp " << bedSnps[mbed].ID << ": "
+	       << snpMissing << " missing" << endl;
+	numSnpsFailedQC++;
+      }
+    }
+    pgenReader.Close();
+
+    if (numSnpsFailedQC)
+      cout << "Filtered " << numSnpsFailedQC << " SNPs with > " << maxMissingPerSnp
+	   << " missing" << endl;
+    finishGenoQc(numMissingPerIndiv, maxMissingPerIndiv);
+  }
+
   SnpData::SnpData(const vector < pair <string, string> > &_indivIds,
 		   const vector <double> &_maskIndivs, uint64 _Nstride,
-		   const string &famFile, int _Nautosomes) :
+		   const string &sampleFile, int _Nautosomes, bool psamFormat) :
     Mbed(0), Nbed(0), M(0), N(_indivIds.size()), Nstride(_Nstride), genotypes(NULL),
     maskSnps(NULL), maskIndivs(NULL), numIndivsQC(0), mapAvailable(false),
-    Nautosomes(_Nautosomes) {
+    bedIndivsIdentity(false), Nautosomes(_Nautosomes) {
     if (Nstride < N || (Nstride&3) || _maskIndivs.size() != Nstride) {
       cerr << "ERROR: Invalid sample dimensions in Stage 1 model" << endl;
       exit(1);
@@ -790,6 +1133,8 @@ namespace LMM {
     memcpy(maskIndivs, &_maskIndivs[0], Nstride*sizeof(maskIndivs[0]));
     for (uint64 n = 0; n < Nstride; n++) numIndivsQC += maskIndivs[n] != 0;
 
+    FID_IID_to_ind.reserve(N);
+    indivs.reserve(N);
     for (uint64 n = 0; n < N; n++) {
       IndivInfo indiv;
       indiv.famID = _indivIds[n].first;
@@ -798,48 +1143,65 @@ namespace LMM {
       indiv.sex = 0;
       indiv.pheno = -9;
       string key = indiv.famID + " " + indiv.indivID;
-      if (FID_IID_to_ind.find(key) != FID_IID_to_ind.end()) {
+      if (!FID_IID_to_ind.emplace(key, n).second) {
 	cerr << "ERROR: Duplicate sample ID in Stage 1 model: " << key << endl;
 	exit(1);
       }
-      FID_IID_to_ind[key] = n;
-      indivs.push_back(indiv);
+      indivs.push_back(std::move(indiv));
     }
     vcNames.push_back("");
 
-    if (!famFile.empty()) {
-      FileUtils::AutoGzIfstream fin; fin.openOrExit(famFile);
-      string line;
-      vector <bool> found(N, false);
-      while (getline(fin, line)) {
-	std::istringstream iss(line);
-	string FID, IID, paternalID, maternalID, pheno;
-	int sex;
-	if (!(iss >> FID >> IID >> paternalID >> maternalID >> sex >> pheno)) {
-	  cerr << "ERROR: Incorrectly formatted fam file: " << famFile << endl;
-	  exit(1);
+    if (!sampleFile.empty()) {
+      vector < pair <string, string> > inputIds;
+      if (psamFormat) {
+	vector <PgenUtils::SampleInfo> psamIndivs = PgenUtils::readPsamFile(sampleFile);
+	inputIds.reserve(psamIndivs.size());
+	for (uint64 n = 0; n < psamIndivs.size(); n++)
+	  inputIds.push_back(std::make_pair(psamIndivs[n].famID, psamIndivs[n].indivID));
+      }
+      else {
+	FileUtils::AutoGzIfstream fin; fin.openOrExit(sampleFile);
+	string line;
+	while (getline(fin, line)) {
+	  std::istringstream iss(line);
+	  string FID, IID, paternalID, maternalID, pheno;
+	  int sex;
+	  if (!(iss >> FID >> IID >> paternalID >> maternalID >> sex >> pheno)) {
+	    cerr << "ERROR: Incorrectly formatted fam file: " << sampleFile << endl;
+	    exit(1);
+	  }
+	  inputIds.push_back(std::make_pair(FID, IID));
 	}
-	string key = FID + " " + IID;
-	std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
+	fin.close();
+      }
+
+      vector <bool> found(N, false);
+      for (uint64 inputInd = 0; inputInd < inputIds.size(); inputInd++) {
+	string key = inputIds[inputInd].first + " " + inputIds[inputInd].second;
+	std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
 	if (it == FID_IID_to_ind.end())
 	  bedIndivToRemoveIndex.push_back(-1);
 	else {
 	  if (found[it->second]) {
-	    cerr << "ERROR: Duplicate Stage 1 sample in fam file: " << key << endl;
+	    cerr << "ERROR: Duplicate Stage 1 sample in " << (psamFormat ? "psam" : "fam")
+		 << " file: " << key << endl;
 	    exit(1);
 	  }
 	  found[it->second] = true;
 	  bedIndivToRemoveIndex.push_back(it->second);
 	}
       }
-      fin.close();
       Nbed = bedIndivToRemoveIndex.size();
       for (uint64 n = 0; n < N; n++)
 	if (!found[n]) {
-	  cerr << "ERROR: Stage 1 sample is missing from Stage 2 fam file: "
+	  cerr << "ERROR: Stage 1 sample is missing from Stage 2 "
+	       << (psamFormat ? "psam" : "fam") << " file: "
 	       << _indivIds[n].first << " " << _indivIds[n].second << endl;
 	  exit(1);
 	}
+      bedIndivsIdentity = Nbed == N;
+      for (uint64 nbed = 0; bedIndivsIdentity && nbed < Nbed; nbed++)
+	bedIndivsIdentity = bedIndivToRemoveIndex[nbed] == static_cast<int>(nbed);
     }
   }
 
@@ -903,6 +1265,9 @@ namespace LMM {
   // don't provide getN: don't want the rest of the program to even know N!
   uint64 SnpData::getNstride(void) const { return Nstride; }
   uint64 SnpData::getNbed(void) const { return Nbed; }
+  const vector <int> &SnpData::getInputIndivToModelIndex(void) const {
+    return bedIndivToRemoveIndex;
+  }
   uint64 SnpData::getNumIndivsQC(void) const { return numIndivsQC; }
   const double* SnpData::getMaskIndivs(void) const { return maskIndivs; }
   void SnpData::writeMaskIndivs(double out[]) const {
@@ -922,8 +1287,9 @@ namespace LMM {
   std::vector <string> SnpData::getVCnames(void) const { return vcNames; }
   vector < pair <string, string> > SnpData::getIndivIds(void) const {
     vector < pair <string, string> > ids;
+    ids.reserve(N);
     for (uint64 n = 0; n < N; n++)
-      ids.push_back(std::make_pair(indivs[n].famID, indivs[n].indivID));
+      ids.emplace_back(indivs[n].famID, indivs[n].indivID);
     return ids;
   }
   void SnpData::validateIndivIds(const vector < pair <string, string> > &ids,
@@ -931,7 +1297,7 @@ namespace LMM {
     vector <bool> found(N, false);
     for (uint64 i = 0; i < ids.size(); i++) {
       string key = ids[i].first + " " + ids[i].second;
-      std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
+      std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(key);
       if (it != FID_IID_to_ind.end()) {
 	if (found[it->second]) {
 	  cerr << "ERROR: Duplicate Stage 1 sample in " << source << ": " << key << endl;
@@ -956,7 +1322,7 @@ namespace LMM {
   }
   */
   uint64 SnpData::getIndivInd(string &FID, string &IID) const {
-    std::map <string, uint64>::const_iterator it = FID_IID_to_ind.find(FID+" "+IID);
+    std::unordered_map <string, uint64>::const_iterator it = FID_IID_to_ind.find(FID+" "+IID);
     if (it != FID_IID_to_ind.end())
       return it->second;
     else
@@ -998,7 +1364,8 @@ namespace LMM {
   //   (presumably obtained by using writeMaskIndivs and taking a subset)
   // work: 256x4 aligned work array
   void SnpData::buildMaskedSnpVector(double out[], const double subMaskIndivs[], uint64 m,
-				     const double lut0129[4], double (*work)[4]) const {
+			     const double lut0129[4], double (*work)[4],
+			     bool allIndivsIncluded) const {
 
     /* lookupBedCode[4] = { value of 2 effect alleles (bed 00 = 2 effect alleles),
                             value of missing          (bed 01 = missing),
@@ -1008,14 +1375,43 @@ namespace LMM {
     buildByteLookup(work, lookupBedCode);
 
     uchar *ptr = genotypes + m * (Nstride>>2);
+    if (allIndivsIncluded) {
+      const uint64 Nfull = N & ~(uint64) 3;
+      for (uint64 n4 = 0; n4 < Nfull; n4 += 4) {
+#if defined(USE_SSE)
+	_mm_store_pd(&out[n4], _mm_load_pd(&work[*ptr][0]));
+	_mm_store_pd(&out[n4+2], _mm_load_pd(&work[*ptr][2]));
+#elif defined(USE_NEON)
+	vst1q_f64(&out[n4], vld1q_f64(&work[*ptr][0]));
+	vst1q_f64(&out[n4+2], vld1q_f64(&work[*ptr][2]));
+#else
+	memcpy(out + n4, work[*ptr], sizeof(work[0]));
+#endif
+	ptr++;
+      }
+      if (Nfull != N) {
+	for (uint64 n = Nfull; n < N; n++)
+	  out[n] = work[*ptr][n&3];
+	for (uint64 n = N; n < Nstride; n++)
+	  out[n] = 0;
+      }
+      return;
+    }
     for (uint64 n4 = 0; n4 < Nstride; n4 += 4) {
-#ifdef USE_SSE // todo: add AVX instructions to do all at once?
+#if defined(USE_SSE) // todo: add AVX instructions to do all at once?
       __m128d x01 = _mm_load_pd(&work[*ptr][0]);
       __m128d x23 = _mm_load_pd(&work[*ptr][2]);
       __m128d mask01 = _mm_load_pd(&subMaskIndivs[n4]);
       __m128d mask23 = _mm_load_pd(&subMaskIndivs[n4+2]);
       _mm_store_pd(&out[n4], _mm_mul_pd(x01, mask01));
       _mm_store_pd(&out[n4+2], _mm_mul_pd(x23, mask23));
+#elif defined(USE_NEON)
+      float64x2_t x01 = vld1q_f64(&work[*ptr][0]);
+      float64x2_t x23 = vld1q_f64(&work[*ptr][2]);
+      float64x2_t mask01 = vld1q_f64(&subMaskIndivs[n4]);
+      float64x2_t mask23 = vld1q_f64(&subMaskIndivs[n4+2]);
+      vst1q_f64(&out[n4], vmulq_f64(x01, mask01));
+      vst1q_f64(&out[n4+2], vmulq_f64(x23, mask23));
 #else
       // non-lookup approach
       /*

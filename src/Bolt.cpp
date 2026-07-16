@@ -17,8 +17,10 @@
 */
 
 #include <cmath>
+#include <climits>
 #include <cstring>
 #include <cstdio>
+#include <array>
 #include <vector>
 #include <string>
 #include <iostream>
@@ -47,6 +49,8 @@
 #include "SnpData.hpp"
 #include "CovariateBasis.hpp"
 #include "NumericUtils.hpp"
+#include "PgenUtils.hpp"
+#include "pgenlibr.h"
 #include "LapackConst.hpp"
 #include "MemoryUtils.hpp"
 #include "Jackknife.hpp"
@@ -65,6 +69,40 @@ namespace LMM {
   using std::cerr;
   using std::endl;
   using FileUtils::getline;
+
+  namespace {
+    struct Bgen8DosageLookupEntry {
+      double dosage;
+      double infoVariance;
+    };
+
+    const std::array<double, 256> &bgen8ProbabilityLookup() {
+      static const std::array<double, 256> lookup = [] {
+	std::array<double, 256> values = {};
+	for (uint i = 0; i < values.size(); i++) values[i] = i / 255.0;
+	return values;
+      }();
+      return lookup;
+    }
+
+    const std::array<Bgen8DosageLookupEntry, 65536> &bgen8DosageLookup() {
+      static const std::array<Bgen8DosageLookupEntry, 65536> lookup = [] {
+	std::array<Bgen8DosageLookupEntry, 65536> values = {};
+	const std::array<double, 256> &probabilities = bgen8ProbabilityLookup();
+	for (uint p11byte = 0; p11byte < 256; p11byte++)
+	  for (uint p10byte = 0; p10byte < 256; p10byte++) {
+	    const double p11 = probabilities[p11byte];
+	    const double p10 = probabilities[p10byte];
+	    const double dosage = 2*p11 + p10;
+	    Bgen8DosageLookupEntry &entry = values[p11byte | (p10byte << 8)];
+	    entry.dosage = dosage;
+	    entry.infoVariance = 4*p11 + p10 - dosage*dosage;
+	  }
+	return values;
+      }();
+      return lookup;
+    }
+  }
 
   const double Bolt::BAD_SNP_STAT = -1e9;
 
@@ -110,6 +148,7 @@ namespace LMM {
 
     // mean-center and replace missing values with mean (centered to 0)
     double mean = sumGenoNonMissing / numGenoNonMissing;
+    double meanCenterNorm2 = 0;
     for (uint64 n = 0; n < Nstride; n++) {
       if (maskIndivs[n]) {
 	if (snpVector[n] == 9)
@@ -119,6 +158,7 @@ namespace LMM {
       }
       else
 	assert(snpVector[n] == 0); // buildMaskedSnpVector should've already zeroed
+      meanCenterNorm2 += NumericUtils::sq(snpVector[n]);
     }
 
     // compute components onto covBasis.basis (negate later when scaling by projNorm)
@@ -127,7 +167,6 @@ namespace LMM {
 
     // normalize mean-centered SNP (before projecting out other covars) to mean sq entry 1
 
-    double meanCenterNorm2 = NumericUtils::norm2(snpVector, Nstride);
     // normalize to Nused-1 (dimensionality of subspace with all-1s vector projected out)
     double invMeanCenterNorm = sqrt((Nused-1) / meanCenterNorm2);
 
@@ -400,8 +439,9 @@ namespace LMM {
    */
   void Bolt::multXtrans(double XtransVecs[], const double vCovCompVecs[], uint64 B)
     const {
-    
-    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * (Nstride+Cstride));
+
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
+    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * (Nstride+Cstride));
     double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
     for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) {
       uint64 mBlockMultXCrop = std::min(M, m0+mBlockMultX) - m0;
@@ -463,7 +503,8 @@ namespace LMM {
 
     memset(vCovCompVecs, 0, B * (Nstride+Cstride) * sizeof(vCovCompVecs[0]));
 
-    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * (Nstride+Cstride));
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
+    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * (Nstride+Cstride));
     double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
     for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) {
       uint64 mBlockMultXCrop = std::min(M, m0+mBlockMultX) - m0;
@@ -511,27 +552,97 @@ namespace LMM {
    * multiply v * XX' (with positive covComps in input and output)
    * explicitly: X_proj X_proj' * v_proj', where [.]_proj = [.] - [.]covComps*covBasis
    *
-   * double vCovCompVecs[]: (in/out) B x Nstride+Cstride
+   * Fuses X' * v and X * (X' * v) block-by-block so each packed genotype
+   * block is expanded once and the masked intermediate is only block-sized.
+   *
+   * double outCovCompVecs[]: (out) B x Nstride+Cstride
+   * double inCovCompVecs[]: (in) B x Nstride+Cstride
    */
-  void Bolt::multXXtransMask(double vCovCompVecs[], const uchar batchMaskSnps[], uint64 B) const {
-    double *XtransVecs = ALIGNED_MALLOC_DOUBLES(M * B);
-    
-    //Timer timer;
+  void Bolt::multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
+			     const uchar batchMaskSnps[], uint64 B) const {
+    const uint64 NCstride = Nstride+Cstride;
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
+    memset(outCovCompVecs, 0, B * NCstride * sizeof(outCovCompVecs[0]));
 
-    // multiply v * X (or equivalently, X' * v')
-    multXtrans(XtransVecs, vCovCompVecs, B);
-    //cout << "Time for multXtrans = " << timer.update_time() << endl;
+    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * NCstride);
+    double *XtransVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * B);
+    double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
 
-    // apply M x B mask
-    for (uint64 mb = 0; mb < M*B; mb++)
-      XtransVecs[mb] *= batchMaskSnps[mb];
-    //cout << "Time for mask = " << timer.update_time() << endl;
-    
-    // multiply X * (masked X' * v'), or equivalently, (masked (v * X)) * X'
-    multX(vCovCompVecs, XtransVecs, B);
-    //cout << "Time for multX = " << timer.update_time() << endl;
-    
-    ALIGNED_FREE(XtransVecs);
+    for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) {
+      const uint64 mBlockMultXCrop = std::min(M, m0+mBlockMultX) - m0;
+#pragma omp parallel for
+      for (uint64 mPlus = 0; mPlus < mBlockMultXCrop; mPlus++) {
+	const uint64 m = m0+mPlus;
+	if (projMaskSnps[m])
+	  buildMaskedSnpNegCovCompVec(snpCovCompVecBlock + mPlus * NCstride, m,
+				      work + (omp_get_thread_num()<<8));
+	else
+	  memset(snpCovCompVecBlock + mPlus * NCstride, 0,
+		 NCstride * sizeof(snpCovCompVecBlock[0]));
+      }
+
+#ifdef MEASURE_DGEMM
+      unsigned long long tsc = Timer::rdtsc();
+#endif
+      {
+	char TRANSA_ = 'T';
+	char TRANSB_ = 'N';
+	int M_ = B;
+	int N_ = mBlockMultXCrop;
+	int K_ = NCstride;
+	double ALPHA_ = 1.0;
+	const double *A_ = inCovCompVecs;
+	int LDA_ = NCstride;
+	double *B_ = snpCovCompVecBlock;
+	int LDB_ = NCstride;
+	double BETA_ = 0.0;
+	double *C_ = XtransVecBlock;
+	int LDC_ = B;
+
+	DGEMM_MACRO(&TRANSA_, &TRANSB_, &M_, &N_, &K_, &ALPHA_, A_, &LDA_, B_, &LDB_,
+		    &BETA_, C_, &LDC_);
+      }
+#ifdef MEASURE_DGEMM
+      dgemmTicks += Timer::rdtsc() - tsc;
+#endif
+
+      for (uint64 mPlus = 0; mPlus < mBlockMultXCrop; mPlus++) {
+	const uint64 m = m0+mPlus;
+	for (uint64 b = 0; b < B; b++)
+	  XtransVecBlock[mPlus*B+b] *= batchMaskSnps[m*B+b];
+	for (uint64 c = 0; c < Cstride; c++)
+	  snpCovCompVecBlock[mPlus*NCstride+Nstride+c] *= -1;
+      }
+
+#ifdef MEASURE_DGEMM
+      tsc = Timer::rdtsc();
+#endif
+      {
+	char TRANSA_ = 'N';
+	char TRANSB_ = 'T';
+	int M_ = NCstride;
+	int N_ = B;
+	int K_ = mBlockMultXCrop;
+	double ALPHA_ = 1.0;
+	double *A_ = snpCovCompVecBlock;
+	int LDA_ = NCstride;
+	const double *B_ = XtransVecBlock;
+	int LDB_ = B;
+	double BETA_ = 1.0;
+	double *C_ = outCovCompVecs;
+	int LDC_ = NCstride;
+
+	DGEMM_MACRO(&TRANSA_, &TRANSB_, &M_, &N_, &K_, &ALPHA_, A_, &LDA_, B_, &LDB_,
+		    &BETA_, C_, &LDC_);
+      }
+#ifdef MEASURE_DGEMM
+      dgemmTicks += Timer::rdtsc() - tsc;
+#endif
+    }
+
+    ALIGNED_FREE(work);
+    ALIGNED_FREE(XtransVecBlock);
+    ALIGNED_FREE(snpCovCompVecBlock);
   }
 
   /**
@@ -541,8 +652,7 @@ namespace LMM {
   void Bolt::multH(double HmultCovCompVecs[], const double xCovCompVecs[],
 		   const uchar batchMaskSnps[], const double logDeltas[], const uint64 Ms[],
 		   uint64 B) const {
-    memcpy(HmultCovCompVecs, xCovCompVecs, B * (Nstride+Cstride) * sizeof(HmultCovCompVecs[0]));
-    multXXtransMask(HmultCovCompVecs, batchMaskSnps, B); // Hmult <- X[b]*X[b]'*x[b] (temp)
+    multXXtransMask(HmultCovCompVecs, xCovCompVecs, batchMaskSnps, B);
     for (uint64 bnc = 0, b = 0; b < B; b++) {
       double invM = 1 / (double) Ms[b], delta = exp(logDeltas[b]);
       for (uint64 nc = 0; nc < Nstride+Cstride; nc++, bnc++)
@@ -757,10 +867,11 @@ namespace LMM {
 	  anyBatchMaskSnps[m] = 1;
 
     // for block updates
-    double *snpNegCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * (Nstride+Cstride));
-    double *snpDots = ALIGNED_MALLOC_DOUBLES(M * mBlockMultX); // [m][mPlus] = dot prod(m, m+mPlus)
-    double *XtransResids = ALIGNED_MALLOC_DOUBLES(mBlockMultX * B);
-    double *betaBlockUpdates = ALIGNED_MALLOC_DOUBLES(mBlockMultX * B);
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
+    double *snpNegCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * (Nstride+Cstride));
+    double *snpDots = ALIGNED_MALLOC_DOUBLES(M * mBlockMultXAlloc); // [m][mPlus] = dot prod(m, m+mPlus)
+    double *XtransResids = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * B);
+    double *betaBlockUpdates = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * B);
 
     int usedItersMCMC = 0;
     bool allConverged;
@@ -826,8 +937,8 @@ namespace LMM {
 	  double *B_ = snpNegCovCompVecBlock;
 	  int LDB_ = Nstride+Cstride;
 	  double BETA_ = 0.0;
-	  double *C_ = snpDots + m0*mBlockMultX; // not crop!  fill rows [m0..m0+mBlockMultXCrop)
-	  int LDC_ = mBlockMultX; // not crop!
+	  double *C_ = snpDots + m0*mBlockMultXAlloc; // fill rows [m0..m0+mBlockMultXCrop)
+	  int LDC_ = mBlockMultXAlloc;
 
 	  DGEMM_MACRO(&TRANSA_, &TRANSB_, &M_, &N_, &K_, &ALPHA_, A_, &LDA_, B_, &LDB_,
 		      &BETA_, C_, &LDC_);
@@ -990,7 +1101,7 @@ namespace LMM {
 #endif
 	  // update XtransResids according to how yResidCovCompVecs would have been updated
 	  for (uint64 mPlus2 = mPlus+1; mPlus2 < mBlockMultXCrop; mPlus2++) {
-	    double dot12 = snpDots[(m0+mPlus)*mBlockMultX + mPlus2];
+	    double dot12 = snpDots[(m0+mPlus)*mBlockMultXAlloc + mPlus2];
 	    for (uint64 b = 0; b < Bleft; b++)
 	      XtransResids[mPlus2*B + b] += beta_m_updates[b] * dot12;
 	  }
@@ -1186,6 +1297,7 @@ namespace LMM {
     Nstride = snpData.getNstride();
     maskIndivs = covBasis.getMaskIndivs();
     Nused = covBasis.getNused();
+    maskCoversAllIndivs = snpData.allIndivsIncluded(maskIndivs);
     Cindep = covBasis.getCindep();
     Cstride = (Cindep+3)&~3;
     numChromsProjMask = 0;
@@ -1207,6 +1319,7 @@ namespace LMM {
     Nstride = snpData.getNstride();
     maskIndivs = covBasis.getMaskIndivs();
     Nused = covBasis.getNused();
+    maskCoversAllIndivs = snpData.allIndivsIncluded(maskIndivs);
     Cindep = covBasis.getCindep();
     //Cstride = (Nstride+Cindep+7)&~7 - Nstride; // 64-byte alignment of covCompVecs
     Cstride = (Cindep+3)&~3;
@@ -1241,7 +1354,8 @@ namespace LMM {
     for (uint64 m = 0; m < M; m++)
       if (projMaskSnps[m]) {
 	// build masked snp vector with default 0129 values (note 0 can mean masked!)
-	snpData.buildMaskedSnpVector(snpVector, maskIndivs, m, lut0129, work);
+	snpData.buildMaskedSnpVector(snpVector, maskIndivs, m, lut0129, work,
+				     maskCoversAllIndivs);
 	projMaskSnps[m] = initMarker(m, snpVector);
 
 	if (projMaskSnps[m]) { // may have been masked by initMarker!
@@ -1297,7 +1411,8 @@ namespace LMM {
   
     for (uint64 m = 0; m < M; m++)
       if (projMaskSnps[m]) {
-	snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m], work);
+	snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m], work,
+				     maskCoversAllIndivs);
 	// pheno has vector norm 1 and is orthogonal to covariates
 	// ||snpVec||^2 = Xnorm2s[m]
 	// dot product is really taking place in Nused-Cindep free dimensions: scale to get chisq
@@ -1587,7 +1702,7 @@ namespace LMM {
 	if (projMaskSnps[m]) {
 	  // build snp vector with mask of choice (no mask if extAllIndivs)
 	  snpData.buildMaskedSnpVector(snpNegCovCompVec, maskIndivsChoice, m, snpValueLookup[m],
-				       work);
+				       work, !extAllIndivs && maskCoversAllIndivs);
 	  // copy negative covar comps
 	  memcpy(snpNegCovCompVec + Nstride, snpCovBasisNegComps + m*Cstride,
 		 Cstride*sizeof(snpNegCovCompVec[0]));
@@ -2332,7 +2447,29 @@ namespace LMM {
     // compute components along cov basis vectors and put in [Nstride..Nstride+Cstride)
     // no need to zero out components after Cindep: workVec already 0-initialized
     covBasis.computeCindepComponents(workVec + Nstride, workVec);
-    double projNorm2 = computeProjNorm2(workVec);
+    const uint64 numStats = retroData.size();
+    int chunks[4] = {0, 0, 0, 0};
+    const double *resids[4] = {NULL, NULL, NULL, NULL};
+    double dotProds[4] = {0, 0, 0, 0};
+    double rawNorm2 = 0;
+    if (numStats <= 4) {
+      for (uint64 s = 0; s < numStats; s++) {
+	chunks[s] = findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
+	resids[s] = &retroData[s].calibratedResids[chunks[s]][0];
+      }
+      for (uint64 n = 0; n < Nstride; n++) {
+	const double x = workVec[n];
+	rawNorm2 += x*x;
+	if (numStats >= 1) dotProds[0] += x*resids[0][n];
+	if (numStats >= 2) dotProds[1] += x*resids[1][n];
+	if (numStats >= 3) dotProds[2] += x*resids[2][n];
+	if (numStats >= 4) dotProds[3] += x*resids[3][n];
+      }
+    }
+    else {
+      rawNorm2 = NumericUtils::norm2(workVec, Nstride);
+    }
+    const double projNorm2 = rawNorm2 - NumericUtils::norm2(workVec + Nstride, Cstride);
     double invNorm2 = 1 / projNorm2;
     double dotProd, stat;
 
@@ -2341,10 +2478,10 @@ namespace LMM {
     // compute and output assoc stats
     bool beta_printed = false;
     for (uint s = 0; s < retroData.size(); s++) {
-      int chunk = findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
-
-      const vector <double> &calibratedResidsChunk = retroData[s].calibratedResids[chunk];
-      dotProd = NumericUtils::dot(workVec, &calibratedResidsChunk[0], Nstride);
+      const int chunk = numStats <= 4 ? chunks[s] :
+	findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
+      dotProd = numStats <= 4 ? dotProds[s] :
+	NumericUtils::dot(workVec, &retroData[s].calibratedResids[chunk][0], Nstride);
       stat = BAD_SNP_STAT; double pValue = 1;
       if (!(projNorm2 < 0.1)) {
 	stat = invNorm2 * NumericUtils::sq(dotProd);
@@ -2404,8 +2541,10 @@ namespace LMM {
 			   const vector <StatsDataRetroLOCO> &retroData, double info) const {
 
     double alleleFreq = snpData.computeAlleleFreq(dosageLine, maskIndivs);
-    double missing = snpData.computeSnpMissing(dosageLine, maskIndivs);
-    snpData.dosageLineToMaskedSnpVector(dosageLine, maskIndivs, alleleFreq);
+    // BGEN emits INFO rather than F_MISS and has already mean-filled missing dosages.
+    double missing = info == -9 ? snpData.computeSnpMissing(dosageLine, maskIndivs) : 0;
+    snpData.dosageLineToMaskedSnpVector(dosageLine, maskIndivs, alleleFreq,
+					maskCoversAllIndivs);
     
     return getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, alleleFreq, missing,
 		       dosageLine, verboseStats, retroData, info);
@@ -2437,9 +2576,13 @@ namespace LMM {
     }
 
     FileUtils::AutoGzIfstream finBim, finBed;
-    uchar *genoLine = ALIGNED_MALLOC_UCHARS(Nstride);
+    const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
+    const bool usePackedIdentity = allIndivsIncluded && snpData.getBedIndivsIdentity();
+    uchar *genoLine = usePackedIdentity ? NULL : ALIGNED_MALLOC_UCHARS(Nstride);
     uchar *bedLineIn = ALIGNED_MALLOC_UCHARS((snpData.getNbed()+3)>>2);
     double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
+    double (*work)[4] = usePackedIdentity ?
+      (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work)) : NULL;
     memset(snpCovCompVec, 0, (Nstride+Cstride)*sizeof(snpCovCompVec[0])); // important!
 
     for (uint f = 0; f < bimFiles.size(); f++) {
@@ -2464,9 +2607,6 @@ namespace LMM {
 	  exit(1);
 	}
 	
-	// read bed genotypes
-	snpData.readBedLine(genoLine, bedLineIn, finBed, true);
-
 	bool firstOccurrence = seenSnps.insert(ID).second;
 	bool include = firstOccurrence && excludeSnps.find(ID) == excludeSnps.end();
 	int chrom = SnpData::chrStrToInt(chromStr, Nautosomes);
@@ -2476,9 +2616,29 @@ namespace LMM {
 	  exit(1);
 	}
 	if (include && !geneticMapFile.empty()) genpos = mapInterpolater.interp(chrom, physpos);
-	if (include && snpData.computeSnpMissing(genoLine, maskIndivs) <= maxMissingPerSnp)
-	  fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, genoLine, verboseStats,
-			      retroData, snpCovCompVec);
+
+	// read bed genotypes; packed identity-order data need not be expanded to bytes
+	if (usePackedIdentity)
+	  finBed.read((char *) bedLineIn, (snpData.getNbed()+3)>>2);
+	else
+	  snpData.readBedLine(genoLine, bedLineIn, finBed, include);
+
+	if (include) {
+	  double missing;
+	  const double alleleFreq = usePackedIdentity ?
+	    snpData.computeIdentityBedAlleleFreqAndMissing(bedLineIn, &missing) :
+	    snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing,
+					  allIndivsIncluded);
+	  if (missing <= maxMissingPerSnp) {
+	    if (usePackedIdentity)
+	      snpData.identityBedLineToSnpVector(snpCovCompVec, bedLineIn, alleleFreq, work);
+	    else
+	      snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
+						 allIndivsIncluded);
+	    fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, alleleFreq, missing,
+			 snpCovCompVec, verboseStats, retroData);
+	  }
+	}
       }
       if (!finBed || finBed.get() != EOF) {
 	cerr << "ERROR: Wrong file size or reading error for bed file: " << bedFiles[f] << endl;
@@ -2488,9 +2648,131 @@ namespace LMM {
       finBim.close();
     }
 
+    if (work != NULL) ALIGNED_FREE(work);
     ALIGNED_FREE(snpCovCompVec);
     ALIGNED_FREE(bedLineIn);
-    ALIGNED_FREE(genoLine);
+    if (genoLine != NULL) ALIGNED_FREE(genoLine);
+    fout.close();
+  }
+
+  void Bolt::streamComputeRetroLOCOPgen
+  (const string &outFile, const string &pgenFile, const string &pvarFile,
+   const string &geneticMapFile, const vector <string> &excludeFiles,
+   double maxMissingPerSnp, bool verboseStats,
+   const vector <StatsDataRetroLOCO> &retroData) const {
+
+    FileUtils::AutoGzOfstream fout; fout.openOrExit(outFile);
+    printStatsHeader(fout, verboseStats, false, retroData);
+
+    std::unordered_set <string> excludeSnps, seenSnps;
+    for (uint f = 0; f < excludeFiles.size(); f++) {
+      FileUtils::AutoGzIfstream finExclude; finExclude.openOrExit(excludeFiles[f]);
+      string ID, line;
+      while (finExclude >> ID) { excludeSnps.insert(ID); getline(finExclude, line); }
+      finExclude.close();
+    }
+    vector <SnpInfo> variants = PgenUtils::readPvarFile(pvarFile, Nautosomes, &excludeSnps);
+    if (variants.size() > INT_MAX) {
+      cerr << "ERROR: PGEN variant count exceeds the range supported by the bundled reader"
+	   << endl;
+      exit(1);
+    }
+
+    const vector <int> &inputToModel = snpData.getInputIndivToModelIndex();
+    if (inputToModel.size() != snpData.getNbed() || inputToModel.empty()) {
+      cerr << "ERROR: PGEN Stage 2 sample mapping was not initialized" << endl;
+      exit(1);
+    }
+    if (snpData.getNbed() > INT_MAX) {
+      cerr << "ERROR: PGEN sample count exceeds the range supported by the bundled reader"
+	   << endl;
+      exit(1);
+    }
+    vector <int> subsetIndices1based, subsetToModel;
+    subsetIndices1based.reserve(inputToModel.size());
+    subsetToModel.reserve(inputToModel.size());
+    for (uint64 inputInd = 0; inputInd < inputToModel.size(); inputInd++)
+      if (inputToModel[inputInd] != -1) {
+	subsetIndices1based.push_back(static_cast<int>(inputInd+1));
+	subsetToModel.push_back(inputToModel[inputInd]);
+      }
+    const uint64 modelSampleCount = subsetToModel.size();
+    if (modelSampleCount == inputToModel.size()) subsetIndices1based.clear();
+
+    ::PgenReader pgenReader;
+    pgenReader.Load(pgenFile, static_cast<uint32_t>(snpData.getNbed()),
+		    subsetIndices1based, 1);
+    if (pgenReader.GetRawSampleCt() != snpData.getNbed()) {
+      cerr << "ERROR: Number of samples in pgen file (" << pgenReader.GetRawSampleCt()
+	   << ") does not match psam file (" << snpData.getNbed() << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetSubsetSize() != modelSampleCount) {
+      cerr << "ERROR: PGEN sample subset does not match the Stage 1 model" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetVariantCt() != variants.size()) {
+      cerr << "ERROR: Number of variants in pgen file (" << pgenReader.GetVariantCt()
+	   << ") does not match pvar file (" << variants.size() << ")" << endl;
+      exit(1);
+    }
+    if (pgenReader.GetMaxAlleleCt() != 2) {
+      cerr << "ERROR: Only biallelic PGEN variants are supported" << endl;
+      exit(1);
+    }
+    if (pgenReader.DosagePresent())
+      cout << "NOTE: PGEN dosages are present; Stage 2 uses hardcalls and ignores dosage overrides"
+	   << endl;
+
+    MapInterpolater mapInterpolater(geneticMapFile);
+    const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
+    const bool usePackedIdentity = allIndivsIncluded && snpData.getBedIndivsIdentity();
+    const uint64 packedBytes = (modelSampleCount+3)>>2;
+    vector <uchar> pgenLine(packedBytes);
+    vector <uchar> bedLine(usePackedIdentity ? Nstride/4 : 0);
+    uchar *genoLine = usePackedIdentity ? NULL : ALIGNED_MALLOC_UCHARS(Nstride);
+    double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
+    double (*work)[4] = usePackedIdentity ?
+      (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work)) : NULL;
+    memset(snpCovCompVec, 0, (Nstride+Cstride)*sizeof(snpCovCompVec[0]));
+
+    for (uint64 variantIndex = 0; variantIndex < variants.size(); variantIndex++) {
+      SnpInfo &snp = variants[variantIndex];
+      const bool firstOccurrence = seenSnps.insert(snp.ID).second;
+      const bool include = firstOccurrence && excludeSnps.find(snp.ID) == excludeSnps.end();
+      if (!include) continue;
+      if (!geneticMapFile.empty())
+	snp.genpos = mapInterpolater.interp(snp.chrom, snp.physpos);
+
+      pgenReader.ReadHardcallsPacked(pgenLine.data(), packedBytes, modelSampleCount, 0,
+				     variantIndex, 1);
+      double missing, alleleFreq;
+      if (usePackedIdentity) {
+	PgenUtils::packedPgenToBed(bedLine.data(), pgenLine.data(), modelSampleCount,
+				       Nstride);
+	alleleFreq = snpData.computeIdentityBedAlleleFreqAndMissing(bedLine.data(), &missing);
+      }
+      else {
+	PgenUtils::packedPgenToGeno(genoLine, pgenLine.data(), subsetToModel);
+	alleleFreq = snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing,
+						       allIndivsIncluded);
+      }
+      if (missing > maxMissingPerSnp) continue;
+
+      if (usePackedIdentity)
+	snpData.identityBedLineToSnpVector(snpCovCompVec, bedLine.data(), alleleFreq, work);
+      else
+	snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
+					  allIndivsIncluded);
+      fout << getSnpStats(snp.ID, snp.chrom, snp.physpos, snp.genpos, snp.allele1,
+			  snp.allele2, alleleFreq, missing, snpCovCompVec,
+			  verboseStats, retroData);
+    }
+
+    pgenReader.Close();
+    if (work != NULL) ALIGNED_FREE(work);
+    ALIGNED_FREE(snpCovCompVec);
+    if (genoLine != NULL) ALIGNED_FREE(genoLine);
     fout.close();
   }
 
@@ -3074,7 +3356,8 @@ namespace LMM {
 
   string Bolt::getSnpStatsBgen2(uint CompressedSNPBlocks, uchar *buf, uint bufLen,
 				const uchar *zBuf, uint zBufLen, uint Nbgen,
-				const vector <uint64> &bgenIndivInds, const string &snpName,
+				const vector <uint64> &bgenIndivInds, bool bgenIndivsIdentity,
+				const string &snpName,
 				int chrom, int physpos,double genpos, const string &allele1,
 				const string &allele0, double snpCovCompVec[], bool verboseStats,
 				const vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
@@ -3146,24 +3429,45 @@ namespace LMM {
 
     /********** compute MAF and INFO; apply filtering thresholds **********/
 
-    double lut[256];
-    for (int i = 0; i <= 255; i++)
-      lut[i] = i/255.0;
+    const std::array<double, 256> &lut = bgen8ProbabilityLookup();
+    const bool useDosageLookup = Pmin == 2U && Phased == 0U;
+    const std::array<Bgen8DosageLookupEntry, 65536> *dosageLookup =
+      useDosageLookup ? &bgen8DosageLookup() : NULL;
 
     int Nnonmiss = 0, NprobBytes = 0;
     double sum_eij = 0, sum_fij_minus_eij2 = 0; // for INFO
+    double dosageSum = 0, dosageNum = 0, missingNum = 0;
     for (uint i = 0; i < N; i++) {
       uint ploidy = ploidyMissBytes[i] & ~missBit;
       NprobBytes += ploidy;
-      if (ploidyMissBytes[i] & missBit) { bufAt += ploidy; continue; } // missing => skip
+      if (ploidyMissBytes[i] & missBit) {
+	if (bgenIndivsIdentity) missingNum++;
+	bufAt += ploidy;
+	continue;
+      }
       Nnonmiss++;
-      double p11 = lut[*bufAt]; bufAt++;                          // if phased, contains p(hap1)==1
-      double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; } // if phased, contains p(hap2)==1
-      double dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
-      double eij = dosage;
-      double fij = ((Phased==0U||ploidy==1U) ? 4*p11 + p10 : p11 + 2*p11*p10 + p10);
-      sum_eij += eij;
-      sum_fij_minus_eij2 += fij - eij*eij;
+      double dosage, infoVariance;
+      if (useDosageLookup) {
+	const uint lookupIndex = bufAt[0] | (bufAt[1] << 8); bufAt += 2;
+	const Bgen8DosageLookupEntry &entry = (*dosageLookup)[lookupIndex];
+	dosage = entry.dosage;
+	infoVariance = entry.infoVariance;
+      }
+      else {
+	double p11 = lut[*bufAt]; bufAt++;                          // if phased, contains p(hap1)==1
+	double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; } // if phased, contains p(hap2)==1
+	dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
+	double fij = ((Phased==0U||ploidy==1U) ? 4*p11 + p10 : p11 + 2*p11*p10 + p10);
+	infoVariance = fij - dosage*dosage;
+      }
+      sum_eij += dosage;
+      sum_fij_minus_eij2 += infoVariance;
+      if (bgenIndivsIdentity) {
+	if (bgenRefFirst) dosage = 2 - dosage;
+	dosageNum++;
+	dosageSum += dosage;
+	snpCovCompVec[i] = dosage;
+      }
     }
     double thetaHat = sum_eij / (2*Nnonmiss);
     double info = thetaHat==0 || thetaHat==1 ? 1 :
@@ -3176,25 +3480,31 @@ namespace LMM {
 
     std::ostringstream oss;
 
-    // reread dosages and copy to buffer in correct order
-    bufAt -= NprobBytes; // rewind
-    double dosageSum = 0, dosageNum = 0, missingNum = 0;
-    for (uint i = 0; i < N; i++) {
-      uint ploidy = ploidyMissBytes[i] & ~missBit;
-      double p11 = lut[*bufAt]; bufAt++;
-      double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; }
-      double dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
-      if (bgenRefFirst) // use second allele as effect allele
-	dosage = 2 - dosage;
-      if (bgenIndivInds[i] != SnpData::IND_MISSING) {
-	if (!(ploidyMissBytes[i] & missBit)) {
-	  dosageNum++;
-	  dosageSum += dosage;
-	  snpCovCompVec[bgenIndivInds[i]] = dosage;
+    // Reordered or masked samples require a second pass to scatter dosages into Stage 1 order.
+    if (!bgenIndivsIdentity) {
+      bufAt -= NprobBytes; // rewind
+      for (uint i = 0; i < N; i++) {
+	uint ploidy = ploidyMissBytes[i] & ~missBit;
+	double dosage;
+	if (useDosageLookup) {
+	  const uint lookupIndex = bufAt[0] | (bufAt[1] << 8); bufAt += 2;
+	  dosage = (*dosageLookup)[lookupIndex].dosage;
 	}
 	else {
-	  missingNum++;
-	  //snpCovCompVec[bgenIndivInds[i]] = 2*thetaHat; [mean-fill using all bgen samples]
+	  double p11 = lut[*bufAt]; bufAt++;
+	  double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; }
+	  dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
+	}
+	if (bgenRefFirst) dosage = 2 - dosage;
+	if (bgenIndivInds[i] != SnpData::IND_MISSING) {
+	  if (!(ploidyMissBytes[i] & missBit)) {
+	    dosageNum++;
+	    dosageSum += dosage;
+	    snpCovCompVec[bgenIndivInds[i]] = dosage;
+	  }
+	  else {
+	    missingNum++;
+	  }
 	}
       }
     }
@@ -3204,9 +3514,12 @@ namespace LMM {
     if (missingNum) {
       thetaHat = dosageSum / (2*dosageNum); // recompute mean among individuals in analysis
       for (uint i = 0; i < N; i++)
-	if (bgenIndivInds[i] != SnpData::IND_MISSING)
-	  if (ploidyMissBytes[i] & missBit)
-	    snpCovCompVec[bgenIndivInds[i]] = 2*thetaHat; // mean-fill missing genotypes
+	if (ploidyMissBytes[i] & missBit) {
+	  if (bgenIndivsIdentity)
+	    snpCovCompVec[i] = 2*thetaHat;
+	  else if (bgenIndivInds[i] != SnpData::IND_MISSING)
+	    snpCovCompVec[bgenIndivInds[i]] = 2*thetaHat;
+	}
     }
 
     oss << getSnpStats(snpName, chrom, physpos, genpos, allele1, allele0, snpCovCompVec,
@@ -3281,11 +3594,13 @@ namespace LMM {
     uint Nsample = sampleIDs.size();
     vector <uint64> bgenIndivInds(Nsample);
     int numFound = 0;
+    bool bgenIndivsIdentity = true;
     for (uint i = 0; i < Nsample; i++) {
       bgenIndivInds[i] = snpData.getIndivInd(sampleIDs[i].first, sampleIDs[i].second);
       if (bgenIndivInds[i] == SnpData::IND_MISSING || !maskIndivs[bgenIndivInds[i]])
 	bgenIndivInds[i] = SnpData::IND_MISSING;
       if (bgenIndivInds[i] != SnpData::IND_MISSING) numFound++;
+      if (bgenIndivInds[i] != i) bgenIndivsIdentity = false;
     }
     cout << endl << "Read " << Nsample << " indivs; using "
 	 << numFound << " in filtered PLINK data and not masked" << endl;
@@ -3415,14 +3730,15 @@ namespace LMM {
 	B++;
 
       if (B == B_MAX || mbgen+1 == Mbgen) { // process the block of SNPs using multi-threading
-#ifdef USE_MKL
+#ifdef BOLT_USE_OPENMP
 #pragma omp parallel for schedule(dynamic)
 #endif
 	for (int b = 0; b < B; b++) {
 	  int t = omp_get_thread_num();
 	  if (bufLens[b] > bufs[t].size()) bufs[t].resize(bufLens[b]);
 	  outStrs[b] = getSnpStatsBgen2(CompressedSNPBlocks, &bufs[t][0], bufLens[b], &zBufs[b][0],
-					zBufLens[b], Nbgen, bgenIndivInds, snpNames[b], chroms[b],
+					zBufLens[b], Nbgen, bgenIndivInds, bgenIndivsIdentity,
+					snpNames[b], chroms[b],
 					bps[b], gps[b], allele1s[b], allele0s[b],
 					snpCovCompVecs[t], verboseStats, retroData, domRecHetTest,
 					bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst);

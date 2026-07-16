@@ -27,7 +27,7 @@
 #include <cctype>
 #include <unordered_set>
 
-#include "omp.h"
+#include "OpenMpCompat.hpp"
 
 #include <boost/utility.hpp>
 #include <boost/version.hpp>
@@ -122,6 +122,11 @@ int main(int argc, char *argv[]) {
   cout << "Distributed under the GNU GPLv3 open source license." << endl << endl;
 
 #ifdef VERBOSE
+#ifdef BOLT_USE_OPENMP
+  cout << "Compiled with OpenMP multithreading" << endl;
+#else
+  cout << "Compiled without OpenMP: serial execution only" << endl;
+#endif
 #ifdef USE_SSE
   cout << "Compiled with USE_SSE: fast aligned memory access" << endl;
 #endif

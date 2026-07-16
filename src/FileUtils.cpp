@@ -311,8 +311,6 @@ namespace FileUtils {
 
     if (Layout==2) {
 
-      bool foundVariantToTest = false;
-
       for (uint b = 0; b < Mbgen; b++) {
 
 	if (b != 0) { // haven't already read snpID and rsID
@@ -452,7 +450,6 @@ namespace FileUtils {
       
 	if (bgenVariantsToTest.empty() ||
 	    bgenVariantsToTest.find(variant) != bgenVariantsToTest.end()) {
-	  foundVariantToTest = true;
 	  break;
 	}
 

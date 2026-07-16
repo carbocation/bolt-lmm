@@ -24,9 +24,11 @@
 
 void *ALIGNED_MALLOC(uint64 size) {
 #ifdef USE_MKL_MALLOC
-  void *p = mkl_malloc(size, MEM_ALIGNMENT);
+	  void *p = mkl_malloc(size, MEM_ALIGNMENT);
 #else
-  void *p = _mm_malloc(size, MEM_ALIGNMENT);
+	  void *p = NULL;
+	  if (posix_memalign(&p, MEM_ALIGNMENT, size) != 0)
+	    p = NULL;
 #endif
   // TODO: change to assert() or dispense with altogether and change ALIGNED_MALLOC to macro?
   if (p == NULL) {

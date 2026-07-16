@@ -30,7 +30,7 @@
 #include <numeric>
 #include <utility>
 
-#include "omp.h"
+#include "OpenMpCompat.hpp"
 
 #include <boost/random.hpp>
 #include <boost/random/mersenne_twister.hpp>

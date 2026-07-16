@@ -17,6 +17,7 @@
 */
 
 #include <cstdlib>
+#include <chrono>
 #include <sys/time.h>
 
 #include "Timer.hpp"
@@ -34,9 +35,14 @@ double Timer::update_time(void) {
 }
 
 unsigned long long Timer::rdtsc(void) {
+#if defined(__i386__) || defined(__x86_64__)
   unsigned int hi, lo;
   __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
   return ((unsigned long long) lo) | (((unsigned long long) hi)<<32);
+#else
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+	   std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
 }
 
 double Timer::get_time(void) {

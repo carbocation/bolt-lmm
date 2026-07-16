@@ -31,7 +31,7 @@
 #include <utility>
 #include <unordered_set>
 
-#include "omp.h"
+#include "OpenMpCompat.hpp"
 #include "zlib.h"
 #include "zstd.h"
 

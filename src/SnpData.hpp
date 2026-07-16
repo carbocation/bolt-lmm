@@ -98,6 +98,9 @@ namespace LMM {
 		    bool noMapCheck);
     void storeBedLineAndCountMissing(uchar bedLineOut[], const uchar genoLine[],
 				     int numMissingPerIndiv[]);
+    double computeIdentityBedAlleleFreqAndMissing(const uchar bedLine[], double *missing) const;
+    void storeIdentityBedLineAndCountMissing(uchar bedLineOut[], const uchar bedLineIn[],
+					     int numMissingPerIndiv[]) const;
 
   public:
     /**    

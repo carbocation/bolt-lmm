@@ -58,6 +58,11 @@ namespace LMM {
 
     typedef std::array<uchar, 4> DecodedBedByte;
 
+    struct BedByteStats {
+      uchar alleleSum;
+      uchar numMissing;
+    };
+
     std::array<DecodedBedByte, 256> makeBedByteLookup() {
       const uchar bedToGeno[4] = {2, 9, 1, 0};
       std::array<DecodedBedByte, 256> lookup = {};
@@ -68,6 +73,21 @@ namespace LMM {
     }
 
     const std::array<DecodedBedByte, 256> BED_BYTE_LOOKUP = makeBedByteLookup();
+
+    std::array<BedByteStats, 256> makeBedByteStats() {
+      std::array<BedByteStats, 256> stats = {};
+      for (uint byte = 0; byte < stats.size(); byte++)
+	for (uint k = 0; k < 4; k++) {
+	  const uchar geno = BED_BYTE_LOOKUP[byte][k];
+	  if (geno == 9)
+	    stats[byte].numMissing++;
+	  else
+	    stats[byte].alleleSum += geno;
+	}
+      return stats;
+    }
+
+    const std::array<BedByteStats, 256> BED_BYTE_STATS = makeBedByteStats();
 
   }
 
@@ -593,6 +613,47 @@ namespace LMM {
     memset(bedLineOut + packedBytes, 0, (Nstride/4-packedBytes) * sizeof(bedLineOut[0]));
   }
 
+  double SnpData::computeIdentityBedAlleleFreqAndMissing(const uchar bedLine[],
+						  double *missing) const {
+    uint64 alleleSum = 0, numMissing = 0;
+    const uint64 fullBytes = N >> 2;
+    for (uint64 byte = 0; byte < fullBytes; byte++) {
+      const BedByteStats &stats = BED_BYTE_STATS[bedLine[byte]];
+      alleleSum += stats.alleleSum;
+      numMissing += stats.numMissing;
+    }
+    for (uint64 n = fullBytes << 2; n < N; n++) {
+      const uchar geno = BED_BYTE_LOOKUP[bedLine[n>>2]][n&3];
+      if (geno == 9)
+	numMissing++;
+      else
+	alleleSum += geno;
+    }
+    *missing = static_cast<double>(numMissing) / N;
+    return 0.5 * alleleSum / (N-numMissing);
+  }
+
+  void SnpData::storeIdentityBedLineAndCountMissing(uchar bedLineOut[],
+						     const uchar bedLineIn[],
+						     int numMissingPerIndiv[]) const {
+    const uint64 fullBytes = N >> 2;
+    for (uint64 byte = 0; byte < fullBytes; byte++) {
+      const uchar packed = bedLineIn[byte];
+      bedLineOut[byte] = packed;
+      for (uint64 offset = 0; offset < 4; offset++)
+	if (((packed >> (offset << 1)) & 3) == 1)
+	  numMissingPerIndiv[(byte << 2) + offset]++;
+    }
+    if (N & 3) {
+      const uint64 byte = fullBytes;
+      const uchar paddingMask = (1U << (2*(N&3))) - 1;
+      bedLineOut[byte] = bedLineIn[byte] & paddingMask;
+      for (uint64 n = byte << 2; n < N; n++)
+	if (((bedLineIn[byte] >> ((n&3) << 1)) & 3) == 1)
+	  numMissingPerIndiv[n]++;
+    }
+  }
+
   /**
    * assumes Nbed and bedIndivToRemoveIndex have been initialized
    * if loadGenoLine == false, just advances the file pointer
@@ -791,19 +852,27 @@ namespace LMM {
       }
 
       // read genotypes
-      uchar *genoLine = ALIGNED_MALLOC_UCHARS(N);
+      uchar *genoLine = bedIndivsIdentity ? NULL : ALIGNED_MALLOC_UCHARS(N);
       uchar *bedLineIn = ALIGNED_MALLOC_UCHARS((Nbed+3)>>2);
       int numSnpsFailedQC = 0;
       for (uint64 mfile = 0; mfile < Mfiles[i]; mfile++, mbed++) {
-	readBedLine(genoLine, bedLineIn, fin, bedSnpToGrmIndex[mbed] != -2);
+	if (bedIndivsIdentity)
+	  fin.read((char *) bedLineIn, (Nbed+3)>>2);
+	else
+	  readBedLine(genoLine, bedLineIn, fin, bedSnpToGrmIndex[mbed] != -2);
 	if (bedSnpToGrmIndex[mbed] != -2) { // not excluded
 	  double snpMissing;
-	  const double alleleFreq =
+	  const double alleleFreq = bedIndivsIdentity ?
+	    computeIdentityBedAlleleFreqAndMissing(bedLineIn, &snpMissing) :
 	    computeAlleleFreqAndMissing(genoLine, maskIndivs, &snpMissing, true);
 	  bool snpPassQC = snpMissing <= maxMissingPerSnp;
 	  if (snpPassQC) {
 	    if (bedSnpToGrmIndex[mbed] >= 0) { // use in GRM
-	      storeBedLineAndCountMissing(bedLineOut, genoLine, numMissingPerIndiv.data());
+	      if (bedIndivsIdentity)
+		storeIdentityBedLineAndCountMissing(bedLineOut, bedLineIn,
+						   numMissingPerIndiv.data());
+	      else
+		storeBedLineAndCountMissing(bedLineOut, genoLine, numMissingPerIndiv.data());
 	      bedLineOut += Nstride>>2;
 	      bedSnpToGrmIndex[mbed] = snps.size(); // reassign to final value
 	      snps.push_back(bedSnps[mbed]);
@@ -821,7 +890,7 @@ namespace LMM {
 	}
       }
       ALIGNED_FREE(bedLineIn);
-      ALIGNED_FREE(genoLine);
+      if (genoLine != NULL) ALIGNED_FREE(genoLine);
 
       if (numSnpsFailedQC)
 	cout << "Filtered " << numSnpsFailedQC << " SNPs with > " << maxMissingPerSnp << " missing"

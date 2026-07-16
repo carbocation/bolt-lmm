@@ -572,6 +572,26 @@ namespace LMM {
     return -eps <= dosage && dosage <= 2+eps;
   }
 
+  double SnpData::computeAlleleFreqAndMissing(const uchar genoLine[],
+					      const double subMaskIndivs[],
+					      double *missing) const {
+    double alleleSum = 0, missingSum = 0;
+    int numObserved = 0, numMasked = 0;
+    for (size_t n = 0; n < N; n++) {
+      if (subMaskIndivs[n]) {
+	const bool isMissing = genoLine[n] == 9;
+	missingSum += isMissing;
+	numMasked++;
+	if (!isMissing) {
+	  alleleSum += genoLine[n];
+	  numObserved++;
+	}
+      }
+    }
+    *missing = missingSum / numMasked;
+    return 0.5 * alleleSum / numObserved;
+  }
+
   double SnpData::computeAlleleFreq(const uchar genoLine[], const double subMaskIndivs[]) const {
     double sum = 0; int num = 0;
     for (size_t n = 0; n < N; n++)

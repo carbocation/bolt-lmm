@@ -132,6 +132,8 @@ namespace LMM {
      */
     void readBedLine(uchar genoLine[], uchar bedLineIn[], FileUtils::AutoGzIfstream &fin,
 		     bool loadGenoLine) const;
+    double computeAlleleFreqAndMissing(const uchar genoLine[], const double subMaskIndivs[],
+				       double *missing) const;
     double computeAlleleFreq(const uchar genoLine[], const double subMaskIndivs[]) const;
     double computeAlleleFreq(const double genoLine[], const double subMaskIndivs[]) const;
     double computeMAF(const uchar genoLine[], const double subMaskIndivs[]) const;

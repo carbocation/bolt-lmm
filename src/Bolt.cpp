@@ -2548,9 +2548,16 @@ namespace LMM {
 	  exit(1);
 	}
 	if (include && !geneticMapFile.empty()) genpos = mapInterpolater.interp(chrom, physpos);
-	if (include && snpData.computeSnpMissing(genoLine, maskIndivs) <= maxMissingPerSnp)
-	  fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, genoLine, verboseStats,
-			      retroData, snpCovCompVec);
+	if (include) {
+	  double missing;
+	  const double alleleFreq =
+	    snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing);
+	  if (missing <= maxMissingPerSnp) {
+	    snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq);
+	    fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, alleleFreq, missing,
+			 snpCovCompVec, verboseStats, retroData);
+	  }
+	}
       }
       if (!finBed || finBed.get() != EOF) {
 	cerr << "ERROR: Wrong file size or reading error for bed file: " << bedFiles[f] << endl;

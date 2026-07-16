@@ -140,6 +140,10 @@ host cache, still had about 40 GiB available, and used no swap.
 LINREG is used here only as a controlled one-traversal timer. The intended
 production output is `P_BOLT_LMM`; the same retained device and host ranges are
 reused by variance fitting, cross-validation, and final spike-and-slab scoring.
+The optional Stage 1 `--noLinreg` flag removes this traversal while preserving
+the default behavior when absent. On the medium full-model fixture it reduced
+the model artifact from 51,945,840 to 50,897,210 bytes, and Stage 2 output
+including `P_BOLT_LMM` remained byte-identical to the default path.
 
 ## Larger CUDA device cache
 

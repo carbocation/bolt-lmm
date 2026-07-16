@@ -252,6 +252,7 @@ namespace LMM {
       ("cudaHostCacheGiB", po::value<double>(&cudaHostCacheGiB)->default_value(-1),
        "maximum retained host cache for file-backed CUDA genotypes in GiB "
        "(-1 = automatic, 0 = disabled)")
+      ("noLinreg", "skip LINREG statistics in Stage 1 LMM association analysis")
       ("covarMaxLevels", po::value<int>(&covarMaxLevels)->default_value(10),
        "an error-check: maximum number of levels for a categorical covariate")
       ("maxBgenVariantsToScan", po::value<uint>(&maxBgenVariantsToScan)->default_value(100000),
@@ -441,6 +442,11 @@ namespace LMM {
       lmmBayes = vm.count("lmm") || lmmForceNonInf;
       lmmBayesMCMC = vm.count("lmmBayesMCMC");
       lmmInf = vm.count("lmmInfOnly") || lmmBayes || lmmBayesMCMC; // Bayes needs inf for calib
+      noLinreg = vm.count("noLinreg");
+      if (noLinreg && (stage != 1 || reml || !lmmInf)) {
+	cerr << "ERROR: --noLinreg requires Stage 1 LMM association analysis" << endl;
+	return false;
+      }
       if (vm.count("cuda") && vm.count("no-cuda")) {
 	cerr << "ERROR: --cuda and --no-cuda cannot be used together" << endl;
 	return false;

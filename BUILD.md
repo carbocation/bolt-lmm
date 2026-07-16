@@ -100,7 +100,7 @@ matrices do not cross PCIe.
 
 The CUDA backend uses otherwise-free device memory to cache a shared prefix of
 the packed genotype matrix. It reserves one additional decoded SNP block plus
-4 GiB for a simultaneous cross-validation fold and working buffers. Main and
+3 GiB for a simultaneous cross-validation fold and working buffers. Main and
 fold-specific `Bolt` instances share the packed cache while retaining their own
 sample masks and covariate projections. The cache is populated as part of the
 main marker-initialization scan, and fold marker initialization reads cached
@@ -116,15 +116,15 @@ cache, CUDA also retains a bounded part of the remaining packed matrix in
 ordinary host RAM. The retained range starts immediately after the device
 cache and is populated during marker initialization, avoiding another scratch-
 disk read. `--cudaHostCacheGiB N` sets its limit, `0` disables it for minimum
-memory use, and the default `-1` uses at most one quarter of physical RAM. This
+memory use, and the default `-1` uses at most one half of physical RAM. This
 cache is not page-locked; the two pinned streaming blocks remain the only
 long-lived pinned host allocation.
 
 Packed blocks outside the device cache are double-buffered through two pinned
 host buffers and two device buffers. A nonblocking transfer stream preloads the
 next block while the compute stream decodes and multiplies the current block.
-The pinned host pair is bounded (256 MiB at N=500,000 with the default
-1,024-SNP CUDA block) and shared by the main and cross-validation `Bolt`
+The pinned host pair is bounded (about 122 MiB at N=500,000 with the default
+512-SNP CUDA block) and shared by the main and cross-validation `Bolt`
 objects, whose operations are sequential.
 
 For an NVIDIA A100 (compute capability 8.0):

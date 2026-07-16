@@ -590,11 +590,17 @@ int main(int argc, char *argv[]) {
 
   // LINREG
 
-  cout << "=== Computing linear regression (LINREG) stats ===" << endl << endl;
-  Bolt::StatsDataRetroLOCO LINREGdata = bolt.computeLINREG(pheno);
-  // Store LINREG unconditionally so Stage 2 can independently choose --verboseStats.
-  retroData.push_back(LINREGdata);
-  cout << "Time for computing LINREG stats = " << timer.update_time() << " sec" << endl << endl;
+  int linregInd = -1;
+  if (!params.noLinreg) {
+    cout << "=== Computing linear regression (LINREG) stats ===" << endl << endl;
+    linregInd = retroData.size();
+    // Store LINREG by default so Stage 2 can independently choose --verboseStats.
+    retroData.push_back(bolt.computeLINREG(pheno));
+    cout << "Time for computing LINREG stats = " << timer.update_time() << " sec" << endl
+	 << endl;
+  }
+  else
+    cout << "Skipping LINREG statistics (--noLinreg)" << endl << endl;
 
   // LMM
   
@@ -767,20 +773,26 @@ int main(int argc, char *argv[]) {
       }
       cout << "Found LD Scores for " << numFound << "/" << LDscores.size() << " SNPs" << endl;
 
-      cout << endl << "Estimating inflation of LINREG chisq stats using MLMe as reference..." << endl;
-      // TODO: update with final values of constants for LD Score regression
-      double minMAF = 0.01;
-      double outlierVarFracThresh = 0.001;
-      int varianceDegree = 2;
-      std::pair <double, double> calibrationFactorMeanStd =
-	LDscoreCalibration::calibrateStatPair(snpData.getSnpInfo(), retroData[lmmInfInd].stats,
-					      LINREGdata.stats, LDscores, LDscoresChip, minMAF,
-					      bolt.getNused(), outlierVarFracThresh,
-					      snpData.getMapAvailable(), varianceDegree);
-      LINREGinflationEst = 1/calibrationFactorMeanStd.first;
-      cout << "LINREG intercept inflation = " << LINREGinflationEst << endl;
-      if (params.verboseStats)
-	cout << "NOTE: LINREG stats in output are NOT corrected for estimated inflation" << endl;
+      if (linregInd != -1) {
+	cout << endl << "Estimating inflation of LINREG chisq stats using MLMe as reference..."
+	     << endl;
+	// TODO: update with final values of constants for LD Score regression
+	double minMAF = 0.01;
+	double outlierVarFracThresh = 0.001;
+	int varianceDegree = 2;
+	std::pair <double, double> calibrationFactorMeanStd =
+	  LDscoreCalibration::calibrateStatPair(snpData.getSnpInfo(),
+						retroData[lmmInfInd].stats,
+						retroData[linregInd].stats, LDscores,
+						LDscoresChip, minMAF, bolt.getNused(),
+						outlierVarFracThresh,
+						snpData.getMapAvailable(), varianceDegree);
+	LINREGinflationEst = 1/calibrationFactorMeanStd.first;
+	cout << "LINREG intercept inflation = " << LINREGinflationEst << endl;
+	if (params.verboseStats)
+	  cout << "NOTE: LINREG stats in output are NOT corrected for estimated inflation"
+	       << endl;
+      }
     }
     else if (params.lmmBayes || params.lmmBayesMCMC) { // will need to calibrate with chip LD
       cerr << "WARNING: No LDscoresFile provided; using estimated LD among chip SNPs" << endl;

@@ -115,6 +115,12 @@ model artifact:
   --numThreads=8
 ```
 
+Stage 1 computes and stores LINREG statistics by default for compatibility
+with existing model artifacts and Stage 2 `--verboseStats` output. Analyses
+that only need mixed-model results can pass `--noLinreg` in Stage 1 to avoid
+that extra genotype traversal. Stage 2 will then omit `P_LINREG` while retaining
+`P_BOLT_LMM_INF` and, when the spike-and-slab model is fitted, `P_BOLT_LMM`.
+
 Stage 2 reloads that artifact and streams the variants to test:
 
 ```sh

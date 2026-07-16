@@ -3232,7 +3232,8 @@ namespace LMM {
 
   string Bolt::getSnpStatsBgen2(uint CompressedSNPBlocks, uchar *buf, uint bufLen,
 				const uchar *zBuf, uint zBufLen, uint Nbgen,
-				const vector <uint64> &bgenIndivInds, const string &snpName,
+				const vector <uint64> &bgenIndivInds, bool bgenIndivsIdentity,
+				const string &snpName,
 				int chrom, int physpos,double genpos, const string &allele1,
 				const string &allele0, double snpCovCompVec[], bool verboseStats,
 				const vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
@@ -3311,24 +3312,37 @@ namespace LMM {
 
     int Nnonmiss = 0, NprobBytes = 0;
     double sum_eij = 0, sum_fij_minus_eij2 = 0; // for INFO
+    double dosageSum = 0, dosageNum = 0, missingNum = 0;
     for (uint i = 0; i < N; i++) {
       uint ploidy = ploidyMissBytes[i] & ~missBit;
       NprobBytes += ploidy;
-      if (ploidyMissBytes[i] & missBit) { bufAt += ploidy; continue; } // missing => skip
+      if (ploidyMissBytes[i] & missBit) {
+	if (bgenIndivsIdentity) missingNum++;
+	bufAt += ploidy;
+	continue;
+      }
       Nnonmiss++;
+      double dosage, infoVariance;
       if (useDosageLookup) {
 	const uint lookupIndex = bufAt[0] | (bufAt[1] << 8); bufAt += 2;
 	const Bgen8DosageLookupEntry &entry = (*dosageLookup)[lookupIndex];
-	sum_eij += entry.dosage;
-	sum_fij_minus_eij2 += entry.infoVariance;
+	dosage = entry.dosage;
+	infoVariance = entry.infoVariance;
       }
       else {
 	double p11 = lut[*bufAt]; bufAt++;                          // if phased, contains p(hap1)==1
 	double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; } // if phased, contains p(hap2)==1
-	double dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
+	dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
 	double fij = ((Phased==0U||ploidy==1U) ? 4*p11 + p10 : p11 + 2*p11*p10 + p10);
-	sum_eij += dosage;
-	sum_fij_minus_eij2 += fij - dosage*dosage;
+	infoVariance = fij - dosage*dosage;
+      }
+      sum_eij += dosage;
+      sum_fij_minus_eij2 += infoVariance;
+      if (bgenIndivsIdentity) {
+	if (bgenRefFirst) dosage = 2 - dosage;
+	dosageNum++;
+	dosageSum += dosage;
+	snpCovCompVec[i] = dosage;
       }
     }
     double thetaHat = sum_eij / (2*Nnonmiss);
@@ -3342,32 +3356,31 @@ namespace LMM {
 
     std::ostringstream oss;
 
-    // reread dosages and copy to buffer in correct order
-    bufAt -= NprobBytes; // rewind
-    double dosageSum = 0, dosageNum = 0, missingNum = 0;
-    for (uint i = 0; i < N; i++) {
-      uint ploidy = ploidyMissBytes[i] & ~missBit;
-      double dosage;
-      if (useDosageLookup) {
-	const uint lookupIndex = bufAt[0] | (bufAt[1] << 8); bufAt += 2;
-	dosage = (*dosageLookup)[lookupIndex].dosage;
-      }
-      else {
-	double p11 = lut[*bufAt]; bufAt++;
-	double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; }
-	dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
-      }
-      if (bgenRefFirst) // use second allele as effect allele
-	dosage = 2 - dosage;
-      if (bgenIndivInds[i] != SnpData::IND_MISSING) {
-	if (!(ploidyMissBytes[i] & missBit)) {
-	  dosageNum++;
-	  dosageSum += dosage;
-	  snpCovCompVec[bgenIndivInds[i]] = dosage;
+    // Reordered or masked samples require a second pass to scatter dosages into Stage 1 order.
+    if (!bgenIndivsIdentity) {
+      bufAt -= NprobBytes; // rewind
+      for (uint i = 0; i < N; i++) {
+	uint ploidy = ploidyMissBytes[i] & ~missBit;
+	double dosage;
+	if (useDosageLookup) {
+	  const uint lookupIndex = bufAt[0] | (bufAt[1] << 8); bufAt += 2;
+	  dosage = (*dosageLookup)[lookupIndex].dosage;
 	}
 	else {
-	  missingNum++;
-	  //snpCovCompVec[bgenIndivInds[i]] = 2*thetaHat; [mean-fill using all bgen samples]
+	  double p11 = lut[*bufAt]; bufAt++;
+	  double p10=0; if (ploidy==2U) { p10=lut[*bufAt]; bufAt++; }
+	  dosage = ((Phased==0U||ploidy==1U) ? 2 : 1) * p11 + p10;
+	}
+	if (bgenRefFirst) dosage = 2 - dosage;
+	if (bgenIndivInds[i] != SnpData::IND_MISSING) {
+	  if (!(ploidyMissBytes[i] & missBit)) {
+	    dosageNum++;
+	    dosageSum += dosage;
+	    snpCovCompVec[bgenIndivInds[i]] = dosage;
+	  }
+	  else {
+	    missingNum++;
+	  }
 	}
       }
     }
@@ -3377,9 +3390,12 @@ namespace LMM {
     if (missingNum) {
       thetaHat = dosageSum / (2*dosageNum); // recompute mean among individuals in analysis
       for (uint i = 0; i < N; i++)
-	if (bgenIndivInds[i] != SnpData::IND_MISSING)
-	  if (ploidyMissBytes[i] & missBit)
-	    snpCovCompVec[bgenIndivInds[i]] = 2*thetaHat; // mean-fill missing genotypes
+	if (ploidyMissBytes[i] & missBit) {
+	  if (bgenIndivsIdentity)
+	    snpCovCompVec[i] = 2*thetaHat;
+	  else if (bgenIndivInds[i] != SnpData::IND_MISSING)
+	    snpCovCompVec[bgenIndivInds[i]] = 2*thetaHat;
+	}
     }
 
     oss << getSnpStats(snpName, chrom, physpos, genpos, allele1, allele0, snpCovCompVec,
@@ -3454,11 +3470,13 @@ namespace LMM {
     uint Nsample = sampleIDs.size();
     vector <uint64> bgenIndivInds(Nsample);
     int numFound = 0;
+    bool bgenIndivsIdentity = true;
     for (uint i = 0; i < Nsample; i++) {
       bgenIndivInds[i] = snpData.getIndivInd(sampleIDs[i].first, sampleIDs[i].second);
       if (bgenIndivInds[i] == SnpData::IND_MISSING || !maskIndivs[bgenIndivInds[i]])
 	bgenIndivInds[i] = SnpData::IND_MISSING;
       if (bgenIndivInds[i] != SnpData::IND_MISSING) numFound++;
+      if (bgenIndivInds[i] != i) bgenIndivsIdentity = false;
     }
     cout << endl << "Read " << Nsample << " indivs; using "
 	 << numFound << " in filtered PLINK data and not masked" << endl;
@@ -3595,7 +3613,8 @@ namespace LMM {
 	  int t = omp_get_thread_num();
 	  if (bufLens[b] > bufs[t].size()) bufs[t].resize(bufLens[b]);
 	  outStrs[b] = getSnpStatsBgen2(CompressedSNPBlocks, &bufs[t][0], bufLens[b], &zBufs[b][0],
-					zBufLens[b], Nbgen, bgenIndivInds, snpNames[b], chroms[b],
+					zBufLens[b], Nbgen, bgenIndivInds, bgenIndivsIdentity,
+					snpNames[b], chroms[b],
 					bps[b], gps[b], allele1s[b], allele0s[b],
 					snpCovCompVecs[t], verboseStats, retroData, domRecHetTest,
 					bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst);

@@ -348,6 +348,7 @@ namespace LMM {
     std::string getSnpStatsBgen2(uint CompressedSNPBlocks, uchar *buf, uint bufLen,
 				 const uchar *zBuf, uint zBufLen, uint Nbgen,
 				 const std::vector <uint64> &bgenIndivInds,
+				 bool bgenIndivsIdentity,
 				 const std::string &snpName, int chrom, int physpos, double genpos,
 				 const std::string &allele1, const std::string &allele0,
 				 double snpCovCompVec[], bool verboseStats,

@@ -511,27 +511,96 @@ namespace LMM {
    * multiply v * XX' (with positive covComps in input and output)
    * explicitly: X_proj X_proj' * v_proj', where [.]_proj = [.] - [.]covComps*covBasis
    *
-   * double vCovCompVecs[]: (in/out) B x Nstride+Cstride
+   * Fuses X' * v and X * (X' * v) block-by-block so each packed genotype
+   * block is expanded once and the masked intermediate is only block-sized.
+   *
+   * double outCovCompVecs[]: (out) B x Nstride+Cstride
+   * double inCovCompVecs[]: (in) B x Nstride+Cstride
    */
-  void Bolt::multXXtransMask(double vCovCompVecs[], const uchar batchMaskSnps[], uint64 B) const {
-    double *XtransVecs = ALIGNED_MALLOC_DOUBLES(M * B);
-    
-    //Timer timer;
+  void Bolt::multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
+			     const uchar batchMaskSnps[], uint64 B) const {
+    const uint64 NCstride = Nstride+Cstride;
+    memset(outCovCompVecs, 0, B * NCstride * sizeof(outCovCompVecs[0]));
 
-    // multiply v * X (or equivalently, X' * v')
-    multXtrans(XtransVecs, vCovCompVecs, B);
-    //cout << "Time for multXtrans = " << timer.update_time() << endl;
+    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * NCstride);
+    double *XtransVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * B);
+    double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
 
-    // apply M x B mask
-    for (uint64 mb = 0; mb < M*B; mb++)
-      XtransVecs[mb] *= batchMaskSnps[mb];
-    //cout << "Time for mask = " << timer.update_time() << endl;
-    
-    // multiply X * (masked X' * v'), or equivalently, (masked (v * X)) * X'
-    multX(vCovCompVecs, XtransVecs, B);
-    //cout << "Time for multX = " << timer.update_time() << endl;
-    
-    ALIGNED_FREE(XtransVecs);
+    for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) {
+      const uint64 mBlockMultXCrop = std::min(M, m0+mBlockMultX) - m0;
+#pragma omp parallel for
+      for (uint64 mPlus = 0; mPlus < mBlockMultXCrop; mPlus++) {
+	const uint64 m = m0+mPlus;
+	if (projMaskSnps[m])
+	  buildMaskedSnpNegCovCompVec(snpCovCompVecBlock + mPlus * NCstride, m,
+				      work + (omp_get_thread_num()<<8));
+	else
+	  memset(snpCovCompVecBlock + mPlus * NCstride, 0,
+		 NCstride * sizeof(snpCovCompVecBlock[0]));
+      }
+
+#ifdef MEASURE_DGEMM
+      unsigned long long tsc = Timer::rdtsc();
+#endif
+      {
+	char TRANSA_ = 'T';
+	char TRANSB_ = 'N';
+	int M_ = B;
+	int N_ = mBlockMultXCrop;
+	int K_ = NCstride;
+	double ALPHA_ = 1.0;
+	const double *A_ = inCovCompVecs;
+	int LDA_ = NCstride;
+	double *B_ = snpCovCompVecBlock;
+	int LDB_ = NCstride;
+	double BETA_ = 0.0;
+	double *C_ = XtransVecBlock;
+	int LDC_ = B;
+
+	DGEMM_MACRO(&TRANSA_, &TRANSB_, &M_, &N_, &K_, &ALPHA_, A_, &LDA_, B_, &LDB_,
+		    &BETA_, C_, &LDC_);
+      }
+#ifdef MEASURE_DGEMM
+      dgemmTicks += Timer::rdtsc() - tsc;
+#endif
+
+      for (uint64 mPlus = 0; mPlus < mBlockMultXCrop; mPlus++) {
+	const uint64 m = m0+mPlus;
+	for (uint64 b = 0; b < B; b++)
+	  XtransVecBlock[mPlus*B+b] *= batchMaskSnps[m*B+b];
+	for (uint64 c = 0; c < Cstride; c++)
+	  snpCovCompVecBlock[mPlus*NCstride+Nstride+c] *= -1;
+      }
+
+#ifdef MEASURE_DGEMM
+      tsc = Timer::rdtsc();
+#endif
+      {
+	char TRANSA_ = 'N';
+	char TRANSB_ = 'T';
+	int M_ = NCstride;
+	int N_ = B;
+	int K_ = mBlockMultXCrop;
+	double ALPHA_ = 1.0;
+	double *A_ = snpCovCompVecBlock;
+	int LDA_ = NCstride;
+	const double *B_ = XtransVecBlock;
+	int LDB_ = B;
+	double BETA_ = 1.0;
+	double *C_ = outCovCompVecs;
+	int LDC_ = NCstride;
+
+	DGEMM_MACRO(&TRANSA_, &TRANSB_, &M_, &N_, &K_, &ALPHA_, A_, &LDA_, B_, &LDB_,
+		    &BETA_, C_, &LDC_);
+      }
+#ifdef MEASURE_DGEMM
+      dgemmTicks += Timer::rdtsc() - tsc;
+#endif
+    }
+
+    ALIGNED_FREE(work);
+    ALIGNED_FREE(XtransVecBlock);
+    ALIGNED_FREE(snpCovCompVecBlock);
   }
 
   /**
@@ -541,8 +610,7 @@ namespace LMM {
   void Bolt::multH(double HmultCovCompVecs[], const double xCovCompVecs[],
 		   const uchar batchMaskSnps[], const double logDeltas[], const uint64 Ms[],
 		   uint64 B) const {
-    memcpy(HmultCovCompVecs, xCovCompVecs, B * (Nstride+Cstride) * sizeof(HmultCovCompVecs[0]));
-    multXXtransMask(HmultCovCompVecs, batchMaskSnps, B); // Hmult <- X[b]*X[b]'*x[b] (temp)
+    multXXtransMask(HmultCovCompVecs, xCovCompVecs, batchMaskSnps, B);
     for (uint64 bnc = 0, b = 0; b < B; b++) {
       double invM = 1 / (double) Ms[b], delta = exp(logDeltas[b]);
       for (uint64 nc = 0; nc < Nstride+Cstride; nc++, bnc++)

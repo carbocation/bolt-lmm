@@ -129,7 +129,8 @@ namespace LMM {
 
     void multXtrans(double XtransVecs[], const double vCovCompVecs[], uint64 B) const;
     void multX(double vCovCompVecs[], const double XtransVecs[], uint64 B) const;
-    void multXXtransMask(double vCovCompVecs[], const uchar batchMaskSnps[], uint64 B) const;
+    void multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
+			 const uchar batchMaskSnps[], uint64 B) const;
     void multH(double HmultCovCompVecs[], const double xCovCompVecs[], const uchar batchMaskSnps[],
 	       const double logDeltas[], const uint64 Ms[], uint64 B) const;
     void conjGradSolve(double xCovCompVecs[], bool useStartVecs, const double bCovCompVecs[],

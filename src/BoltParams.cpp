@@ -249,6 +249,9 @@ namespace LMM {
        "scratch directory for a file-backed Stage 1 PGEN hardcall cache")
       ("cudaCacheGiB", po::value<double>(&cudaCacheGiB)->default_value(-1),
        "maximum CUDA packed-genotype cache size in GiB (-1 = automatic, 0 = disabled)")
+      ("cudaHostCacheGiB", po::value<double>(&cudaHostCacheGiB)->default_value(-1),
+       "maximum retained host cache for file-backed CUDA genotypes in GiB "
+       "(-1 = automatic, 0 = disabled)")
       ("covarMaxLevels", po::value<int>(&covarMaxLevels)->default_value(10),
        "an error-check: maximum number of levels for a categorical covariate")
       ("maxBgenVariantsToScan", po::value<uint>(&maxBgenVariantsToScan)->default_value(100000),
@@ -419,6 +422,11 @@ namespace LMM {
 	cerr << "ERROR: --cudaCacheGiB must be -1 (automatic) or nonnegative" << endl;
 	return false;
       }
+      if (!std::isfinite(cudaHostCacheGiB) ||
+	  (cudaHostCacheGiB < 0 && cudaHostCacheGiB != -1)) {
+	cerr << "ERROR: --cudaHostCacheGiB must be -1 (automatic) or nonnegative" << endl;
+	return false;
+      }
 
       phenoUseFam = vm.count("phenoUseFam");
       noMapCheck = vm.count("noMapCheck");
@@ -444,6 +452,10 @@ namespace LMM {
 #endif
       if (cudaCacheGiB != -1 && !useCuda) {
 	cerr << "ERROR: --cudaCacheGiB requires CUDA-enabled Stage 1 execution" << endl;
+	return false;
+      }
+      if (cudaHostCacheGiB != -1 && !useCuda) {
+	cerr << "ERROR: --cudaHostCacheGiB requires CUDA-enabled Stage 1 execution" << endl;
 	return false;
       }
       LDscoresUseChip = vm.count("LDscoresUseChip");

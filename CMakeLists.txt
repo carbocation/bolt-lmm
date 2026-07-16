@@ -481,6 +481,8 @@ if(BUILD_TESTING)
     add_test(NAME cuda_step1_matrix_parity COMMAND cuda_step1_parity_test)
     add_test(NAME cuda_step1_streaming_parity
       COMMAND cuda_step1_parity_test --no-cache)
+    add_test(NAME cuda_step1_host_cache_parity
+      COMMAND cuda_step1_parity_test --host-cache)
   endif()
 endif()
 

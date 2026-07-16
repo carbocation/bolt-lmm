@@ -17,10 +17,16 @@ namespace {
 }
 
 int main(int argc, char **argv) {
+  bool fileBacked = false;
   if (argc == 2 && std::string(argv[1]) == "--no-cache")
     LMM::CudaStep1::setPackedCacheLimitGiB(0);
+  else if (argc == 2 && std::string(argv[1]) == "--host-cache") {
+    LMM::CudaStep1::setPackedCacheLimitGiB(0);
+    LMM::CudaStep1::setPackedHostCacheLimitGiB(1);
+    fileBacked = true;
+  }
   else if (argc != 1) {
-    std::cerr << "Usage: " << argv[0] << " [--no-cache]" << std::endl;
+    std::cerr << "Usage: " << argv[0] << " [--no-cache|--host-cache]" << std::endl;
     return 1;
   }
   const uint64 M = 5, Nstride = 8, Cstride = 4, NCstride = Nstride + Cstride, B = 3;
@@ -108,7 +114,7 @@ int main(int argc, char **argv) {
   LMM::CudaStep1::initializeMarkers(packed.data(), maskIndivs, covBasis, initCindep,
                                     initializedLookup, initializedNegCovComps,
                                     initializedNorms, initializedMask, initNused,
-                                    M, Nstride, Cstride);
+                                    M, Nstride, Cstride, fileBacked);
   double maxInitializationError = 0;
   for (uint64 m = 0; m < M; m++) {
     if (initializedMask[m] != expectedInitializedMask[m]) {
@@ -185,7 +191,7 @@ int main(int argc, char **argv) {
 
   std::vector<double> observed(B*NCstride);
   LMM::CudaStep1 cuda(packed.data(), maskIndivs, lookup, negCovComps, projMaskSnps,
-                      M, Nstride, Cstride);
+                      M, Nstride, Cstride, fileBacked);
   cuda.multXXtransMask(observed.data(), input.data(), batchMaskSnps, B);
 
   double maxAbsError = 0;

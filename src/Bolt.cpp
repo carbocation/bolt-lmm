@@ -1390,7 +1390,8 @@ namespace LMM {
     init(useCuda);
     if (useCuda)
       cudaStep1 = new CudaStep1(snpData.getGenotypes(), maskIndivs, snpValueLookup,
-				snpCovBasisNegComps, projMaskSnps, M, Nstride, Cstride);
+				snpCovBasisNegComps, projMaskSnps, M, Nstride, Cstride,
+				snpData.getGenotypesFileBacked());
 #else
     init(false);
     if (useCuda) {
@@ -1465,7 +1466,8 @@ namespace LMM {
       CudaStep1::initializeMarkers(snpData.getGenotypes(), maskIndivs,
 				   covBasis.getBasis(false), Cindep, snpValueLookup,
 				   snpCovBasisNegComps, Xnorm2s, projMaskSnps,
-				   Nused, M, Nstride, Cstride);
+				   Nused, M, Nstride, Cstride,
+				   snpData.getGenotypesFileBacked());
 #endif
     }
     else {

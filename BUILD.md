@@ -111,6 +111,15 @@ Use `--cudaCacheGiB N` to cap the packed device cache when GPU memory must be
 reserved for another process. `--cudaCacheGiB 0` disables it and exercises the
 streamed host-to-device path; the default `-1` retains automatic sizing.
 
+When Stage 1 PGEN hardcalls are file-backed and do not all fit in the device
+cache, CUDA also retains a bounded part of the remaining packed matrix in
+ordinary host RAM. The retained range starts immediately after the device
+cache and is populated during marker initialization, avoiding another scratch-
+disk read. `--cudaHostCacheGiB N` sets its limit, `0` disables it for minimum
+memory use, and the default `-1` uses at most one quarter of physical RAM. This
+cache is not page-locked; the two pinned streaming blocks remain the only
+long-lived pinned host allocation.
+
 Packed blocks outside the device cache are double-buffered through two pinned
 host buffers and two device buffers. A nonblocking transfer stream preloads the
 next block while the compute stream decodes and multiplies the current block.

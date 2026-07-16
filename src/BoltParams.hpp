@@ -75,6 +75,7 @@ namespace LMM {
     bool lmmInf, lmmBayes, lmmBayesMCMC, lmmForceNonInf;
     bool useCuda;
     double cudaCacheGiB;
+    double cudaHostCacheGiB;
     double h2gGuess;
     int MCMCiters;
     int numLeaveOutChunks;

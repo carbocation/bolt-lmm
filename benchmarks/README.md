@@ -83,3 +83,30 @@ Main/fold marker setup remained neutral (0.793 versus 0.789 seconds). The
 normal fully cached path stayed within 1.2% of its prior timings. A half-cached
 run exercised the cache-to-stream transition, and all cached, partially cached,
 and uncached runs produced the same byte-identical Stage 1 model artifact.
+
+## File-backed CUDA host cache
+
+At the target 500,000-sample stride, a 131,072-SNP packed matrix occupies
+16.384 GB. On the A100 VM's 440 MB/s persistent disk, a cold uncached matrix
+pass took 37.264 seconds, while the same pass with warm pages took 4.047
+seconds. A separate background-copy worker changed the cold result by only
+0.2% and the warm median by 0.9%, confirming that the existing two-buffer
+pipeline already overlaps the prior block's GPU work with mmap faults and host
+copies.
+
+Retaining a bounded part of the device-uncached range in ordinary host RAM
+reduces the bytes reread on every subsequent pass:
+
+| Retained host cache | Repeated cold-file pass | Reduction |
+| ---: | ---: | ---: |
+| 0 GiB | 37.264 s | — |
+| 3.934 GiB | 28.444 s | 23.7% |
+| 7.987 GiB | 19.368 s | 48.0% |
+
+The retained range is filled during the first marker-initialization scan, so
+its disk read is a one-time cost. The automatic limit is one quarter of
+physical RAM (about 20.8 GiB on the 83 GiB A100 VM); use
+`--cudaHostCacheGiB=0` for the previous minimum-memory behavior. An end-to-end
+file-backed PGEN run with half of its matrix retained produced the same
+byte-identical Stage 1 model as both the no-host-cache run and the prior CUDA
+streaming implementation.

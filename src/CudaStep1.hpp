@@ -22,17 +22,20 @@ namespace LMM {
 
   public:
     static void setPackedCacheLimitGiB(double limitGiB);
+    static void setPackedHostCacheLimitGiB(double limitGiB);
 
     static void initializeMarkers(const uchar hostGenotypes[], const double maskIndivs[],
                                   const double covBasis[], uint64 Cindep,
                                   double (*snpValueLookup)[4],
                                   double snpCovBasisNegComps[], double Xnorm2s[],
                                   uchar projMaskSnps[], uint64 Nused, uint64 M,
-                                  uint64 Nstride, uint64 Cstride);
+                                  uint64 Nstride, uint64 Cstride,
+                                  bool hostGenotypesFileBacked=false);
 
     CudaStep1(const uchar genotypes[], const double maskIndivs[],
               const double (*snpValueLookup)[4], const double snpCovBasisNegComps[],
-              const uchar projMaskSnps[], uint64 M, uint64 Nstride, uint64 Cstride);
+              const uchar projMaskSnps[], uint64 M, uint64 Nstride, uint64 Cstride,
+              bool hostGenotypesFileBacked=false);
     ~CudaStep1();
 
     void multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],

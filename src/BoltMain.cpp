@@ -281,8 +281,10 @@ int main(int argc, char *argv[]) {
   }
 
 #ifdef BOLT_USE_CUDA
-  if (params.useCuda)
+  if (params.useCuda) {
     CudaStep1::setPackedCacheLimitGiB(params.cudaCacheGiB);
+    CudaStep1::setPackedHostCacheLimitGiB(params.cudaHostCacheGiB);
+  }
 #endif
 
   cout << "Setting number of threads to " << params.numThreads << endl;

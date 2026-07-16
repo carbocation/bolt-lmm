@@ -17,6 +17,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <unistd.h>
+
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
@@ -38,6 +40,21 @@ namespace LMM {
     SharedPackedGenotypeCache sharedPackedCache;
     uint64 packedCacheLimitBytes = std::numeric_limits<uint64>::max();
 
+    struct SharedPackedHostCache {
+      const uchar *sourceGenotypes;
+      uchar *cachedGenotypes;
+      uint64 M, bytesPerSnp, firstSnp, cachedSnps, references;
+      bool populated;
+
+      SharedPackedHostCache() : sourceGenotypes(nullptr), cachedGenotypes(nullptr),
+        M(0), bytesPerSnp(0), firstSnp(0), cachedSnps(0), references(0),
+        populated(false) {}
+    };
+
+    SharedPackedHostCache sharedPackedHostCache;
+    bool packedHostCacheAutomatic = true;
+    uint64 packedHostCacheLimitBytes = 0;
+
     struct SharedPinnedPackedBuffers {
       uchar *blocks[2];
       uint64 capacityBytes, references;
@@ -47,6 +64,84 @@ namespace LMM {
     };
 
     SharedPinnedPackedBuffers sharedPinnedPackedBuffers;
+
+    bool sharedHostCacheMatches(const uchar *hostGenotypes, uint64 M,
+                                uint64 bytesPerSnp) {
+      return sharedPackedHostCache.cachedGenotypes != nullptr &&
+             sharedPackedHostCache.sourceGenotypes == hostGenotypes &&
+             sharedPackedHostCache.M == M &&
+             sharedPackedHostCache.bytesPerSnp == bytesPerSnp;
+    }
+
+    bool sharedHostCacheContains(const uchar *hostGenotypes, uint64 M,
+                                 uint64 bytesPerSnp, uint64 m0, uint64 blockSize) {
+      return sharedHostCacheMatches(hostGenotypes, M, bytesPerSnp) &&
+             sharedPackedHostCache.populated &&
+             m0 >= sharedPackedHostCache.firstSnp &&
+             m0 + blockSize <= sharedPackedHostCache.firstSnp +
+                               sharedPackedHostCache.cachedSnps;
+    }
+
+    const uchar *packedHostSource(const uchar *hostGenotypes, uint64 M,
+                                  uint64 bytesPerSnp, uint64 m0,
+                                  uint64 blockSize) {
+      if (sharedHostCacheContains(hostGenotypes, M, bytesPerSnp, m0, blockSize))
+        return sharedPackedHostCache.cachedGenotypes +
+               (m0 - sharedPackedHostCache.firstSnp) * bytesPerSnp;
+      return hostGenotypes + m0 * bytesPerSnp;
+    }
+
+    uint64 automaticPackedHostCacheBytes() {
+      const long pages = sysconf(_SC_PHYS_PAGES);
+      const long pageBytes = sysconf(_SC_PAGESIZE);
+      if (pages <= 0 || pageBytes <= 0)
+        return 0;
+      const long double physicalBytes =
+        static_cast<long double>(pages) * static_cast<long double>(pageBytes);
+      if (physicalBytes > std::numeric_limits<uint64>::max())
+        return std::numeric_limits<uint64>::max() / 4;
+      return static_cast<uint64>(physicalBytes) / 4;
+    }
+
+    bool allocateSharedPackedHostCache(const uchar *hostGenotypes, uint64 M,
+                                       uint64 bytesPerSnp, uint64 firstSnp,
+                                       uint64 snpsPerBlock,
+                                       bool hostGenotypesFileBacked) {
+      if (!hostGenotypesFileBacked || sharedHostCacheMatches(hostGenotypes, M,
+                                                              bytesPerSnp))
+        return false;
+      if (sharedPackedHostCache.cachedGenotypes != nullptr) {
+        if (sharedPackedHostCache.references)
+          return false;
+        std::free(sharedPackedHostCache.cachedGenotypes);
+        sharedPackedHostCache = SharedPackedHostCache();
+      }
+      if (firstSnp >= M)
+        return false;
+
+      const uint64 limitBytes = packedHostCacheAutomatic ?
+        automaticPackedHostCacheBytes() : packedHostCacheLimitBytes;
+      uint64 candidateSnps = std::min<uint64>(M - firstSnp,
+                                              limitBytes / bytesPerSnp);
+      if (candidateSnps < M - firstSnp)
+        candidateSnps -= candidateSnps % snpsPerBlock;
+      if (!candidateSnps)
+        return false;
+      const uint64 cacheBytes = candidateSnps * bytesPerSnp;
+      uchar *cache = static_cast<uchar *>(std::malloc(cacheBytes));
+      if (!cache)
+        return false;
+
+      sharedPackedHostCache.sourceGenotypes = hostGenotypes;
+      sharedPackedHostCache.cachedGenotypes = cache;
+      sharedPackedHostCache.M = M;
+      sharedPackedHostCache.bytesPerSnp = bytesPerSnp;
+      sharedPackedHostCache.firstSnp = firstSnp;
+      sharedPackedHostCache.cachedSnps = candidateSnps;
+      sharedPackedHostCache.references = 0;
+      sharedPackedHostCache.populated = false;
+      return true;
+    }
 
     bool sharedCacheMatches(const uchar *hostGenotypes, uint64 M,
                             uint64 bytesPerSnp) {
@@ -333,11 +428,12 @@ namespace LMM {
     uint64 gramCapacity;
     const uchar *cachedPackedGenotypes;
     uint64 cachedSnps;
-    bool packedCacheAttached;
+    bool packedCacheAttached, packedHostCacheAttached;
 
     Impl(const uchar hostGenotypesIn[], const double maskIndivsIn[],
          const double (*lookupIn)[4], const double negCovCompsIn[],
-         const uchar projMaskSnpsIn[], uint64 MIn, uint64 NstrideIn, uint64 CstrideIn) :
+         const uchar projMaskSnpsIn[], uint64 MIn, uint64 NstrideIn, uint64 CstrideIn,
+         bool hostGenotypesFileBacked) :
       hostGenotypes(hostGenotypesIn), M(MIn), Nstride(NstrideIn), Cstride(CstrideIn),
       NCstride(NstrideIn + CstrideIn), bytesPerSnp(NstrideIn >> 2),
       snpsPerBlock(std::min<uint64>(MIn, 1024)), batchCapacity(0), cublas(nullptr),
@@ -351,7 +447,8 @@ namespace LMM {
       negCovComps(nullptr), projMaskSnps(nullptr), activeMaskSnps(nullptr),
       batchMaskSnps(nullptr), inCovCompVecs(nullptr), outCovCompVecs(nullptr),
       Xtrans(nullptr), bayesGram(nullptr), gramCapacity(0),
-      cachedPackedGenotypes(nullptr), cachedSnps(0), packedCacheAttached(false) {
+      cachedPackedGenotypes(nullptr), cachedSnps(0), packedCacheAttached(false),
+      packedHostCacheAttached(false) {
 
       if (!hostGenotypes || !M || (Nstride & 3))
         throw std::runtime_error("Invalid packed genotype dimensions for CUDA Step 1");
@@ -392,6 +489,7 @@ namespace LMM {
                            cudaMemcpyHostToDevice), "copy SNP mask to CUDA");
 
       attachPackedCache();
+      attachPackedHostCache(hostGenotypesFileBacked);
       if (cachedSnps < M)
         initializePackedStreaming();
 
@@ -423,6 +521,7 @@ namespace LMM {
       }
       if (pinnedBuffersAttached && --sharedPinnedPackedBuffers.references == 0)
         releaseUnownedSharedPinnedPackedBuffers();
+      releasePackedHostCache();
       releasePackedCache();
       if (cublas)
         cublasDestroy(cublas);
@@ -487,6 +586,43 @@ namespace LMM {
                 << " GiB)" << std::endl;
     }
 
+    void attachPackedHostCache(bool hostGenotypesFileBacked) {
+      if (!hostGenotypesFileBacked)
+        return;
+      const bool populateHostCache = allocateSharedPackedHostCache(
+        hostGenotypes, M, bytesPerSnp, cachedSnps, snpsPerBlock, true);
+      if (populateHostCache) {
+        const uint64 cacheBytes = sharedPackedHostCache.cachedSnps * bytesPerSnp;
+        std::memcpy(sharedPackedHostCache.cachedGenotypes,
+                    hostGenotypes + sharedPackedHostCache.firstSnp * bytesPerSnp,
+                    cacheBytes);
+        sharedPackedHostCache.populated = true;
+        std::cout << "CUDA host genotype cache: "
+                  << sharedPackedHostCache.cachedSnps << " SNPs starting at "
+                  << sharedPackedHostCache.firstSnp << " ("
+                  << cacheBytes / static_cast<double>(1ULL << 30)
+                  << " GiB), populated before Step 1" << std::endl;
+      }
+      if (!sharedHostCacheMatches(hostGenotypes, M, bytesPerSnp) ||
+          !sharedPackedHostCache.populated)
+        return;
+      sharedPackedHostCache.references++;
+      packedHostCacheAttached = true;
+      std::cout << "Reusing CUDA host genotype cache ("
+                << sharedPackedHostCache.cachedSnps << " SNPs starting at "
+                << sharedPackedHostCache.firstSnp << ")" << std::endl;
+    }
+
+    void releasePackedHostCache() {
+      if (!packedHostCacheAttached)
+        return;
+      if (--sharedPackedHostCache.references == 0) {
+        std::free(sharedPackedHostCache.cachedGenotypes);
+        sharedPackedHostCache = SharedPackedHostCache();
+      }
+      packedHostCacheAttached = false;
+    }
+
     void releasePackedCache() {
       if (!packedCacheAttached)
         return;
@@ -517,7 +653,8 @@ namespace LMM {
         checkCuda(cudaEventSynchronize(transferDone[slot]),
                   "wait for pinned packed staging buffer");
       const uint64 blockBytes = blockSize * bytesPerSnp;
-      std::memcpy(hostPackedBlocks[slot], hostGenotypes + m0 * bytesPerSnp,
+      std::memcpy(hostPackedBlocks[slot],
+                  packedHostSource(hostGenotypes, M, bytesPerSnp, m0, blockSize),
                   blockBytes);
       if (consumedRecorded[slot])
         checkCuda(cudaStreamWaitEvent(transferStream, packedConsumed[slot], 0),
@@ -843,10 +980,28 @@ namespace LMM {
     packedCacheLimitBytes = static_cast<uint64>(bytes);
   }
 
+  void CudaStep1::setPackedHostCacheLimitGiB(double limitGiB) {
+    if (sharedPackedHostCache.cachedGenotypes != nullptr)
+      throw std::runtime_error("CUDA packed host cache limit changed after allocation");
+    if (!std::isfinite(limitGiB))
+      throw std::runtime_error("CUDA packed host cache limit must be finite");
+    if (limitGiB < 0) {
+      packedHostCacheAutomatic = true;
+      packedHostCacheLimitBytes = 0;
+      return;
+    }
+    const long double bytes = static_cast<long double>(limitGiB) * (1ULL << 30);
+    if (bytes > std::numeric_limits<uint64>::max())
+      throw std::runtime_error("CUDA packed host cache limit is too large");
+    packedHostCacheAutomatic = false;
+    packedHostCacheLimitBytes = static_cast<uint64>(bytes);
+  }
+
   void CudaStep1::initializeMarkers
   (const uchar hostGenotypes[], const double hostMaskIndivs[], const double hostCovBasis[],
    uint64 Cindep, double (*hostLookup)[4], double hostNegCovComps[], double hostXnorm2s[],
-   uchar hostProjMaskSnps[], uint64 Nused, uint64 M, uint64 Nstride, uint64 Cstride) {
+   uchar hostProjMaskSnps[], uint64 Nused, uint64 M, uint64 Nstride, uint64 Cstride,
+   bool hostGenotypesFileBacked) {
     if (!hostGenotypes || !hostMaskIndivs || (Cindep && !hostCovBasis) || !hostLookup ||
         !hostNegCovComps || !hostXnorm2s || !hostProjMaskSnps || Nused < 2 || !M ||
         !Cstride || (Nstride & 3) || Cindep > Cstride)
@@ -924,6 +1079,19 @@ namespace LMM {
                 << cacheBytes / static_cast<double>(1ULL << 30)
                 << " GiB), populated during marker initialization" << std::endl;
     }
+    const uint64 firstHostCachedSnp = useSharedCache ?
+      sharedPackedCache.cachedSnps : 0;
+    const bool populateSharedHostCache = allocateSharedPackedHostCache(
+      hostGenotypes, M, bytesPerSnp, firstHostCachedSnp, snpsPerBlock,
+      hostGenotypesFileBacked);
+    if (populateSharedHostCache) {
+      const uint64 hostCacheBytes = sharedPackedHostCache.cachedSnps * bytesPerSnp;
+      std::cout << "CUDA host genotype cache: "
+                << sharedPackedHostCache.cachedSnps << " SNPs starting at "
+                << sharedPackedHostCache.firstSnp << " ("
+                << hostCacheBytes / static_cast<double>(1ULL << 30)
+                << " GiB), populated during marker initialization" << std::endl;
+    }
     const bool needsPackedTransfers = populateSharedCache || !useSharedCache ||
                                       sharedPackedCache.cachedSnps < M;
     if (needsPackedTransfers) {
@@ -962,8 +1130,16 @@ namespace LMM {
         checkCuda(cudaStreamWaitEvent(transferStream, packedConsumed[slot], 0),
                   "wait before reusing marker initialization packed block");
       const uint64 blockBytes = blockSize * bytesPerSnp;
-      std::memcpy(hostPackedBlocks[slot], hostGenotypes + m0 * bytesPerSnp,
+      std::memcpy(hostPackedBlocks[slot],
+                  packedHostSource(hostGenotypes, M, bytesPerSnp, m0, blockSize),
                   blockBytes);
+      if (populateSharedHostCache &&
+          m0 >= sharedPackedHostCache.firstSnp &&
+          m0 + blockSize <= sharedPackedHostCache.firstSnp +
+                            sharedPackedHostCache.cachedSnps)
+        std::memcpy(sharedPackedHostCache.cachedGenotypes +
+                      (m0 - sharedPackedHostCache.firstSnp) * bytesPerSnp,
+                    hostPackedBlocks[slot], blockBytes);
       uchar *destination = cachedDestination ?
         sharedPackedCache.deviceGenotypes + m0 * bytesPerSnp : packedBlocks[slot];
       checkCuda(cudaMemcpyAsync(destination, hostPackedBlocks[slot], blockBytes,
@@ -1036,6 +1212,8 @@ namespace LMM {
     checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA marker initialization");
     checkCuda(cudaStreamSynchronize(transferStream),
               "finish CUDA marker initialization transfers");
+    if (populateSharedHostCache)
+      sharedPackedHostCache.populated = true;
 
     cudaFree(projMaskSnps);
     cudaFree(Xnorm2s);
@@ -1060,9 +1238,10 @@ namespace LMM {
   CudaStep1::CudaStep1(const uchar genotypes[], const double maskIndivs[],
                        const double (*snpValueLookup)[4],
                        const double snpCovBasisNegComps[], const uchar projMaskSnps[],
-                       uint64 M, uint64 Nstride, uint64 Cstride) :
+                       uint64 M, uint64 Nstride, uint64 Cstride,
+                       bool hostGenotypesFileBacked) :
     impl(new Impl(genotypes, maskIndivs, snpValueLookup, snpCovBasisNegComps,
-                  projMaskSnps, M, Nstride, Cstride)) {
+                  projMaskSnps, M, Nstride, Cstride, hostGenotypesFileBacked)) {
   }
 
   CudaStep1::~CudaStep1() { delete impl; }

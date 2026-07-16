@@ -33,6 +33,10 @@
 #include "MatrixUtils.hpp"
 #include "BoltParams.hpp"
 
+#ifndef BOLT_DEFAULT_SNPS_PER_BLOCK
+#define BOLT_DEFAULT_SNPS_PER_BLOCK 64
+#endif
+
 #include <boost/program_options.hpp>
 #include <boost/numeric/ublas/matrix.hpp>
 
@@ -287,7 +291,7 @@ namespace LMM {
       ("approxLLtol", po::value<double>(&approxLLtol)->default_value(0.01),
        "tolerance for declaring convergence of variational Bayes")
       ("maxIters", po::value<int>(&maxIters)->default_value(500), "max number of iterations")
-      ("snpsPerBlock", po::value<int>(&mBlockMultX)->default_value(64),
+      ("snpsPerBlock", po::value<int>(&mBlockMultX)->default_value(BOLT_DEFAULT_SNPS_PER_BLOCK),
        "working set of SNPs to process at once while performing computations")
 
       // more analysis options

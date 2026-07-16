@@ -400,8 +400,9 @@ namespace LMM {
    */
   void Bolt::multXtrans(double XtransVecs[], const double vCovCompVecs[], uint64 B)
     const {
-    
-    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * (Nstride+Cstride));
+
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
+    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * (Nstride+Cstride));
     double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
     for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) {
       uint64 mBlockMultXCrop = std::min(M, m0+mBlockMultX) - m0;
@@ -463,7 +464,8 @@ namespace LMM {
 
     memset(vCovCompVecs, 0, B * (Nstride+Cstride) * sizeof(vCovCompVecs[0]));
 
-    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * (Nstride+Cstride));
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
+    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * (Nstride+Cstride));
     double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
     for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) {
       uint64 mBlockMultXCrop = std::min(M, m0+mBlockMultX) - m0;
@@ -520,10 +522,11 @@ namespace LMM {
   void Bolt::multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
 			     const uchar batchMaskSnps[], uint64 B) const {
     const uint64 NCstride = Nstride+Cstride;
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
     memset(outCovCompVecs, 0, B * NCstride * sizeof(outCovCompVecs[0]));
 
-    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * NCstride);
-    double *XtransVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * B);
+    double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * NCstride);
+    double *XtransVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * B);
     double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(omp_get_max_threads() * 256*sizeof(*work));
 
     for (uint64 m0 = 0; m0 < M; m0 += mBlockMultX) {
@@ -825,10 +828,11 @@ namespace LMM {
 	  anyBatchMaskSnps[m] = 1;
 
     // for block updates
-    double *snpNegCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * (Nstride+Cstride));
-    double *snpDots = ALIGNED_MALLOC_DOUBLES(M * mBlockMultX); // [m][mPlus] = dot prod(m, m+mPlus)
-    double *XtransResids = ALIGNED_MALLOC_DOUBLES(mBlockMultX * B);
-    double *betaBlockUpdates = ALIGNED_MALLOC_DOUBLES(mBlockMultX * B);
+    const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
+    double *snpNegCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * (Nstride+Cstride));
+    double *snpDots = ALIGNED_MALLOC_DOUBLES(M * mBlockMultXAlloc); // [m][mPlus] = dot prod(m, m+mPlus)
+    double *XtransResids = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * B);
+    double *betaBlockUpdates = ALIGNED_MALLOC_DOUBLES(mBlockMultXAlloc * B);
 
     int usedItersMCMC = 0;
     bool allConverged;
@@ -894,8 +898,8 @@ namespace LMM {
 	  double *B_ = snpNegCovCompVecBlock;
 	  int LDB_ = Nstride+Cstride;
 	  double BETA_ = 0.0;
-	  double *C_ = snpDots + m0*mBlockMultX; // not crop!  fill rows [m0..m0+mBlockMultXCrop)
-	  int LDC_ = mBlockMultX; // not crop!
+	  double *C_ = snpDots + m0*mBlockMultXAlloc; // fill rows [m0..m0+mBlockMultXCrop)
+	  int LDC_ = mBlockMultXAlloc;
 
 	  DGEMM_MACRO(&TRANSA_, &TRANSB_, &M_, &N_, &K_, &ALPHA_, A_, &LDA_, B_, &LDB_,
 		      &BETA_, C_, &LDC_);
@@ -1058,7 +1062,7 @@ namespace LMM {
 #endif
 	  // update XtransResids according to how yResidCovCompVecs would have been updated
 	  for (uint64 mPlus2 = mPlus+1; mPlus2 < mBlockMultXCrop; mPlus2++) {
-	    double dot12 = snpDots[(m0+mPlus)*mBlockMultX + mPlus2];
+	    double dot12 = snpDots[(m0+mPlus)*mBlockMultXAlloc + mPlus2];
 	    for (uint64 b = 0; b < Bleft; b++)
 	      XtransResids[mPlus2*B + b] += beta_m_updates[b] * dot12;
 	  }

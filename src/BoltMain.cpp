@@ -25,6 +25,12 @@
 #include <numeric>
 #include <utility>
 #include <cctype>
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "OpenMpCompat.hpp"
@@ -49,6 +55,87 @@ using namespace LMM;
 using namespace std;
 namespace ublas = boost::numeric::ublas;
 using FileUtils::getline;
+
+namespace {
+
+  struct TokenSpan {
+    size_t begin;
+    size_t end;
+  };
+
+  bool findSelectedColumns(const string &line, const int columns[], size_t count,
+			   TokenSpan spans[]) {
+    bool found[3] = {false, false, false};
+    if (count > 3) return false;
+
+    size_t pos = 0;
+    int column = 0;
+    size_t remaining = count;
+    while (pos < line.size()) {
+      while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) pos++;
+      if (pos == line.size()) break;
+
+      const size_t begin = pos;
+      while (pos < line.size() && line[pos] != ' ' && line[pos] != '\t') pos++;
+      for (size_t i = 0; i < count; i++) {
+	if (!found[i] && columns[i] == column) {
+	  spans[i].begin = begin;
+	  spans[i].end = pos;
+	  found[i] = true;
+	  remaining--;
+	}
+      }
+      if (remaining == 0) return true;
+      column++;
+    }
+    return false;
+  }
+
+  uint64 hashToken(const string &line, const TokenSpan &span) {
+    uint64 hash = 14695981039346656037ULL;
+    for (size_t pos = span.begin; pos < span.end; pos++) {
+      hash ^= static_cast<unsigned char>(line[pos]);
+      hash *= 1099511628211ULL;
+    }
+    return hash;
+  }
+
+  bool tokenEquals(const string &line, const TokenSpan &span, const string &value) {
+    const size_t length = span.end - span.begin;
+    return value.size() == length &&
+      std::memcmp(line.data() + span.begin, value.data(), length) == 0;
+  }
+
+  int parseIntToken(const string &line, const TokenSpan &span) {
+    errno = 0;
+    char *end = NULL;
+    const long value = std::strtol(line.c_str() + span.begin, &end, 10);
+    if (end == line.c_str() + span.begin || errno == ERANGE ||
+	value < std::numeric_limits<int>::min() ||
+	value > std::numeric_limits<int>::max()) {
+      cerr << "ERROR: Unable to parse integer in LD Score file line: " << line << endl;
+      exit(1);
+    }
+    return static_cast<int>(value);
+  }
+
+  double parseDoubleToken(const string &line, const TokenSpan &span) {
+    errno = 0;
+    char *end = NULL;
+    const double value = std::strtod(line.c_str() + span.begin, &end);
+    if (end == line.c_str() + span.begin || errno == ERANGE) {
+      cerr << "ERROR: Unable to parse LD Score in line: " << line << endl;
+      exit(1);
+    }
+    return value;
+  }
+
+  uint64 chrBpKey(int chrom, int bp) {
+    return (static_cast<uint64>(static_cast<uint32_t>(chrom)) << 32) |
+      static_cast<uint32_t>(bp);
+  }
+
+}
 
 static void runStage2(const BoltParams &params, const Bolt &bolt,
 		      const vector <Bolt::StatsDataRetroLOCO> &retroData, Timer &timer) {
@@ -544,9 +631,10 @@ int main(int argc, char *argv[]) {
       LDscores = vector <double> (snps.size(), NAN); // NAN if missing
       int numFound = 0;
       if (!params.LDscoresMatchBp) {
-	map <string, uint> snpIDtoIndex;
+	unordered_map <uint64, vector <uint> > snpHashToIndices;
+	snpHashToIndices.reserve(2 * snps.size());
 	for (uint64 m = 0; m < snps.size(); m++)
-	  snpIDtoIndex[snps[m].ID] = m;
+	  snpHashToIndices[hashToken(snps[m].ID, TokenSpan{0, snps[m].ID.size()})].push_back(m);
 	cout << "Looking up LD Scores..." << endl;
 	int colSNP = FileUtils::lookupColumnInd(params.LDscoresFile, " \t", "SNP");
 	cout << "  Looking for column header 'SNP': column number = " << (colSNP+1) << endl;
@@ -562,11 +650,25 @@ int main(int argc, char *argv[]) {
 	FileUtils::AutoGzIfstream fin; fin.openOrExit(params.LDscoresFile);
 	string line;
 	getline(fin, line); // get rid of header
+	const int columns[2] = {colSNP, colLD};
 	while (getline(fin, line)) {
-	  vector <string> tokens = StringUtils::tokenizeMultipleDelimiters(line, " \t");
-	  if (snpIDtoIndex.find(tokens[colSNP]) != snpIDtoIndex.end()) {
-	    sscanf(tokens[colLD].c_str(), "%lf", &LDscores[snpIDtoIndex[tokens[colSNP]]]);
-	    numFound++;
+	  TokenSpan spans[2];
+	  if (!findSelectedColumns(line, columns, 2, spans)) {
+	    cerr << "ERROR: Too few columns in LD Score file line: " << line << endl;
+	    exit(1);
+	  }
+	  unordered_map <uint64, vector <uint> >::const_iterator bucket =
+	    snpHashToIndices.find(hashToken(line, spans[0]));
+	  if (bucket != snpHashToIndices.end()) {
+	    // Reverse order preserves the previous last-duplicate-wins behavior.
+	    for (vector <uint>::const_reverse_iterator it = bucket->second.rbegin();
+		 it != bucket->second.rend(); ++it) {
+	      if (tokenEquals(line, spans[0], snps[*it].ID)) {
+		LDscores[*it] = parseDoubleToken(line, spans[1]);
+		numFound++;
+		break;
+	      }
+	    }
 	  }
 	}
 	fin.close();
@@ -579,9 +681,10 @@ int main(int argc, char *argv[]) {
 	}
       }
       else {
-	map < pair <int, int>, uint > snpChrBpToIndex;
+	unordered_map <uint64, uint> snpChrBpToIndex;
+	snpChrBpToIndex.reserve(2 * snps.size());
 	for (uint64 m = 0; m < snps.size(); m++)
-	  snpChrBpToIndex[make_pair(snps[m].chrom, snps[m].physpos)] = m;
+	  snpChrBpToIndex[chrBpKey(snps[m].chrom, snps[m].physpos)] = m;
 	cout << "Looking up LD Scores..." << endl;
 	int colCHR = FileUtils::lookupColumnInd(params.LDscoresFile, " \t", "CHR");
 	cout << "  Looking for column header 'CHR': column number = " << (colCHR+1) << endl;
@@ -600,14 +703,18 @@ int main(int argc, char *argv[]) {
 	FileUtils::AutoGzIfstream fin; fin.openOrExit(params.LDscoresFile);
 	string line;
 	getline(fin, line); // get rid of header
+	const int columns[3] = {colCHR, colBP, colLD};
 	while (getline(fin, line)) {
-	  vector <string> tokens = StringUtils::tokenizeMultipleDelimiters(line, " \t");
-	  if (snpChrBpToIndex.find(make_pair(StringUtils::stoi(tokens[colCHR]),
-					     StringUtils::stoi(tokens[colBP])))
-	      != snpChrBpToIndex.end()) {
-	    sscanf(tokens[colLD].c_str(), "%lf",
-		   &LDscores[snpChrBpToIndex[make_pair(StringUtils::stoi(tokens[colCHR]),
-						       StringUtils::stoi(tokens[colBP]))]]);
+	  TokenSpan spans[3];
+	  if (!findSelectedColumns(line, columns, 3, spans)) {
+	    cerr << "ERROR: Too few columns in LD Score file line: " << line << endl;
+	    exit(1);
+	  }
+	  const uint64 key = chrBpKey(parseIntToken(line, spans[0]),
+				      parseIntToken(line, spans[1]));
+	  unordered_map <uint64, uint>::const_iterator it = snpChrBpToIndex.find(key);
+	  if (it != snpChrBpToIndex.end()) {
+	    LDscores[it->second] = parseDoubleToken(line, spans[2]);
 	    numFound++;
 	  }
 	}

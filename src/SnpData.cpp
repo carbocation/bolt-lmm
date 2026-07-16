@@ -393,15 +393,14 @@ namespace LMM {
 
     // check for duplicate snps
     {
-      std::set <string> rsIDs;
+      std::unordered_set <string> rsIDs;
+      rsIDs.reserve(Mbed);
       for (uint64 mbed = 0; mbed < Mbed; mbed++) {
-	if (rsIDs.find(bedSnps[mbed].ID) != rsIDs.end()) {
+	if (!rsIDs.insert(bedSnps[mbed].ID).second) {
 	  cerr << "WARNING: Duplicate snp ID " << bedSnps[mbed].ID
 	       << " -- masking duplicate" << endl;
 	  snpVCnum[mbed] = excludeVCnum;
 	}
-	else
-	  rsIDs.insert(bedSnps[mbed].ID);
       }
     }
 
@@ -409,10 +408,10 @@ namespace LMM {
     if (!excludeFiles.empty() || !modelSnpsFiles.empty()) {
 
       // create dictionary rsID -> index in full bed snp list
-      std::map <string, uint64> rsID_to_ind;
+      std::unordered_map <string, uint64> rsID_to_ind;
+      rsID_to_ind.reserve(Mbed);
       for (uint64 mbed = 0; mbed < Mbed; mbed++)
-	if (rsID_to_ind.find(bedSnps[mbed].ID) == rsID_to_ind.end()) // only use first of dupe IDs
-	  rsID_to_ind[bedSnps[mbed].ID] = mbed;
+	rsID_to_ind.emplace(bedSnps[mbed].ID, mbed); // only use first of dupe IDs
 
       // exclude snps
       for (uint f = 0; f < excludeFiles.size(); f++) {
@@ -424,13 +423,14 @@ namespace LMM {
 	while (getline(fin, line)) {
 	  std::istringstream iss(line);
 	  string rsID; iss >> rsID;
-	  if (rsID_to_ind.find(rsID) == rsID_to_ind.end()) {
+	  std::unordered_map <string, uint64>::const_iterator it = rsID_to_ind.find(rsID);
+	  if (it == rsID_to_ind.end()) {
 	    if (numAbsent < 5)
 	      cerr << "WARNING: Unable to find SNP to exclude: " << rsID << endl;
 	    numAbsent++;
 	  }
-	  else if (snpVCnum[rsID_to_ind[rsID]] != excludeVCnum) {
-	    snpVCnum[rsID_to_ind[rsID]] = excludeVCnum;
+	  else if (snpVCnum[it->second] != excludeVCnum) {
+	    snpVCnum[it->second] = excludeVCnum;
 	    numExcluded++;
 	  }
 	}
@@ -457,17 +457,18 @@ namespace LMM {
 	while (getline(fin, line)) {
 	  std::istringstream iss(line);
 	  string rsID; iss >> rsID;
-	  if (rsID_to_ind.find(rsID) == rsID_to_ind.end()) {
+	  std::unordered_map <string, uint64>::const_iterator it = rsID_to_ind.find(rsID);
+	  if (it == rsID_to_ind.end()) {
 	    if (numAbsent < 5)
 	      cerr << "WARNING: Unable to find SNP to include in model: " << rsID << endl;
 	    numAbsent++;
 	  }
-	  else if (snpVCnum[rsID_to_ind[rsID]] == excludeVCnum) {
+	  else if (snpVCnum[it->second] == excludeVCnum) {
 	    if (numAlreadyExcluded < 5)
 	      cerr << "WARNING: SNP has been excluded: " << rsID << endl;
 	    numAlreadyExcluded++;
 	  }
-	  else if (snpVCnum[rsID_to_ind[rsID]] == nonGrmVCnum) {
+	  else if (snpVCnum[it->second] == nonGrmVCnum) {
 	    string vcName; iss >> vcName; // ok if all lines have no other fields; then vcName=""
 	    if (vcName.empty()) vcName = "modelSnps";
 	    if (vcNamesToInds.find(vcName) == vcNamesToInds.end()) {
@@ -487,7 +488,7 @@ namespace LMM {
 		   << SnpInfo::MAX_VC_NUM << endl;
 	      exit(1);
 	    }
-	    snpVCnum[rsID_to_ind[rsID]] = vcNum;
+	    snpVCnum[it->second] = vcNum;
 	    numIncluded++;
 	  }
 	  else {

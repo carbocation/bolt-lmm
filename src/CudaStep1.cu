@@ -62,7 +62,7 @@ namespace LMM {
           const uchar bedCode = (packed >> (2 * (nc & 3))) & 3;
           const uchar lookupIndex = bedCode == 0 ? 2 : bedCode == 1 ? 3 :
                                     bedCode == 2 ? 1 : 0;
-          value = lookup[m * 4 + lookupIndex] * maskIndivs[nc];
+          value = lookup[m * 4 + lookupIndex] * (maskIndivs ? maskIndivs[nc] : 1.0);
         }
         else {
           value = negCovComps[m * Cstride + (nc - Nstride)];
@@ -261,6 +261,46 @@ namespace LMM {
                 "copy CUDA output vectors to host");
     }
 
+    void multiplyX(double out[], const double hostCoefficients[], uint64 B,
+                   bool applyIndivMask, bool positiveCovariateComponents) {
+      ensureBatchCapacity(B);
+      const size_t covCompBytes = B * NCstride * sizeof(*outCovCompVecs);
+      checkCuda(cudaMemset(outCovCompVecs, 0, covCompBytes),
+                "clear CUDA X beta output vectors");
+
+      const unsigned int threads = 256;
+      const double one = 1.0;
+      for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
+        const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
+        checkCuda(cudaMemcpy(packedBlock, hostGenotypes + m0 * bytesPerSnp,
+                             blockSize * bytesPerSnp * sizeof(*packedBlock),
+                             cudaMemcpyHostToDevice), "copy packed X beta block to CUDA");
+        checkCuda(cudaMemcpy(Xtrans, hostCoefficients + m0 * B,
+                             blockSize * B * sizeof(*Xtrans), cudaMemcpyHostToDevice),
+                  "copy X beta coefficients to CUDA");
+
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads>>>
+          (snpBlock, packedBlock, applyIndivMask ? maskIndivs : nullptr, lookup,
+           negCovComps, projMaskSnps, nullptr, m0, blockSize, Nstride, Cstride);
+        checkCuda(cudaGetLastError(), "launch CUDA X beta genotype decoder");
+        if (positiveCovariateComponents && Cstride) {
+          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads>>>
+            (snpBlock, blockSize, Nstride, Cstride);
+          checkCuda(cudaGetLastError(), "launch CUDA X beta covariate sign flip");
+        }
+
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_T,
+                                static_cast<int>(NCstride), static_cast<int>(B),
+                                static_cast<int>(blockSize), &one, snpBlock,
+                                static_cast<int>(NCstride), Xtrans, static_cast<int>(B),
+                                &one, outCovCompVecs, static_cast<int>(NCstride)),
+                    "cuBLAS X beta multiply");
+      }
+
+      checkCuda(cudaMemcpy(out, outCovCompVecs, covCompBytes, cudaMemcpyDeviceToHost),
+                "copy CUDA X beta output vectors to host");
+    }
+
     void beginBayes(const double yResid[], const uchar activeMask[], uint64 B) {
       ensureBatchCapacity(B);
       checkCuda(cudaMemcpy(inCovCompVecs, yResid, B * NCstride * sizeof(*inCovCompVecs),
@@ -364,6 +404,12 @@ namespace LMM {
   void CudaStep1::multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
                                   const uchar batchMaskSnps[], uint64 B) {
     impl->multiply(outCovCompVecs, inCovCompVecs, batchMaskSnps, B);
+  }
+
+  void CudaStep1::multX(double outCovCompVecs[], const double coefficients[], uint64 B,
+                        bool applyIndivMask, bool positiveCovariateComponents) {
+    impl->multiplyX(outCovCompVecs, coefficients, B, applyIndivMask,
+                    positiveCovariateComponents);
   }
 
   void CudaStep1::beginBayesIteration(const double yResidCovCompVecs[],

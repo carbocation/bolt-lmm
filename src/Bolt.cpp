@@ -504,6 +504,19 @@ namespace LMM {
   void Bolt::multX(double vCovCompVecs[], const double XtransVecs[], uint64 B)
     const {
 
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL) {
+#ifdef MEASURE_DGEMM
+      const unsigned long long cudaTsc = Timer::rdtsc();
+#endif
+      cudaStep1->multX(vCovCompVecs, XtransVecs, B, true, true);
+#ifdef MEASURE_DGEMM
+      dgemmTicks += Timer::rdtsc() - cudaTsc;
+#endif
+      return;
+    }
+#endif
+
     memset(vCovCompVecs, 0, B * (Nstride+Cstride) * sizeof(vCovCompVecs[0]));
 
     const uint64 mBlockMultXAlloc = std::min<uint64>(M, mBlockMultX);
@@ -1787,33 +1800,42 @@ namespace LMM {
     const double *maskIndivsChoice = extAllIndivs ? noMaskIndivs : maskIndivs;
     const double *basisMaskChoice = covBasis.getBasis(extAllIndivs);
 
-    double *snpNegCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
-    double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
-  
     if (betasTrans != NULL) {
-      for (uint64 m = 0; m < M; m++) {
-	if (projMaskSnps[m]) {
-	  // build snp vector with mask of choice (no mask if extAllIndivs)
-	  snpData.buildMaskedSnpVector(snpNegCovCompVec, maskIndivsChoice, m, snpValueLookup[m],
-				       work, !extAllIndivs && maskCoversAllIndivs);
-	  // copy negative covar comps
-	  memcpy(snpNegCovCompVec + Nstride, snpCovBasisNegComps + m*Cstride,
-		 Cstride*sizeof(snpNegCovCompVec[0]));
+#ifdef BOLT_USE_CUDA
+      if (cudaStep1 != NULL)
+        cudaStep1->multX(phenoPredNegCovCompVecs, betasTrans, B, !extAllIndivs, false);
+      else
+#endif
+      {
+        double *snpNegCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
+        double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
+        for (uint64 m = 0; m < M; m++) {
+	  if (projMaskSnps[m]) {
+	    // build snp vector with mask of choice (no mask if extAllIndivs)
+	    snpData.buildMaskedSnpVector(snpNegCovCompVec, maskIndivsChoice, m,
+				         snpValueLookup[m], work,
+				         !extAllIndivs && maskCoversAllIndivs);
+	    // copy negative covar comps
+	    memcpy(snpNegCovCompVec + Nstride, snpCovBasisNegComps + m*Cstride,
+		   Cstride*sizeof(snpNegCovCompVec[0]));
 
-	  // update phenoPredNegCovCompVecs: add beta * snpNegCovCompVec (DGER)
-	  {
-	    int M_ = Nstride+Cstride;
-	    int N_ = B;
-	    double ALPHA_ = 1;
-	    double *X_ = snpNegCovCompVec;
-	    int INCX_ = 1;
-	    const double *Y_ = betasTrans + m*B; // TODO: need to be aligned?
-	    int INCY_ = 1;
-	    double *A_ = phenoPredNegCovCompVecs;
-	    int LDA_ = Nstride+Cstride;
-	    DGER_MACRO(&M_, &N_, &ALPHA_, X_, &INCX_, Y_, &INCY_, A_, &LDA_);
+	    // update phenoPredNegCovCompVecs: add beta * snpNegCovCompVec (DGER)
+	    {
+	      int M_ = Nstride+Cstride;
+	      int N_ = B;
+	      double ALPHA_ = 1;
+	      double *X_ = snpNegCovCompVec;
+	      int INCX_ = 1;
+	      const double *Y_ = betasTrans + m*B; // TODO: need to be aligned?
+	      int INCY_ = 1;
+	      double *A_ = phenoPredNegCovCompVecs;
+	      int LDA_ = Nstride+Cstride;
+	      DGER_MACRO(&M_, &N_, &ALPHA_, X_, &INCX_, Y_, &INCY_, A_, &LDA_);
+	    }
 	  }
-	}
+        }
+        ALIGNED_FREE(work);
+        ALIGNED_FREE(snpNegCovCompVec);
       }
     }
 
@@ -1831,8 +1853,6 @@ namespace LMM {
       memcpy(phenoPreds + b*Nstride, phenoPredNegCovCompVec, Nstride*sizeof(phenoPreds[0]));
     }
 
-    ALIGNED_FREE(work);
-    ALIGNED_FREE(snpNegCovCompVec);
     ALIGNED_FREE(noMaskIndivs);
     ALIGNED_FREE(phenoPredNegCovCompVecs);
   }

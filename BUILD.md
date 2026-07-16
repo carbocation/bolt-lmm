@@ -79,8 +79,10 @@ binary that will stay on the build machine.
 CUDA support is opt-in and leaves the default CPU build unchanged. The GPU path
 accelerates the repeated projected `X X'` products used by variance estimation
 and the infinitesimal model, along with the block matrix operations in the
-Bayesian iterations. Packed 2-bit genotypes are transferred to the device and
-decoded there; expanded genotype matrices do not cross PCIe.
+Bayesian iterations and the `X beta` products used by Monte Carlo phenotype
+generation and cross-validation prediction. Packed 2-bit genotypes are
+transferred to the device and decoded there; expanded genotype matrices do not
+cross PCIe.
 
 For an NVIDIA A100 (compute capability 8.0):
 

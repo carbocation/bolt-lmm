@@ -97,6 +97,45 @@ int main() {
     return 1;
   }
 
+  std::vector<double> coefficients(M*B), expectedMultX(B*NCstride, 0);
+  std::vector<double> expectedMultXAll(B*NCstride, 0), observedMultX(B*NCstride);
+  std::vector<double> xAllNeg(M*NCstride, 0);
+  for (uint64 m = 0; m < M; m++) {
+    for (uint64 b = 0; b < B; b++)
+      coefficients[m*B+b] = 0.006 * (1+m) * (1+b) - 0.013;
+    if (!projMaskSnps[m])
+      continue;
+    for (uint64 n = 0; n < Nstride; n++) {
+      const int genotype = genotypesUnpacked[m][n];
+      xAllNeg[m*NCstride+n] = lookup[m][genotype == 9 ? 3 : genotype];
+    }
+    for (uint64 c = 0; c < Cstride; c++)
+      xAllNeg[m*NCstride+Nstride+c] = negCovComps[m*Cstride+c];
+    for (uint64 b = 0; b < B; b++)
+      for (uint64 nc = 0; nc < NCstride; nc++) {
+        const double xPositive = nc < Nstride ? xNeg[m*NCstride+nc] :
+                                 -xNeg[m*NCstride+nc];
+        expectedMultX[b*NCstride+nc] += xPositive * coefficients[m*B+b];
+        expectedMultXAll[b*NCstride+nc] +=
+          xAllNeg[m*NCstride+nc] * coefficients[m*B+b];
+      }
+  }
+
+  cuda.multX(observedMultX.data(), coefficients.data(), B, true, true);
+  double maxMultXError = 0;
+  for (uint64 i = 0; i < observedMultX.size(); i++)
+    maxMultXError = std::max(maxMultXError,
+                             std::fabs(observedMultX[i] - expectedMultX[i]));
+  cuda.multX(observedMultX.data(), coefficients.data(), B, false, false);
+  for (uint64 i = 0; i < observedMultX.size(); i++)
+    maxMultXError = std::max(maxMultXError,
+                             std::fabs(observedMultX[i] - expectedMultXAll[i]));
+  if (maxMultXError > 1e-11) {
+    std::cerr << "CUDA Step 1 X beta parity failure: max absolute error = "
+              << maxMultXError << std::endl;
+    return 1;
+  }
+
   const uchar activeMaskSnps[M] = {1, 0, 1, 1, 1};
   const uint64 Bleft = 2;
   std::vector<double> residual = input, expectedResidual = input;
@@ -151,6 +190,7 @@ int main() {
   }
 
   std::cout << "CUDA Step 1 parity max absolute errors: projected multiply = "
-            << maxAbsError << ", Bayesian iteration = " << maxBayesError << std::endl;
+            << maxAbsError << ", X beta = " << maxMultXError
+            << ", Bayesian iteration = " << maxBayesError << std::endl;
   return 0;
 }

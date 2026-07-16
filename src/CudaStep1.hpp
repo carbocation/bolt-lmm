@@ -28,6 +28,8 @@ namespace LMM {
 
     void multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
                          const uchar batchMaskSnps[], uint64 B);
+    void multX(double outCovCompVecs[], const double coefficients[], uint64 B,
+               bool applyIndivMask, bool positiveCovariateComponents);
 
     void beginBayesIteration(const double yResidCovCompVecs[],
                              const uchar activeMaskSnps[], uint64 B);

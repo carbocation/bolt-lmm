@@ -159,12 +159,14 @@ namespace LMM {
     (/*double sigma2Ks[], */double HinvPhiCovCompVec[], VarCompData &testVCs/*double logDelta*/,
      const double yGenCovCompVecs[], const double yEnvUnscaledCovCompVecs[],
      const uchar batchMaskSnps[], const uint64 Ms[], uint64 B, int MCtrials, int CGmaxIters,
-     double CGtol) const;
+     double CGtol, double reusableHinvRhsCovCompVecs[] = NULL,
+     bool useStartVecs = false) const;
     void updateBestMCscalingF(VarCompData &bestVCs,/*double *sigma2Kbest, double *logDeltaBest, double *bestAbsF,*/
 			      double HinvPhiCovCompVec[], VarCompData &testVCs/*double logDelta*/,
 				const double yGenCovCompVecs[],
 				const double yEnvUnscaledCovCompVecs[], int MCtrials,
-				int CGmaxIters, double CGtol) const;
+				int CGmaxIters, double CGtol,
+				double reusableHinvRhsCovCompVecs[], bool useStartVecs) const;
     void setMCtrials(int &MCtrials) const;
 
     void multThetaMinusIs(double multCovCompVecs[], const double xCovCompVecs[],

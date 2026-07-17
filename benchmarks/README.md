@@ -294,3 +294,31 @@ variational-Bayes fit diverged in the extreme M/N regime. Full-model timings
 therefore use the convergent 16,384-variant fixtures, while the full panel is
 used only for parser, hardcall-conversion, QC, and storage measurements. Raw
 measurements are in `results/a100_stage1_real_genotypes.tsv`.
+
+## Variance-component CG warm starts
+
+The h2 secant search repeatedly solves closely related systems at nearby
+log(delta) values. Retaining the previous solution as the next conjugate-
+gradient start reduced the real 131,072-sample CUDA fixture's variance phase
+from 4.871 to 4.249 seconds (12.8%) and end-to-end wall time from 32.63 to
+31.95 seconds (2.1%). The logged iteration counts changed from 23/41/24 to
+23/32/19; the latter two warm solves each require one additional, unlogged
+matrix application to form their initial residual, so the net count is 88 to
+76 genotype matrix passes.
+
+A separate CPU-only measurement used one pinned Xeon core and a bounded
+32,768-sample fixture generated from the same real reference. Variance fitting
+fell from 47.09 to 43.07 seconds (8.5%) and end-to-end wall time from 246.47 to
+241.63 seconds (2.0%). Its net genotype matrix-pass count fell from 47 to 43.
+Reuse is limited to log(delta) changes of at most 2; larger secant jumps retain
+the cold-start behavior because computing a warm residual itself costs a full
+matrix application.
+
+Both implementations fitted h2g=0.262 on the CUDA fixture. Across 16,384
+Stage 2 variants, five printed `P_BOLT_LMM_INF` and three printed `P_BOLT_LMM`
+values changed. The maximum absolute change was 0.001; the largest relative
+change was from 1.3e-8 to 1.4e-8, and no genome-wide-significance classification
+changed. Beta changes were at most 1e-6 and standard-error changes at most
+1e-7. These are the numerical effects of reaching the existing CG residual
+criterion through a different Krylov path; the model and output schema are
+otherwise unchanged.

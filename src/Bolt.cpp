@@ -2141,6 +2141,9 @@ namespace LMM {
    * - data layout: same as above
    * batchMaskSnps: (in) M x B -- leave-out masks
    * Ms: (in) B -- saved values of sum(batchMaskSnps(:,b))
+   * reusableHinvRhsCovCompVecs: optional caller-owned solution workspace; when supplied,
+   *   it is populated on return and may be reused as a CG start for a nearby log(delta)
+   * useStartVecs: initialize CG from reusableHinvRhsCovCompVecs instead of zero
    *
    * return:
    * - B-element vector of f_REML estimates = coef2ratio(data)/coef2ratio(rand)
@@ -2154,7 +2157,7 @@ namespace LMM {
   (/*double sigma2Ks[], */double testHinvPhiCovCompVec[], VarCompData &testVCs/*double logDelta*/,
    const double yGenCovCompVecs[], const double yEnvUnscaledCovCompVecs[],
    const uchar batchMaskSnps[], const uint64 Ms[], uint64 B, int MCtrials, int CGmaxIters,
-   double CGtol) const {
+   double CGtol, double reusableHinvRhsCovCompVecs[], bool useStartVecs) const {
 
     const double logDelta = testVCs.logDelta;
 #ifdef VERBOSE
@@ -2177,8 +2180,10 @@ namespace LMM {
       yCombinedCovCompVecs[i] = yGenCovCompVecs[i] + sqrtDelta * yEnvUnscaledCovCompVecs[i];
 
     // solve BLUP equations (all at once)
-    // todo: optimize with CG warm start?
-    double *HinvRhsCovCompVecs = ALIGNED_MALLOC_DOUBLES(BxMCp1xNC); // scaled residuals (epshats)
+    assert(!useStartVecs || reusableHinvRhsCovCompVecs != NULL);
+    const bool ownHinvRhsCovCompVecs = reusableHinvRhsCovCompVecs == NULL;
+    double *HinvRhsCovCompVecs = ownHinvRhsCovCompVecs
+      ? ALIGNED_MALLOC_DOUBLES(BxMCp1xNC) : reusableHinvRhsCovCompVecs; // scaled residuals (epshats)
     // need to replicate data in logDeltas, masks, and Ms for conjGradSolve (each MCtrials+1 times)
     vector <double> logDeltasBxMCp1(B*(MCtrials+1), logDelta);
     uchar *batchMaskSnpsBxMCp1 = ALIGNED_MALLOC_UCHARS(M*B*(MCtrials+1));
@@ -2193,7 +2198,8 @@ namespace LMM {
       for (int t = 0; t <= MCtrials; t++)
 	MsBxMCp1[b*(MCtrials+1) + t] = Ms[b];
 
-    conjGradSolve(HinvRhsCovCompVecs, false, yCombinedCovCompVecs, batchMaskSnpsBxMCp1, MsBxMCp1,
+    conjGradSolve(HinvRhsCovCompVecs, useStartVecs, yCombinedCovCompVecs,
+		  batchMaskSnpsBxMCp1, MsBxMCp1,
 		  &logDeltasBxMCp1[0], B*(MCtrials+1), CGmaxIters, CGtol);
 
     // accumulate scaled SUM(epshat^2)
@@ -2286,7 +2292,8 @@ namespace LMM {
     testVCs.sigma2K = sigma2Ks[0];
     
     ALIGNED_FREE(yCombinedCovCompVecs); // todo: could optimize memory alloc (reuse work arrays)
-    ALIGNED_FREE(HinvRhsCovCompVecs);
+    if (ownHinvRhsCovCompVecs)
+      ALIGNED_FREE(HinvRhsCovCompVecs);
     ALIGNED_FREE(scaledUnmaskedBetaHats);
     ALIGNED_FREE(batchMaskSnpsBxMCp1);
 
@@ -2318,12 +2325,13 @@ namespace LMM {
 					double HinvPhiCovCompVec[], VarCompData &testVCs,
 				    const double yGenCovCompVecs[],
 				    const double yEnvUnscaledCovCompVecs[], int MCtrials,
-				    int CGmaxIters, double CGtol) const {
+				    int CGmaxIters, double CGtol,
+				    double reusableHinvRhsCovCompVecs[], bool useStartVecs) const {
 
     double *testHinvPhiCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
     computeMCscalingFs(/*&testVCs.sigma2K, */testHinvPhiCovCompVec, testVCs, yGenCovCompVecs,
 			 yEnvUnscaledCovCompVecs, projMaskSnps, &MprojMask, 1, MCtrials,
-			 CGmaxIters, CGtol);
+			 CGmaxIters, CGtol, reusableHinvRhsCovCompVecs, useStartVecs);
 #ifdef VERBOSE
     printf("  MCscaling: logDelta = %.2f, h2 = %.3f, f = %g\n\n", testVCs.logDelta,
 	   logDeltaToH2(testVCs.logDelta), testVCs.fJacks.back());
@@ -2474,6 +2482,9 @@ namespace LMM {
 
     //double logDeltaBest = 0; double bestAbsF = 1e9;
     const double MAX_ABS_LOG_DELTA = 10;
+    // Beyond this distance the systems differ by more than exp(2) in delta; a stale
+    // solution is then not reliably worth the extra H*x needed to initialize CG.
+    const double MAX_WARM_START_LOG_DELTA_DIFF = 2;
 
     double *yGenCovCompVecs = ALIGNED_MALLOC_DOUBLES((MCtrials+1) * (Nstride+Cstride));
     double *yEnvUnscaledCovCompVecs = ALIGNED_MALLOC_DOUBLES((MCtrials+1) * (Nstride+Cstride));
@@ -2482,17 +2493,23 @@ namespace LMM {
 			       &MprojMask, 1, MCtrials, seed);
 
     VarCompData bestVCs;
+    double *reusableHinvRhsCovCompVecs =
+      ALIGNED_MALLOC_DOUBLES((MCtrials+1) * (Nstride+Cstride));
     
     VarCompData prevVCs; prevVCs.logDelta = h2ToLogDelta(*sigma2Kbest);
     updateBestMCscalingF(bestVCs/*sigma2Kbest, &logDeltaBest, &bestAbsF*/, HinvPhiCovCompVec,
 					prevVCs/*xPrev*/, yGenCovCompVecs, yEnvUnscaledCovCompVecs, MCtrials,
-					CGmaxIters, CGtol);
+					CGmaxIters, CGtol, reusableHinvRhsCovCompVecs, false);
+    double reusableLogDelta = prevVCs.logDelta;
     
     VarCompData curVCs; curVCs.logDelta = h2ToLogDelta(prevVCs.fJacks.back() < 0 ?
 						       (*sigma2Kbest)/2 : (*sigma2Kbest)*2);
+    bool useStartVecs = fabs(curVCs.logDelta - reusableLogDelta)
+      <= MAX_WARM_START_LOG_DELTA_DIFF;
     updateBestMCscalingF(bestVCs/*sigma2Kbest, &logDeltaBest, &bestAbsF*/, HinvPhiCovCompVec,
 				       curVCs/*xCur*/, yGenCovCompVecs, yEnvUnscaledCovCompVecs, MCtrials,
-				       CGmaxIters, CGtol);
+				       CGmaxIters, CGtol, reusableHinvRhsCovCompVecs, useStartVecs);
+    reusableLogDelta = curVCs.logDelta;
 
     if (fabs(prevVCs.fJacks.back()) < fabs(curVCs.fJacks.back()))
       std::swap(prevVCs, curVCs);
@@ -2540,10 +2557,13 @@ namespace LMM {
       
       prevVCs = curVCs;
       curVCs = nextVCs;
+      useStartVecs = fabs(curVCs.logDelta - reusableLogDelta)
+	<= MAX_WARM_START_LOG_DELTA_DIFF;
       updateBestMCscalingF(bestVCs/*sigma2Kbest, &logDeltaBest, &bestAbsF*/, HinvPhiCovCompVec,
 				  curVCs/*xCur*/,
 				  yGenCovCompVecs, yEnvUnscaledCovCompVecs, MCtrials, CGmaxIters,
-				  CGtol);
+				  CGtol, reusableHinvRhsCovCompVecs, useStartVecs);
+      reusableLogDelta = curVCs.logDelta;
     }
     if (!converged)
       cerr << "WARNING: Secant iteration for h2 estimation may not have converged" << endl;
@@ -2589,6 +2609,7 @@ namespace LMM {
 
     ALIGNED_FREE(yGenCovCompVecs);
     ALIGNED_FREE(yEnvUnscaledCovCompVecs);
+    ALIGNED_FREE(reusableHinvRhsCovCompVecs);
 
     *sigma2Kbest = bestVCs.sigma2K;
     return bestVCs.logDelta;//logDeltaBest;

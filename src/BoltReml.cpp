@@ -51,6 +51,9 @@
 #include "MatrixUtils.hpp"
 #include "NonlinearOptMulti.hpp"
 #include "Bolt.hpp"
+#ifdef BOLT_USE_CUDA
+#include "CudaStep1.hpp"
+#endif
 
 namespace LMM {
 
@@ -83,6 +86,21 @@ namespace LMM {
 #endif
     int VCs = vcXscale2s.size()-1;
     const uint64 BxNC = B*(Nstride+Cstride);
+
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL && VCs == 1) {
+      cudaStep1->multXXtransSnpMask(multCovCompVecs, xCovCompVecs, snpVCnums, B);
+      for (uint64 bnc = 0; bnc < BxNC; bnc++)
+	multCovCompVecs[bnc] = vcXscale2s[1] * multCovCompVecs[bnc]
+	  - coeffI * xCovCompVecs[bnc];
+#ifdef VERBOSE
+      printf("time=%.2f\n", timer.update_time());
+      fflush(stdout);
+#endif
+      return;
+    }
+#endif
+
     memset(multCovCompVecs, 0, VCs * BxNC * sizeof(multCovCompVecs[0])); // initialize answers to 0
     
     double *snpCovCompVecBlock = ALIGNED_MALLOC_DOUBLES(mBlockMultX * (Nstride+Cstride));
@@ -435,6 +453,22 @@ namespace LMM {
 
     uint64 D = VegXscale2s[0].size1();
     uint64 DxNC = D * (Nstride+Cstride);
+
+#ifdef BOLT_USE_CUDA
+    // The common univariate, single-GRM REML case is exactly the same
+    // X*X' operation accelerated by the Stage 1 CUDA backend.  Keep the
+    // general multivariate/multi-VC implementation below as the fallback.
+    if (cudaStep1 != NULL && D == 1 && VegXscale2s.size() == 2) {
+      cudaStep1->multXXtransSnpMask(VmultiCovCompVecs, xMultiCovCompVecs, snpVCnums, B);
+      const double envScale = VegXscale2s[0](0, 0);
+      const double genScale = VegXscale2s[1](0, 0);
+      for (uint64 bnc = 0; bnc < B * DxNC; bnc++)
+	VmultiCovCompVecs[bnc] = genScale * VmultiCovCompVecs[bnc]
+	  + envScale * xMultiCovCompVecs[bnc];
+      return;
+    }
+#endif
+
     memcpy(VmultiCovCompVecs, xMultiCovCompVecs, B * DxNC * sizeof(VmultiCovCompVecs[0]));
     // initialize each answer vec Vmulti to X (NC x D) * Ve (D x D) for environment/noise VC
     for (uint64 b = 0; b < B; b++)

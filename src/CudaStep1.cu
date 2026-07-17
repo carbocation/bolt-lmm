@@ -344,6 +344,15 @@ namespace LMM {
       }
     }
 
+    __global__ void applySnpMask(double Xtrans[], const uchar snpMask[],
+                                 uint64 m0, uint64 blockSize, uint64 B) {
+      const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (index < blockSize * B) {
+        const uint64 mPlus = index / B;
+        Xtrans[index] *= snpMask[m0 + mPlus];
+      }
+    }
+
     __global__ void flipCovariateComponents(double snpBlock[], uint64 blockSize,
                                              uint64 Nstride, uint64 Cstride) {
       const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -736,7 +745,8 @@ namespace LMM {
       batchCapacity = B;
     }
 
-    void multiply(double out[], const double in[], const uchar batchMask[], uint64 B) {
+    void multiply(double out[], const double in[], const uchar mask[], uint64 B,
+                  bool broadcastSnpMask) {
       ensureBatchCapacity(B);
       const size_t covCompBytes = B * NCstride * sizeof(*inCovCompVecs);
       checkCuda(cudaMemcpyAsync(inCovCompVecs, in, covCompBytes, cudaMemcpyHostToDevice,
@@ -744,10 +754,10 @@ namespace LMM {
                 "copy input vectors to CUDA");
       checkCuda(cudaMemsetAsync(outCovCompVecs, 0, covCompBytes, computeStream),
                 "clear CUDA output vectors");
-      checkCuda(cudaMemcpyAsync(batchMaskSnps, batchMask,
-                                M * B * sizeof(*batchMaskSnps),
+      checkCuda(cudaMemcpyAsync(batchMaskSnps, mask,
+                                M * (broadcastSnpMask ? 1 : B) * sizeof(*batchMaskSnps),
                                 cudaMemcpyHostToDevice, computeStream),
-                "copy batch SNP mask to CUDA");
+                "copy SNP mask to CUDA");
 
       const unsigned int threads = 256;
       const double one = 1.0, zero = 0.0;
@@ -769,8 +779,12 @@ namespace LMM {
                                 static_cast<int>(NCstride), &zero, Xtrans,
                                 static_cast<int>(B)), "cuBLAS X transpose multiply");
 
-        applyBatchMask<<<numBlocks(blockSize * B, threads), threads, 0, computeStream>>>
-          (Xtrans, batchMaskSnps, m0, blockSize, B);
+        if (broadcastSnpMask)
+          applySnpMask<<<numBlocks(blockSize * B, threads), threads, 0, computeStream>>>
+            (Xtrans, batchMaskSnps, m0, blockSize, B);
+        else
+          applyBatchMask<<<numBlocks(blockSize * B, threads), threads, 0, computeStream>>>
+            (Xtrans, batchMaskSnps, m0, blockSize, B);
         checkCuda(cudaGetLastError(), "launch CUDA SNP batch mask");
         if (Cstride) {
           flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads, 0,
@@ -1257,7 +1271,13 @@ namespace LMM {
 
   void CudaStep1::multXXtransMask(double outCovCompVecs[], const double inCovCompVecs[],
                                   const uchar batchMaskSnps[], uint64 B) {
-    impl->multiply(outCovCompVecs, inCovCompVecs, batchMaskSnps, B);
+    impl->multiply(outCovCompVecs, inCovCompVecs, batchMaskSnps, B, false);
+  }
+
+  void CudaStep1::multXXtransSnpMask(double outCovCompVecs[],
+                                     const double inCovCompVecs[],
+                                     const uchar snpMask[], uint64 B) {
+    impl->multiply(outCovCompVecs, inCovCompVecs, snpMask, B, true);
   }
 
   void CudaStep1::multX(double outCovCompVecs[], const double coefficients[], uint64 B,

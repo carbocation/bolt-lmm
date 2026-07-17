@@ -202,6 +202,33 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  const uchar snpMask[M] = {1, 0, 1, 1, 0};
+  std::vector<double> expectedSnpMask(B*NCstride, 0), observedSnpMask(B*NCstride);
+  for (uint64 m = 0; m < M; m++) {
+    if (!projMaskSnps[m])
+      continue;
+    for (uint64 b = 0; b < B; b++) {
+      double dot = 0;
+      for (uint64 nc = 0; nc < NCstride; nc++)
+        dot += input[b*NCstride+nc] * xNeg[m*NCstride+nc];
+      for (uint64 nc = 0; nc < NCstride; nc++) {
+        const double xPositive = nc < Nstride ? xNeg[m*NCstride+nc] :
+                                 -xNeg[m*NCstride+nc];
+        expectedSnpMask[b*NCstride+nc] += xPositive * dot * snpMask[m];
+      }
+    }
+  }
+  cuda.multXXtransSnpMask(observedSnpMask.data(), input.data(), snpMask, B);
+  double maxSnpMaskError = 0;
+  for (uint64 i = 0; i < observedSnpMask.size(); i++)
+    maxSnpMaskError = std::max(maxSnpMaskError,
+                               std::fabs(observedSnpMask[i] - expectedSnpMask[i]));
+  if (maxSnpMaskError > 1e-11) {
+    std::cerr << "CUDA Step 1 broadcast SNP mask parity failure: max absolute error = "
+              << maxSnpMaskError << std::endl;
+    return 1;
+  }
+
   std::vector<double> coefficients(M*B), expectedMultX(B*NCstride, 0);
   std::vector<double> expectedMultXAll(B*NCstride, 0), observedMultX(B*NCstride);
   std::vector<double> xAllNeg(M*NCstride, 0);

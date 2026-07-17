@@ -57,9 +57,9 @@ MKL_NUM_THREADS=1 taskset -c 0 build/step1-mkl/bolt \
 
 Use a fresh model output path for each timed repetition.
 
-The CUDA build described in `BUILD.md` uses the GPU automatically for Stage 1.
-Pass `--no-cuda` to benchmark its CPU path instead. The legacy `--cuda` flag is
-still accepted.
+A binary compiled with CUDA as described in [`BUILD.md`](../BUILD.md) uses the
+GPU automatically for Stage 1. Pass `--no-cuda` to benchmark its CPU path
+instead; [`USAGE.md`](../USAGE.md) documents the runtime behavior.
 
 ## End-to-end Stage 1 comparison
 

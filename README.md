@@ -51,6 +51,8 @@ Implements a portable CMake build for Linux and macOS.
   manual](https://alkesgroup.broadinstitute.org/BOLT-LMM/BOLT-LMM_manual.html)
   is the authoritative reference for analysis options, output, computing
   requirements, recommendations, and troubleshooting.
+- [`USAGE.md`](USAGE.md) documents the fork's split-stage workflow, PGEN input
+  and caching, CUDA execution, and numerical compatibility controls.
 - [`BUILD.md`](BUILD.md) covers dependencies, CMake configuration, supported
   BLAS/LAPACK backends, OpenMP, portable CPU targets, and platform-specific
   instructions for Linux and macOS.
@@ -127,21 +129,6 @@ model artifact:
   --numThreads=8
 ```
 
-Stage 1 computes and stores LINREG statistics by default for compatibility
-with existing model artifacts and Stage 2 `--verboseStats` output. Analyses
-that only need mixed-model results can pass `--noLinreg` in Stage 1 to avoid
-that extra genotype traversal. Stage 2 will then omit `P_LINREG` while retaining
-`P_BOLT_LMM_INF` and, when the spike-and-slab model is fitted, `P_BOLT_LMM`.
-
-Stage 1 uses the upstream v2.5 cold-start behavior for variance-component
-conjugate-gradient solves and the final variational-Bayes fit by default. Two
-performance experiments remain available explicitly as
-`--warmStartVarianceCG` and `--warmStartFinalVB`. These options change solver
-initialization and can change reported statistics at the existing convergence
-tolerances, so they should be used only when that numerical-output tradeoff has
-been evaluated for the analysis. They are never enabled implicitly by a CPU or
-CUDA build.
-
 Stage 2 reloads that artifact and streams the variants to test:
 
 ```sh
@@ -155,47 +142,9 @@ Stage 2 reloads that artifact and streams the variants to test:
 
 Replace `--bfile PREFIX` with `--pfile PREFIX` to use PLINK 2
 `PREFIX.pgen`, `PREFIX.pvar[.gz]`, and `PREFIX.psam[.gz]` files in either stage.
-This repository accepts biallelic PGEN variants and reads their hardcalls;
-dosage overrides in a PGEN file are reported and ignored. The manual documents
-additional Stage 2 inputs for BGEN, IMPUTE2, and dosage formats.
-
-For repeated Stage 1 analyses of the same PGEN cohort and model-marker set,
-build the converted hardcall artifact explicitly in CPU-only Step 0:
-
-```sh
-./build/bolt \
-  --stage=0 \
-  --pfile=data/cohort \
-  --pgenCacheFile=/scratch/cohort.bolt-pgen-cache \
-  --remove=data/remove.txt \
-  --modelSnps=data/model.snps \
-  --numThreads=1
-```
-
-Then pass the same genotype filtering, model-marker, map, and QC options in
-Stage 1, adding the cache input:
-
-```sh
-./build/bolt \
-  --stage=1 \
-  --stage1Model=cohort.stage1.model \
-  --pfile=data/cohort \
-  --pgenCacheFile=/scratch/cohort.bolt-pgen-cache \
-  --remove=data/remove.txt \
-  --modelSnps=data/model.snps \
-  --phenoFile=data/phenotypes.tsv \
-  --phenoCol=TRAIT \
-  --lmm
-```
-
-Step 0 is CPU-only even when the binary contains CUDA support. It writes the
-post-filter/QC packed hardcalls, variant mapping and MAFs, and sample QC mask
-atomically. Stage 1 never creates this artifact: it parses the named
-PGEN/PVAR/PSAM files, verifies their identity together with sample/variant
-selection, packing, and QC settings, and only then memory-maps the cache.
-Phenotypes and covariates are deliberately not part of the identity, so the
-artifact can be reused across traits. `--pgenCacheDir` remains the separate
-option for an unlinked, per-run scratch cache.
+Stage 1 and Stage 2 may use different genetic files. See [`USAGE.md`](USAGE.md)
+for supported Stage 2 inputs, direct PGEN operation, the optional persistent
+Stage 0 cache, CUDA runtime controls, and output-changing performance options.
 
 For BOLT-REML, use `--stage=1 --reml`; no Stage 2 association readout is
 required. See the bundled REML example for multi-trait syntax.

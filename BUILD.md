@@ -26,48 +26,6 @@ ctest --test-dir build --output-on-failure
 The executable is written to `build/bolt`. The equivalent convenience command
 is `make`; additional CMake options can be supplied through `CMAKE_ARGS`.
 
-## PLINK 2 hardcall input
-
-Use `--pfile PREFIX` in either Stage 1 or Stage 2 to read
-`PREFIX.pgen`, `PREFIX.pvar` (or `.pvar.gz`), and `PREFIX.psam` (or `.psam.gz`).
-BOLT accepts biallelic variants and intentionally reads the PGEN hardcall
-component; dosage overrides in the PGEN are reported and ignored.
-
-Stage 1 keeps a BED-coded 2-bit cache because its numerical kernels revisit
-variants many times. When this cache would exceed half of physical RAM, BOLT
-automatically creates an unlinked, file-backed cache under `TMPDIR` (or `/tmp`).
-Use `--pgenCacheDir DIR` to choose local scratch storage explicitly; specifying
-the option also forces file-backed storage, which is useful for testing and for
-leaving RAM available to operating-system and model working sets. BOLT reports
-the required cache size and checks available scratch space before loading.
-Packed-code conversion, allele/missingness accumulation, sample-missingness
-tracking, and the final cache write are fused into one host pass during PGEN
-ingestion.
-
-For repeated analyses with identical genotype filtering, an explicit CPU
-Step 0 can persist that packed representation:
-
-```sh
-bolt --stage=0 --pfile PREFIX --pgenCacheFile /shared/bolt/cohort.step0
-bolt --stage=1 --pfile PREFIX --pgenCacheFile /shared/bolt/cohort.step0 ...
-```
-
-This is beneficial only when the artifact remains on storage local to or
-already shared with the Stage 1 environment. At N=500,000 and M=1,000,000 the
-artifact is about 116.4 GiB. Staging it afresh must sustain more than about
-226 MiB/s one-way—or 453 MiB/s for two sequential copies—just to break even
-with the measured 8 minute 46 second conversion saving. If the cache must be
-built or transferred for each analysis, use direct PGEN ingestion instead.
-
-## Numerical compatibility options
-
-Stage 1 retains the upstream v2.5 cold starts for variance-component
-conjugate-gradient solves and the final variational-Bayes fit. The optional
-`--warmStartVarianceCG` and `--warmStartFinalVB` flags enable faster alternate
-initializations that can change output at the default convergence tolerances.
-They are opt-in for both CPU and CUDA builds; CUDA acceleration does not enable
-them automatically.
-
 ## macOS on Apple Silicon
 
 Apple Accelerate is the default linear-algebra backend. Homebrew's OpenBLAS can
@@ -109,47 +67,10 @@ modern x86-64 build can use
 `-DBOLT_CPU_TARGET=x86-64-v3 -DBOLT_CPU_TUNE=generic`; use `native` only for a
 binary that will stay on the build machine.
 
-## CUDA Step 1 acceleration
+## CUDA build
 
-CUDA support is opt-in and leaves the default CPU build unchanged. The GPU path
-accelerates the repeated projected `X X'` products used by variance estimation
-and the infinitesimal model, along with the block matrix operations in the
-Bayesian iterations and the `X beta` products used by Monte Carlo phenotype
-generation and cross-validation prediction. Transposed products used by
-variance estimation, LINREG, and retrospective association scoring are also
-computed on the GPU. Initial SNP normalization and covariate projection for the
-main analysis and cross-validation folds also run on the GPU. Packed 2-bit
-genotypes are transferred to the device and decoded there; expanded genotype
-matrices do not cross PCIe.
-
-The CUDA backend uses otherwise-free device memory to cache a shared prefix of
-the packed genotype matrix. It reserves one additional decoded SNP block plus
-3 GiB for a simultaneous cross-validation fold and working buffers. Main and
-fold-specific `Bolt` instances share the packed cache while retaining their own
-sample masks and covariate projections. The cache is populated as part of the
-main marker-initialization scan, and fold marker initialization reads cached
-blocks directly on the device; neither operation performs a redundant host or
-scratch-disk scan of the cached prefix.
-
-Use `--cudaCacheGiB N` to cap the packed device cache when GPU memory must be
-reserved for another process. `--cudaCacheGiB 0` disables it and exercises the
-streamed host-to-device path; the default `-1` retains automatic sizing.
-
-When Stage 1 PGEN hardcalls are file-backed and do not all fit in the device
-cache, CUDA also retains a bounded part of the remaining packed matrix in
-ordinary host RAM. The retained range starts immediately after the device
-cache and is populated during marker initialization, avoiding another scratch-
-disk read. `--cudaHostCacheGiB N` sets its limit, `0` disables it for minimum
-memory use, and the default `-1` uses at most 72% of physical RAM. This
-cache is not page-locked; the two pinned streaming blocks remain the only
-long-lived pinned host allocation.
-
-Packed blocks outside the device cache are double-buffered through two pinned
-host buffers and two device buffers. A nonblocking transfer stream preloads the
-next block while the compute stream decodes and multiplies the current block.
-The pinned host pair is bounded (about 122 MiB at N=500,000 with the default
-512-SNP CUDA block) and shared by the main and cross-validation `Bolt`
-objects, whose operations are sequential.
+CUDA support is optional and leaves the standard CPU build unchanged. Building
+with CUDA requires the CUDA Toolkit, cuBLAS, and a selected device architecture.
 
 For an NVIDIA A100 (compute capability 8.0):
 
@@ -164,11 +85,9 @@ ctest --test-dir build/cuda --output-on-failure
 ```
 
 If `nvcc` is not on `PATH`, also set
-`-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`. CUDA-enabled binaries use the
-GPU path by default for Stage 1. Pass `--no-cuda` to force the CPU path for
-testing or comparison. The existing `--cuda` flag remains accepted for command
-line compatibility. Builds made without `BOLT_CUDA=ON` retain the CPU-only
-default and have no CUDA runtime dependency.
+`-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`. Builds made without
+`BOLT_CUDA=ON` have no CUDA runtime dependency. See [`USAGE.md`](USAGE.md) for
+CUDA execution behavior, genotype caching, streaming, and runtime controls.
 
 ## Configuration options
 

@@ -1,0 +1,11 @@
+workload	genetics	n	m	traits	vcs	mc_trials	refinement	implementation	commit	analysis_seconds	wall_seconds	max_rss_kb	output_check	notes
+coarse_univariate	1kg_32_variant_block_bootstrap	32768	16384	1	1	15	off	upstream_cpu	fa732f87	118.809	119.16	222976	baseline	upstream/v2.5; GCC 11.4; native x86; sequential MKL; one pinned CPU
+coarse_univariate	1kg_32_variant_block_bootstrap	32768	16384	1	1	15	off	fork_cpu	04a0aae	96.5473	96.57	216716	printed estimates identical to upstream	CUDA disabled; GCC 11.4; native x86; sequential MKL; one pinned CPU
+coarse_univariate	1kg_32_variant_block_bootstrap	32768	16384	1	1	15	off	fork_cuda	7ba0a93	4.30194	4.59	606844	printed estimates and CG counts identical to upstream	A100; host work and math libraries restricted to one pinned CPU
+refined_univariate	1kg_derived_32_variant_block_resample	8192	16384	1	1	15+100	on	upstream_cpu	fa732f87	58.9001	58.91	110456	baseline	upstream/v2.5; default refinement; one pinned CPU
+refined_univariate	1kg_derived_32_variant_block_resample	8192	16384	1	1	15+100	on	fork_cpu	04a0aae	53.745	53.75	109488	printed estimates identical to upstream	default refinement; CUDA disabled; one pinned CPU
+refined_univariate	1kg_derived_32_variant_block_resample	8192	16384	1	1	15+100	on	fork_cuda	7ba0a93	3.9473	4.25	530872	printed estimates and CG counts identical to upstream	default refinement; A100; one pinned host CPU
+target_stride_coarse	1kg_derived_32_variant_block_resample	500000	1024	1	1	3	off	fork_cpu	04a0aae	74.0919	74.20	748496	baseline	N-realistic throughput rung; low-rank GRM is not a full scientific analysis
+target_stride_coarse	1kg_derived_32_variant_block_resample	500000	1024	1	1	3	off	fork_cuda	7ba0a93	7.12689	7.50	1290516	printed estimates and CG counts identical to fork CPU	A100; validates target sample stride and transfers, not target M
+multitrait_multivc_coarse	1kg_32_variant_block_bootstrap	32768	16384	2	2	3	off	fork_cpu	04a0aae	251.825	251.84	223732	baseline	correlated-trait performance fixture; SNPs partitioned by chromosome
+multitrait_multivc_coarse	1kg_32_variant_block_bootstrap	32768	16384	2	2	3	off	fork_cuda	7ba0a93	7.57373	7.84	620100	all printed matrices, SEs, correlations, h2, and CG counts identical to fork CPU	A100; one pinned host CPU

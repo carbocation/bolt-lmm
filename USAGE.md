@@ -142,13 +142,19 @@ already shared with the Stage 1 environment. At the target shape it is about
 minute 46 second direct-PGEN conversion cost. If the cache must be built or
 transferred for each analysis, use direct PGEN ingestion instead.
 
-## CUDA Stage 1 execution
+## CUDA Stage 1 and BOLT-REML execution
 
 CUDA-enabled binaries accelerate the projected genotype matrix products used
 by variance estimation and the infinitesimal model, the block operations in
 variational Bayes, cross-validation prediction, LINREG, retrospective scoring,
 and SNP normalization and projection. Packed two-bit genotypes cross PCIe and
 are decoded on the device; dense genotype matrices do not cross PCIe.
+
+With `--reml`, CUDA also accelerates the AI-REML conjugate-gradient and
+derivative products and the multiplication used to construct genetic Monte
+Carlo pseudo-phenotypes. This applies to univariate, multivariate, and multiple
+variance-component REML. The estimator, CPU RNG and draw order, convergence
+tolerances, trial counts, and refinement behavior are unchanged.
 
 A CUDA-enabled binary uses the GPU automatically for Stage 1. Pass `--no-cuda`
 to exercise its CPU path for comparison or testing. The legacy `--cuda` flag is

@@ -300,9 +300,11 @@ def main():
             covar.write(f"{fid}\t{iid}\t{group}\n")
 
     gib = (3 + args.variants * (samples_padded // 4)) / (1024 ** 3)
-    mode = "identity" if args.identity_samples else (
-        f"within-{args.group_column} {args.ld_block_variants}-variant block bootstrap"
-    )
+    if args.identity_samples:
+        mode = "identity"
+    else:
+        grouping = f"within-{args.group_column}" if args.source_psam else "single-group"
+        mode = f"{grouping} {args.ld_block_variants}-variant block bootstrap"
     print(
         f"Wrote {output_prefix} ({output_n} samples, {args.variants} real variants, "
         f"{mode}, {gib:.3f} GiB BED)"

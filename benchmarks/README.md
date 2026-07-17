@@ -282,6 +282,62 @@ cohort. A 256-variant bootstrap-block experiment was rejected as a benchmark:
 it made the GRM poorly conditioned and cross-validation reached its 250-
 iteration limit.
 
+## BOLT-REML benchmark ladder
+
+BOLT-REML is benchmarked separately from the Stage 1 association-model fit.
+The REML ladder uses the real-reference fixtures above, not independent random
+genotypes. The 32,768-sample rung retains 32-variant donor blocks from the 1KG
+Phase 3 DRAGEN-derived reference. The smaller refined and N=500,000 rungs
+resample those real-derived blocks again; they retain local LD but are not
+substitutes for a genuinely observed biobank cohort.
+
+`prepare_reml_benchmark.py` layers correlated traits and chromosome-partitioned
+variance-component labels onto an existing PLINK 1 prefix without touching the
+genotypes:
+
+```sh
+python3 benchmarks/prepare_reml_benchmark.py \
+  /scratch/bolt-real-expanded /scratch/bolt-reml-d2-vc2 \
+  --traits 2 --trait-correlation 0.4 --variance-components 2
+```
+
+The generated traits and VC split are deterministic performance/convergence
+inputs, not a claim that the added traits follow a realistic genetic-correlation
+model. The source phenotype remains diffuse and polygenic, and all timing rungs
+exercise genotype LD inherited from the real reference.
+
+Final A100 measurements use GCC 11.4, native x86 code, sequential oneMKL, and
+one pinned host CPU (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`,
+`--numThreads=1`). "Coarse" rows specify `--remlNoRefine`; the refined row uses
+the scientific default of 15 coarse plus 100 refinement Monte Carlo trials.
+Times are BOLT's analysis timer:
+
+| Workload | upstream/v2.5 CPU | fork CPU | fork CUDA | CUDA vs fork CPU | CUDA vs upstream |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| N=32,768, M=16,384, D=1, one VC, coarse 15 trials | 118.81 s | 96.55 s | 4.30 s | 22.4x | 27.6x |
+| N=8,192, M=16,384, D=1, one VC, default refinement | 58.90 s | 53.75 s | 3.95 s | 13.6x | 14.9x |
+| N=500,000, M=1,024, D=1, one VC, coarse 3 trials | -- | 74.09 s | 7.13 s | 10.4x | -- |
+| N=32,768, M=16,384, D=2, two VCs, coarse 3 trials | -- | 251.83 s | 7.57 s | 33.3x | -- |
+
+The N=500,000 row validates target sample stride, vector transfers, and memory
+behavior. Its 1,024-SNP GRM is deliberately bounded and low-rank, so it must not
+be presented as an end-to-end N=500,000 by M=1,000,000 scientific analysis.
+Raw measurements and provenance are recorded in
+`results/a100_reml.tsv`.
+
+CUDA now covers the main AI-REML conjugate-gradient matrix products, derivative
+products, arbitrary trait/VC coefficient matrices, and genetic Monte Carlo
+pseudo-phenotype generation. It retains Boost's upstream RNG and draw order on
+the CPU. CPU-only builds and CUDA builds run with `--no-cuda` keep the upstream
+CPU REML implementation; no estimator, starting values, tolerance, Monte Carlo
+count, refinement default, or trust-region logic changed.
+
+CUDA changes floating-point reduction order. On every rung above, CG iteration
+counts and all reported variance matrices, standard errors, sigma2 values, h2
+values, and genetic/residual correlations matched the CPU result at every
+printed digit. Low-level CUDA tests independently cover cached, streamed, and
+host-cache paths and require absolute matrix error at most 1e-11.
+
 The full reference panel was also used for bounded ingest/QC measurements.
 With warm filesystem pages, BOLT's setup timer was 13.652 seconds for the
 620.5 MB PGEN plus its uncompressed PVAR, versus 5.521 seconds for the

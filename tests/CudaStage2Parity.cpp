@@ -122,6 +122,13 @@ int main() {
       const int result = runCase(cuda, inputToModel, Nstride, variants, K, pgenEncoding);
       if (result) return result;
     }
+  std::vector<int> identityMapping(Nstride);
+  for (uint64 n = 0; n < Nstride; n++) identityMapping[n] = static_cast<int>(n);
+  cuda.configureSamples(nullptr, Nstride);
+  for (bool pgenEncoding : std::vector<bool>{false, true}) {
+    const int result = runCase(cuda, identityMapping, Nstride, variants, 3, pgenEncoding);
+    if (result) return result;
+  }
   std::cout << "CUDA Stage 2 packed-scoring parity checks passed" << std::endl;
   return 0;
 }

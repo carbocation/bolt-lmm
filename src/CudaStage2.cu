@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -83,6 +84,67 @@ namespace LMM {
         alleleFreqs[variant] = observed ? alleleParts[0] / (2.0 * observed) : 0;
         missingRates[variant] = includedSamples ?
           static_cast<double>(missingParts[0]) / includedSamples : 1;
+      }
+    }
+
+    template<bool PGEN_ENCODING>
+    __global__ void computeIdentityPackedStats(const uchar packedGenotypes[],
+                                               uint64 inputSamples,
+                                               uint64 bytesPerVariant,
+                                               double alleleFreqs[],
+                                               double missingRates[]) {
+      const uint64 variant = blockIdx.x;
+      const uint32_t *packed = reinterpret_cast<const uint32_t *>(
+        packedGenotypes + variant*bytesPerVariant);
+      const uint64 fullWords = inputSamples >> 4;
+      const uint32_t alternatingBits = 0x55555555U;
+      uint64 alleleSum = 0, missingCount = 0;
+      for (uint64 wordIndex = threadIdx.x; wordIndex < fullWords;
+           wordIndex += blockDim.x) {
+        const uint32_t word = packed[wordIndex];
+        const uint32_t low = word & alternatingBits;
+        const uint32_t high = (word >> 1) & alternatingBits;
+        if (PGEN_ENCODING) {
+          const uint64 missing = __popc(low & high);
+          missingCount += missing;
+          alleleSum += __popc(low) + 2*__popc(high) - 3*missing;
+        }
+        else {
+          const uint32_t notLow = (~low) & alternatingBits;
+          missingCount += __popc(low & (~high) & alternatingBits);
+          alleleSum += 2*__popc(notLow & (~high) & alternatingBits) +
+            __popc(notLow & high);
+        }
+      }
+      const uint64 tailStart = fullWords << 4;
+      for (uint64 input = tailStart + threadIdx.x; input < inputSamples;
+           input += blockDim.x) {
+        double genotype;
+        bool missing;
+        decodeHardcall(packedGenotypes[variant*bytesPerVariant+(input>>2)],
+                       input&3, PGEN_ENCODING, &genotype, &missing);
+        if (missing) missingCount++;
+        else alleleSum += static_cast<uint64>(genotype);
+      }
+
+      __shared__ uint64 alleleParts[256];
+      __shared__ uint64 missingParts[256];
+      alleleParts[threadIdx.x] = alleleSum;
+      missingParts[threadIdx.x] = missingCount;
+      __syncthreads();
+      for (unsigned int stride = blockDim.x >> 1; stride; stride >>= 1) {
+        if (threadIdx.x < stride) {
+          alleleParts[threadIdx.x] += alleleParts[threadIdx.x+stride];
+          missingParts[threadIdx.x] += missingParts[threadIdx.x+stride];
+        }
+        __syncthreads();
+      }
+      if (threadIdx.x == 0) {
+        const uint64 observed = inputSamples-missingParts[0];
+        alleleFreqs[variant] = observed ?
+          static_cast<double>(alleleParts[0])/(2.0*observed) : 0;
+        missingRates[variant] = inputSamples ?
+          static_cast<double>(missingParts[0])/inputSamples : 1;
       }
     }
 
@@ -373,10 +435,23 @@ namespace LMM {
                                 packedBytes,
                                 cudaMemcpyHostToDevice, stream),
                 "copy packed Stage 2 genotypes to CUDA");
-      computePackedStats<<<static_cast<unsigned int>(variants), 256, 0, stream>>>
-        (devicePackedGenotypes, deviceInputToModel, inputSamples, includedSamples,
-         bytesPerVariant, pgenEncoding, identityMapping, deviceAlleleFreqs,
-         deviceMissingRates);
+      if (identityMapping && !(bytesPerVariant&3)) {
+        if (pgenEncoding)
+          computeIdentityPackedStats<true>
+            <<<static_cast<unsigned int>(variants), 256, 0, stream>>>
+            (devicePackedGenotypes, inputSamples, bytesPerVariant,
+             deviceAlleleFreqs, deviceMissingRates);
+        else
+          computeIdentityPackedStats<false>
+            <<<static_cast<unsigned int>(variants), 256, 0, stream>>>
+            (devicePackedGenotypes, inputSamples, bytesPerVariant,
+             deviceAlleleFreqs, deviceMissingRates);
+      }
+      else
+        computePackedStats<<<static_cast<unsigned int>(variants), 256, 0, stream>>>
+          (devicePackedGenotypes, deviceInputToModel, inputSamples, includedSamples,
+           bytesPerVariant, pgenEncoding, identityMapping, deviceAlleleFreqs,
+           deviceMissingRates);
       checkCuda(cudaGetLastError(), "launch CUDA Stage 2 hardcall statistics");
       launchScore(numScoreVectors, devicePackedGenotypes, deviceInputToModel,
                   inputSamples, bytesPerVariant, pgenEncoding, identityMapping,

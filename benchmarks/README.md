@@ -686,13 +686,14 @@ The A100 comparison reused the real-LD 131,072-sample by 16,384-variant fixture
 and the same sequential oneMKL CPU control described above. CUDA and CPU were
 run from the same CUDA-enabled executable, with `--no-cuda` selecting the CPU
 control. Times are complete association readout phases; total Stage 2 also
-includes model loading and CUDA context initialization.
+includes model loading and CUDA context initialization. CUDA times are medians
+of three final-code runs; the CPU controls are representative paired runs.
 
 | Model and input | CPU readout | A100 readout | Readout speedup | CPU total | A100 total | Total speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 basis + 2 stats, BED | 3.137 s | 0.308 s | 10.19x | 3.477 s | 0.919 s | 3.79x |
-| 21 bases + 2 stats, BED | 9.413 s | 0.838 s | 11.23x | 9.816 s | 1.496 s | 6.56x |
-| 21 bases + 2 stats, PGEN | 7.726 s | 1.072 s | 7.21x | 8.153 s | 1.755 s | 4.64x |
+| 1 basis + 2 stats, BED | 3.137 s | 0.294 s | 10.67x | 3.477 s | 0.905 s | 3.84x |
+| 21 bases + 2 stats, BED | 9.413 s | 0.821 s | 11.47x | 9.816 s | 1.482 s | 6.63x |
+| 21 bases + 2 stats, PGEN | 7.726 s | 1.047 s | 7.38x | 8.153 s | 1.725 s | 4.73x |
 
 Every A100 output was byte-identical to its CPU control. The integration test
 also compares CUDA BED and PGEN with the scalar CPU reference after subsetting,
@@ -702,10 +703,14 @@ reordering, and masking samples. A lower-level test covers both encodings with
 An exact production-engine probe on the T4 used N=500,000, 256-variant pinned
 batches, and identity sample order. After GPU clock warm-up, packed transfer,
 allele-frequency and missingness calculation, centering, scoring, and result
-transfer projected to 43.3-43.7 seconds per million variants with 3 vectors and
-211.2 seconds with 23 vectors. These are scorer-only feasibility measurements,
-not end-to-end file timings. A four-way transfer/compute pipeline slowed the
-3-vector case; a two-way pipeline was neutral, so neither was retained.
+transfer projected to 36.3-36.7 seconds per million variants with 3 vectors and
+203.9 seconds with 23 vectors. Bitwise population counts compute identity-order
+hardcall summaries directly from packed 32-bit words; compared with the prior
+sample-wise summary kernel this reduced the warm 3-vector scorer by about 16%
+and the 23-vector scorer by about 3.5%. These are scorer-only feasibility
+measurements, not end-to-end file timings. A four-way transfer/compute pipeline
+slowed the 3-vector case; a two-way pipeline was neutral, so neither was
+retained.
 
 Dense BGEN dosage scoring was also implemented and tested experimentally. On
 the paired A100 real-LD workload it changed readout only from 24.061 to 23.052

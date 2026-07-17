@@ -1,0 +1,3 @@
+scenario	input	samples	variants	device_cache_gib	host_cache_gib	disk_suffix_gib	setup_s	init_s	linreg_s	swap_bytes	notes
+host_cache_half	STEP0_CACHE	500000	1000000	32.1269	41.7233	42.5652	2.51983	392.920	152.343	0	paired current-binary control at prior automatic host limit; one pinned CPU core
+host_cache_60	STEP0_CACHE	500000	1000000	32.1269	59.9623	24.3261	2.37847	398.866	98.3622	0	paired current-binary stress point; about 20 GiB remained available; one pinned CPU core

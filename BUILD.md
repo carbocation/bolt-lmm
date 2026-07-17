@@ -116,7 +116,7 @@ cache, CUDA also retains a bounded part of the remaining packed matrix in
 ordinary host RAM. The retained range starts immediately after the device
 cache and is populated during marker initialization, avoiding another scratch-
 disk read. `--cudaHostCacheGiB N` sets its limit, `0` disables it for minimum
-memory use, and the default `-1` uses at most one half of physical RAM. This
+memory use, and the default `-1` uses at most two thirds of physical RAM. This
 cache is not page-locked; the two pinned streaming blocks remain the only
 long-lived pinned host allocation.
 

@@ -319,6 +319,12 @@ Times are BOLT's analysis timer:
 | N=500,000, M=1,024, D=1, one VC, coarse 3 trials | -- | 74.09 s | 7.13 s | 10.4x | -- |
 | N=32,768, M=16,384, D=2, two VCs, coarse 3 trials | -- | 251.83 s | 7.57 s | 33.3x | -- |
 
+Converting the first rung to PGEN and running it directly, without a Stage 0
+cache, took 3.85 seconds with CUDA on warm filesystem pages. Its estimates and
+CG counts matched the BED and upstream rows at every printed digit. This small
+matrix fit entirely in the A100 device cache; the low-level suite separately
+checks uncached streaming and retained-host-cache execution.
+
 The N=500,000 row validates target sample stride, vector transfers, and memory
 behavior. Its 1,024-SNP GRM is deliberately bounded and low-rank, so it must not
 be presented as an end-to-end N=500,000 by M=1,000,000 scientific analysis.

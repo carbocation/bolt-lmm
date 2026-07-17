@@ -104,11 +104,10 @@ namespace LMM {
       const long double physicalBytes =
         static_cast<long double>(pages) * static_cast<long double>(pageBytes);
       if (physicalBytes > std::numeric_limits<uint64>::max())
-        return (std::numeric_limits<uint64>::max() / 3) * 2;
-      // Leave one third of RAM for model vectors, mapped-file working pages,
-      // and the operating system while retaining more of the repeatedly read
-      // genotype suffix than the previous one-half cap.
-      return static_cast<uint64>(physicalBytes * (2.0L / 3.0L));
+        return static_cast<uint64>(std::numeric_limits<uint64>::max() * 0.72L);
+      // The target-shape stress run retained 71.8% without swap. Keep 28% for
+      // model vectors, mapped-file working pages, and the operating system.
+      return static_cast<uint64>(physicalBytes * 0.72L);
     }
 
     bool allocateSharedPackedHostCache(const uchar *hostGenotypes, uint64 M,

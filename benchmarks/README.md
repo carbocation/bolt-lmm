@@ -166,8 +166,8 @@ reduces the bytes reread on every subsequent pass:
 | 7.987 GiB | 19.368 s | 48.0% |
 
 The retained range is filled during the first marker-initialization scan, so
-its disk read is a one-time cost. The automatic limit is two thirds of physical
-RAM (about 55.6 GiB on the 83 GiB A100 VM); use
+its disk read is a one-time cost. The automatic limit is 72% of physical RAM
+(about 60.1 GiB on the 83 GiB A100 VM); use
 `--cudaHostCacheGiB=0` for the previous minimum-memory behavior. An end-to-end
 file-backed PGEN run with half of its matrix retained produced the same
 byte-identical Stage 1 model as both the no-host-cache run and the prior CUDA
@@ -186,11 +186,11 @@ exact target fixture. Retaining 41.723 GiB on the host left a 42.565 GiB disk
 suffix and took 152.343 seconds for the controlled LINREG traversal. Retaining
 59.962 GiB left 24.326 GiB on disk and took 98.362 seconds, a 35.4% reduction;
 marker initialization was neutral at 392.9 versus 398.9 seconds. The larger
-run had about 20 GiB available at peak and used no swap. The new two-thirds
-automatic limit rounds to 55.611 GiB on this VM, leaving a 28.677 GiB suffix:
-32.6% fewer repeated disk bytes than the prior automatic limit. Interpolation
-between the paired measurements predicts about 111 seconds per traversal, a
-roughly 27% reduction. Raw measurements are in
+run had about 20 GiB available at peak and used no swap. The 72% automatic
+limit matches this stress-tested point, leaving a roughly 24.2 GiB suffix. Its
+98.4-second traversal is about 11.6% faster than the 111-second traversal
+projected for the previous two-thirds policy and 35.4% faster than the paired
+half-RAM control. Raw measurements are in
 `results/a100_stage1_target_cache.tsv`.
 
 LINREG is used here only as a controlled one-traversal timer. The intended
@@ -212,10 +212,9 @@ main batch and second decoded block during a fold.
 
 Based on the measured 27.299 GiB device cache with 1,024-SNP blocks, the smaller
 block raises automatic device retention to about 32.114 GiB on this A100. With
-the VM's 55.611 GiB automatic host cache, the disk-backed suffix of the exact
-116.415 GiB packed matrix falls from 33.505 to 28.690 GiB: 14.4% fewer disk
-bytes per repeated genotype traversal. These are memory-accounting projections;
-the preceding section reports the paired target-scale traversal measurements.
+the VM's roughly 60.1 GiB automatic host cache, the disk-backed suffix of the
+exact 116.415 GiB packed matrix falls to about 24.2 GiB. The preceding section
+reports the paired target-scale traversal measurements.
 
 Six interleaved runs on the fully cached 131,072-sample by 16,384-variant PGEN
 fixture checked the launch-overhead tradeoff on the complete spike-and-slab

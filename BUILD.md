@@ -59,6 +59,15 @@ artifact is about 116.4 GiB. Staging it afresh must sustain more than about
 with the measured 8 minute 46 second conversion saving. If the cache must be
 built or transferred for each analysis, use direct PGEN ingestion instead.
 
+## Numerical compatibility options
+
+Stage 1 retains the upstream v2.5 cold starts for variance-component
+conjugate-gradient solves and the final variational-Bayes fit. The optional
+`--warmStartVarianceCG` and `--warmStartFinalVB` flags enable faster alternate
+initializations that can change output at the default convergence tolerances.
+They are opt-in for both CPU and CUDA builds; CUDA acceleration does not enable
+them automatically.
+
 ## macOS on Apple Silicon
 
 Apple Accelerate is the default linear-algebra backend. Homebrew's OpenBLAS can

@@ -121,6 +121,15 @@ that only need mixed-model results can pass `--noLinreg` in Stage 1 to avoid
 that extra genotype traversal. Stage 2 will then omit `P_LINREG` while retaining
 `P_BOLT_LMM_INF` and, when the spike-and-slab model is fitted, `P_BOLT_LMM`.
 
+Stage 1 uses the upstream v2.5 cold-start behavior for variance-component
+conjugate-gradient solves and the final variational-Bayes fit by default. Two
+performance experiments remain available explicitly as
+`--warmStartVarianceCG` and `--warmStartFinalVB`. These options change solver
+initialization and can change reported statistics at the existing convergence
+tolerances, so they should be used only when that numerical-output tradeoff has
+been evaluated for the analysis. They are never enabled implicitly by a CPU or
+CUDA build.
+
 Stage 2 reloads that artifact and streams the variants to test:
 
 ```sh

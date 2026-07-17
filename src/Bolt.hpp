@@ -318,7 +318,8 @@ namespace LMM {
      */
     double estLogDelta(double *sigma2K, double HinvPhiCovCompVec[],
 		       const std::vector <double> &pheno, int MCtrials,
-		       double logDeltaTol, int CGmaxIters, double CGtol, int seed, bool allowh2g01)
+		       double logDeltaTol, int CGmaxIters, double CGtol, int seed,
+		       bool allowh2g01, bool warmStartVarianceCG)
       const;
 
     std::vector <double> reEstLogDeltas(const std::vector <double> &pheno, double logDeltaEst,

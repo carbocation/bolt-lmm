@@ -256,6 +256,10 @@ namespace LMM {
        "maximum retained host cache for file-backed CUDA genotypes in GiB "
        "(-1 = automatic, 0 = disabled)")
       ("noLinreg", "skip LINREG statistics in Stage 1 LMM association analysis")
+      ("warmStartVarianceCG",
+       "warm-start variance-component CG solves (opt-in; may change numerical output)")
+      ("warmStartFinalVB",
+       "warm-start final variational-Bayes fit from CV effects (opt-in; may change P_BOLT_LMM)")
       ("covarMaxLevels", po::value<int>(&covarMaxLevels)->default_value(10),
        "an error-check: maximum number of levels for a categorical covariate")
       ("maxBgenVariantsToScan", po::value<uint>(&maxBgenVariantsToScan)->default_value(100000),
@@ -463,8 +467,24 @@ namespace LMM {
       lmmBayesMCMC = vm.count("lmmBayesMCMC");
       lmmInf = vm.count("lmmInfOnly") || lmmBayes || lmmBayesMCMC; // Bayes needs inf for calib
       noLinreg = vm.count("noLinreg");
+      warmStartVarianceCG = vm.count("warmStartVarianceCG");
+      warmStartFinalVB = vm.count("warmStartFinalVB");
       if (noLinreg && (stage != 1 || reml || !lmmInf)) {
 	cerr << "ERROR: --noLinreg requires Stage 1 LMM association analysis" << endl;
+	return false;
+      }
+      if (warmStartVarianceCG && (stage != 1 || (!reml && !lmmInf))) {
+	cerr << "ERROR: --warmStartVarianceCG requires Stage 1 LMM or REML analysis" << endl;
+	return false;
+      }
+      if (warmStartFinalVB && (stage != 1 || !lmmBayes)) {
+	cerr << "ERROR: --warmStartFinalVB requires Stage 1 variational-Bayes LMM analysis"
+	     << endl;
+	return false;
+      }
+      if (warmStartFinalVB && pEst != BoltParams::MIX_PARAM_ESTIMATE_FLAG &&
+	  varFrac2Est != BoltParams::MIX_PARAM_ESTIMATE_FLAG) {
+	cerr << "ERROR: --warmStartFinalVB requires mixture-parameter cross-validation" << endl;
 	return false;
       }
       if (vm.count("cuda") && vm.count("no-cuda")) {

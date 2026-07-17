@@ -544,7 +544,7 @@ int main(int argc, char *argv[]) {
 	double sigma2Kest = params.h2gGuess, logDeltaEst;
 	logDeltaEst = bolt.estLogDelta(&sigma2Kest, HinvPhiCovCompVec, pheno, remlMCtrialsGuess,
 				       logDeltaTol, params.maxIters, params.CGtol, params.seed,
-				       params.allowh2g01);
+				       params.allowh2g01, params.warmStartVarianceCG);
 	double h2all = 1 / (1 + exp(logDeltaEst)); // not quite right b/c of proj, but estimate ok
 	cout << "h2 with all VCs:     " << h2all << endl;
 
@@ -638,7 +638,7 @@ int main(int argc, char *argv[]) {
     double sigma2Kest = params.h2gGuess, logDeltaEst; // variance parameters to estimate
     logDeltaEst = bolt.estLogDelta(&sigma2Kest, HinvPhiCovCompVec, pheno, params.h2EstMCtrials,
 				   logDeltaTol, params.maxIters, CGtolEst, params.seed,
-				   params.allowh2g01);
+				   params.allowh2g01, params.warmStartVarianceCG);
 
     cout << "Time for fitting variance components = " << timer.update_time() << " sec" << endl
 	 << endl;
@@ -831,7 +831,7 @@ int main(int argc, char *argv[]) {
 	  (&f2Est, &pEst, &predBoost, pheno, logDeltaEst, sigma2Kest, params.CVfoldsSplit,
 	   params.CVfoldsCompute, params.CVnoEarlyExit, predBoostMin, useMCMCinCV,
 	   maxItersCV, params.approxLLtol, params.mBlockMultX, params.Nautosomes,
-	   params.lmmBayes ? &warmRawEffects : NULL); // TODO: change MCMC param back to VB?
+	   params.warmStartFinalVB && params.lmmBayes ? &warmRawEffects : NULL);
 	if (predBoost < predBoostMin && !params.lmmForceNonInf) {
 	  cout << "Bayesian non-infinitesimal model does not fit substantially better" << endl;
 	  cout << "=> Not computing non-inf assoc stats (to override, use --lmmForceNonInf)"
@@ -856,7 +856,8 @@ int main(int argc, char *argv[]) {
 	(bolt.computeLmmBayes(pheno, logDeltas, sigma2Ks, f2Est, pEst, false, params.genWindow,
 			      params.physWindow, params.maxIters, params.approxLLtol,
 			      retroData[lmmInfInd].stats, LDscores, LDscoresChip,
-			      warmRawEffects.empty() ? NULL : &warmRawEffects));
+			      params.warmStartFinalVB && !warmRawEffects.empty()
+			      ? &warmRawEffects : NULL));
       cout << endl << "Time for computing Bayesian mixed model assoc stats = "
 	   << timer.update_time() << " sec" << endl << endl;
     }

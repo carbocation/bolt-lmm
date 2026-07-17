@@ -386,6 +386,11 @@ available through shared high-throughput storage.
 
 ## Variance-component CG warm starts
 
+This optimization is now explicitly enabled with `--warmStartVarianceCG`.
+Cold starts matching the upstream v2.5 numerical path are the default because
+the changed CG trajectory can change output at the existing residual tolerance.
+The measurements below were collected with the warm start enabled.
+
 The h2 secant search repeatedly solves closely related systems at nearby
 log(delta) values. Retaining the previous solution as the next conjugate-
 gradient start reduced the real 131,072-sample CUDA fixture's variance phase
@@ -414,10 +419,16 @@ otherwise unchanged.
 
 ## Final variational-Bayes warm start
 
-When mixture parameters are selected by cross-validation, the fitted effects
-from the winning model are now reused to initialize the final LOCO
-spike-and-slab fit. Effects are retained in raw per-allele units, averaged
-across every computed fold, and converted to the full-cohort normalization.
+This optimization is now explicitly enabled with `--warmStartFinalVB`. The
+upstream v2.5 zero initialization is the default because variational-Bayes
+initialization can change `P_BOLT_LMM` at the existing approximate-likelihood
+tolerance. The measurements below were collected with the warm start enabled.
+
+When mixture parameters are selected by cross-validation and
+`--warmStartFinalVB` is supplied, the fitted effects from the winning model are
+reused to initialize the final LOCO spike-and-slab fit. Effects are retained in
+raw per-allele units, averaged across every computed fold, and converted to the
+full-cohort normalization.
 Each LOCO model applies its own SNP mask, and BOLT explicitly constructs the
 matching initial `y-X*beta` residual. This initialization costs one genotype
 pass and is used only for variational Bayes, not MCMC. Fits with user-supplied
@@ -508,9 +519,11 @@ are expected to use AVX-capable x86 hosts.
 
 After the PGEN, warm-start, and Bayesian-factor changes above, a fresh pinned
 profile used the 8,192-sample by 16,384-variant real-reference fixture with
-`--noLinreg`. End-to-end Stage 1 took 35.26 seconds: 8.64 seconds for variance
-fitting, 9.86 seconds for infinitesimal scoring, 11.72 seconds for mixture
-estimation, and 4.05 seconds for final spike-and-slab scoring.
+`--noLinreg`, `--warmStartVarianceCG`, and `--warmStartFinalVB`. End-to-end
+Stage 1 took 35.26 seconds: 8.64 seconds for variance fitting, 9.86 seconds for
+infinitesimal scoring, 11.72 seconds for mixture estimation, and 4.05 seconds
+for final spike-and-slab scoring. This historical performance profile therefore
+does not represent the now-default upstream-compatible cold-start path.
 
 The main executable's profile attributed 1,425,498 calls to packed-genotype
 expansion: 589,824 from the CG matrix multiply and 671,744 from variational

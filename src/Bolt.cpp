@@ -2524,9 +2524,13 @@ namespace LMM {
   double Bolt::estLogDelta(double *sigma2Kbest, double HinvPhiCovCompVec[],
 			   const vector <double> &pheno, int MCtrials,
 			   double logDeltaTol, int CGmaxIters, double CGtol, int seed,
-			   bool allowh2g01) const {
+			   bool allowh2g01, bool warmStartVarianceCG) const {
 
     setMCtrials(MCtrials);
+
+    if (warmStartVarianceCG)
+      cout << "Warm-starting variance-component CG solves (--warmStartVarianceCG)"
+	   << endl << endl;
 
     //double logDeltaBest = 0; double bestAbsF = 1e9;
     const double MAX_ABS_LOG_DELTA = 10;
@@ -2541,8 +2545,8 @@ namespace LMM {
 			       &MprojMask, 1, MCtrials, seed);
 
     VarCompData bestVCs;
-    double *reusableHinvRhsCovCompVecs =
-      ALIGNED_MALLOC_DOUBLES((MCtrials+1) * (Nstride+Cstride));
+    double *reusableHinvRhsCovCompVecs = warmStartVarianceCG
+      ? ALIGNED_MALLOC_DOUBLES((MCtrials+1) * (Nstride+Cstride)) : NULL;
     
     VarCompData prevVCs; prevVCs.logDelta = h2ToLogDelta(*sigma2Kbest);
     updateBestMCscalingF(bestVCs/*sigma2Kbest, &logDeltaBest, &bestAbsF*/, HinvPhiCovCompVec,
@@ -2552,7 +2556,7 @@ namespace LMM {
     
     VarCompData curVCs; curVCs.logDelta = h2ToLogDelta(prevVCs.fJacks.back() < 0 ?
 						       (*sigma2Kbest)/2 : (*sigma2Kbest)*2);
-    bool useStartVecs = fabs(curVCs.logDelta - reusableLogDelta)
+    bool useStartVecs = warmStartVarianceCG && fabs(curVCs.logDelta - reusableLogDelta)
       <= MAX_WARM_START_LOG_DELTA_DIFF;
     updateBestMCscalingF(bestVCs/*sigma2Kbest, &logDeltaBest, &bestAbsF*/, HinvPhiCovCompVec,
 				       curVCs/*xCur*/, yGenCovCompVecs, yEnvUnscaledCovCompVecs, MCtrials,
@@ -2605,7 +2609,7 @@ namespace LMM {
       
       prevVCs = curVCs;
       curVCs = nextVCs;
-      useStartVecs = fabs(curVCs.logDelta - reusableLogDelta)
+      useStartVecs = warmStartVarianceCG && fabs(curVCs.logDelta - reusableLogDelta)
 	<= MAX_WARM_START_LOG_DELTA_DIFF;
       updateBestMCscalingF(bestVCs/*sigma2Kbest, &logDeltaBest, &bestAbsF*/, HinvPhiCovCompVec,
 				  curVCs/*xCur*/,
@@ -2657,7 +2661,8 @@ namespace LMM {
 
     ALIGNED_FREE(yGenCovCompVecs);
     ALIGNED_FREE(yEnvUnscaledCovCompVecs);
-    ALIGNED_FREE(reusableHinvRhsCovCompVecs);
+    if (reusableHinvRhsCovCompVecs != NULL)
+      ALIGNED_FREE(reusableHinvRhsCovCompVecs);
 
     *sigma2Kbest = bestVCs.sigma2K;
     return bestVCs.logDelta;//logDeltaBest;

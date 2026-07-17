@@ -353,6 +353,35 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  const uint64 outVCstride = (B+1) * NCstride;
+  const double geneticScales[remlVCs+1] = {0, 0.35, 0.8};
+  std::vector<double> expectedGenByVC(remlVCs*outVCstride, 0);
+  std::vector<double> observedGenByVC(remlVCs*outVCstride, 0);
+  for (uint64 m = 0; m < M; m++) {
+    const uint64 vc = snpVCnums[m];
+    if (!projMaskSnps[m] || !vc)
+      continue;
+    for (uint64 b = 0; b < B; b++)
+      for (uint64 nc = 0; nc < NCstride; nc++) {
+        const double xPositive = nc < Nstride ? xNeg[m*NCstride+nc] :
+                                 -xNeg[m*NCstride+nc];
+        expectedGenByVC[(vc-1)*outVCstride+b*NCstride+nc] +=
+          xPositive * coefficients[m*B+b] * geneticScales[vc];
+      }
+  }
+  cuda.multXByVarianceComponent(observedGenByVC.data(), outVCstride,
+                                coefficients.data(), snpVCnums, geneticScales,
+                                remlVCs, B);
+  double maxGenByVCError = 0;
+  for (uint64 i = 0; i < observedGenByVC.size(); i++)
+    maxGenByVCError = std::max(maxGenByVCError,
+                               std::fabs(observedGenByVC[i] - expectedGenByVC[i]));
+  if (maxGenByVCError > 1e-11) {
+    std::cerr << "CUDA REML pseudo-phenotype parity failure: max absolute error = "
+              << maxGenByVCError << std::endl;
+    return 1;
+  }
+
   std::vector<double> expectedMultXtrans(M*B, 0), observedMultXtrans(M*B);
   for (uint64 m = 0; m < M; m++)
     for (uint64 b = 0; b < B; b++)

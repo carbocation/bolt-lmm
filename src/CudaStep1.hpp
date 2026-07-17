@@ -48,6 +48,9 @@ namespace LMM {
     void multThetaMinusIs(double outCovCompVecs[], const double inCovCompVecs[],
                           const uchar snpVCnums[], const double vcScales[],
                           uint64 VCs, uint64 B, double coeffI);
+    void multXByVarianceComponent(double outCovCompVecs[], uint64 outVCstride,
+                                  const double coefficients[], const uchar snpVCnums[],
+                                  const double vcScales[], uint64 VCs, uint64 B);
     void multX(double outCovCompVecs[], const double coefficients[], uint64 B,
                bool applyIndivMask, bool positiveCovariateComponents);
     void multXtrans(double outSnpProducts[], const double inCovCompVecs[], uint64 B);

@@ -806,6 +806,27 @@ namespace LMM {
 			 phenoCovCompVecs + j*(Nstride+Cstride)) / (Nused-Cindep);
 
     // generate yGen: VCs x (MCtrials+1) x DxNC with rand betas generated on-the-fly!
+#ifdef BOLT_USE_CUDA
+    if (cudaStep1 != NULL) {
+      const uint64 B = MCtrials * D;
+      double *betas = ALIGNED_MALLOC_DOUBLES(M * B);
+      memset(betas, 0, M * B * sizeof(betas[0]));
+      for (uint64 m = 0; m < M; m++)
+	if (projMaskSnps[m] && snpVCnums[m])
+	  for (uint64 b = 0; b < B; b++)
+	    betas[m*B+b] = randn();
+      vector <double> vcScales(VCs+1);
+      for (int vc = 1; vc <= VCs; vc++)
+	vcScales[vc] = sqrt(vcXscale2s[vc]);
+      const uint64 vcStride = (MCtrials+1) * DxNC;
+      cudaStep1->multXByVarianceComponent(yEnvGenUnscaledMultiCovCompVecs + vcStride,
+					  vcStride, betas, snpVCnums, &vcScales[0],
+					  VCs, B);
+      ALIGNED_FREE(betas);
+    }
+    else
+#endif
+    {
     double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
     double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work));
     double *betas_m = ALIGNED_MALLOC_DOUBLES(MCtrials*D);
@@ -835,6 +856,7 @@ namespace LMM {
     ALIGNED_FREE(betas_m);
     ALIGNED_FREE(work);
     ALIGNED_FREE(snpCovCompVec);
+    }
 
     // generate yEnv: first MCtrials x (Nstride+Cstride) block of output array
     // (last 1 x (Nstride+Cstride) is real data phenotype)

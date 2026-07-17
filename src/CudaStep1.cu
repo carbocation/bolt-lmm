@@ -407,6 +407,22 @@ namespace LMM {
       routed[index] = snpVCnums[m0 + mPlus] == vc ? Xtrans[mPlus * B + b] : 0;
     }
 
+    __global__ void routeGeneticCoefficients(double routed[], const double coefficients[],
+                                              const uchar snpVCnums[],
+                                              const double vcScales[], uint64 m0,
+                                              uint64 blockSize, uint64 VCs, uint64 B) {
+      const uint64 VB = VCs * B;
+      const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (index >= blockSize * VB)
+        return;
+      const uint64 mPlus = index / VB;
+      const uint64 vb = index - mPlus * VB;
+      const uint64 vc = vb / B + 1;
+      const uint64 b = vb % B;
+      routed[index] = snpVCnums[m0 + mPlus] == vc ?
+        coefficients[mPlus * B + b] * vcScales[vc] : 0;
+    }
+
     __global__ void finishThetaMinusIs(double out[], const double in[],
                                         const double vcScales[], uint64 NCstride,
                                         uint64 VCs, uint64 B, double coeffI) {
@@ -1037,6 +1053,71 @@ namespace LMM {
                 "finish CUDA REML derivative multiply");
     }
 
+    void multiplyXByVarianceComponent(double out[], uint64 outVCstride,
+                                      const double hostCoefficients[],
+                                      const uchar snpVCnums[], const double vcScales[],
+                                      uint64 VCs, uint64 B) {
+      const uint64 VB = VCs * B;
+      ensureBatchCapacity(VB);
+      ensureRemlMatrixCapacity(VCs + 1);
+      checkCuda(cudaMemsetAsync(outCovCompVecs, 0,
+                                VB * NCstride * sizeof(*outCovCompVecs), computeStream),
+                "clear CUDA REML genetic pseudo-phenotypes");
+      checkCuda(cudaMemcpyAsync(batchMaskSnps, snpVCnums, M * sizeof(*batchMaskSnps),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy REML pseudo-phenotype SNP components to CUDA");
+      checkCuda(cudaMemcpyAsync(remlMatrices, vcScales,
+                                (VCs + 1) * sizeof(*remlMatrices),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy REML pseudo-phenotype scales to CUDA");
+
+      const unsigned int threads = 256;
+      const double one = 1.0;
+      for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
+        const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
+        const uchar *packedInput = preparePackedBlock(m0, blockSize);
+        checkCuda(cudaMemcpyAsync(Xtrans, hostCoefficients + m0 * B,
+                                  blockSize * B * sizeof(*Xtrans),
+                                  cudaMemcpyHostToDevice, computeStream),
+                  "copy REML random SNP coefficients to CUDA");
+
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                         computeStream>>>
+          (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
+           nullptr, m0, blockSize, Nstride, Cstride);
+        checkCuda(cudaGetLastError(), "launch CUDA REML pseudo-phenotype decoder");
+        recordPackedBlockConsumed();
+        routeGeneticCoefficients<<<numBlocks(blockSize * VB, threads), threads, 0,
+                                   computeStream>>>
+          (scaledXtrans, Xtrans, batchMaskSnps, remlMatrices, m0, blockSize, VCs, B);
+        checkCuda(cudaGetLastError(), "launch CUDA REML pseudo-phenotype routing");
+        if (Cstride) {
+          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads, 0,
+                                    computeStream>>>
+            (snpBlock, blockSize, Nstride, Cstride);
+          checkCuda(cudaGetLastError(),
+                    "launch CUDA REML pseudo-phenotype covariate sign flip");
+        }
+
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_T,
+                                static_cast<int>(NCstride), static_cast<int>(VB),
+                                static_cast<int>(blockSize), &one, snpBlock,
+                                static_cast<int>(NCstride), scaledXtrans,
+                                static_cast<int>(VB), &one, outCovCompVecs,
+                                static_cast<int>(NCstride)),
+                    "cuBLAS REML pseudo-phenotype X multiply");
+      }
+
+      const size_t vcBytes = B * NCstride * sizeof(*outCovCompVecs);
+      for (uint64 vc = 0; vc < VCs; vc++)
+        checkCuda(cudaMemcpyAsync(out + vc * outVCstride,
+                                  outCovCompVecs + vc * B * NCstride, vcBytes,
+                                  cudaMemcpyDeviceToHost, computeStream),
+                  "copy CUDA REML genetic pseudo-phenotypes to host");
+      checkCuda(cudaStreamSynchronize(computeStream),
+                "finish CUDA REML pseudo-phenotype generation");
+    }
+
     void multiplyX(double out[], const double hostCoefficients[], uint64 B,
                    bool applyIndivMask, bool positiveCovariateComponents) {
       ensureBatchCapacity(B);
@@ -1524,6 +1605,14 @@ namespace LMM {
                                    uint64 VCs, uint64 B, double coeffI) {
     impl->multiplyThetaMinusIs(outCovCompVecs, inCovCompVecs, snpVCnums, vcScales,
                                VCs, B, coeffI);
+  }
+
+  void CudaStep1::multXByVarianceComponent(double outCovCompVecs[], uint64 outVCstride,
+                                           const double coefficients[],
+                                           const uchar snpVCnums[],
+                                           const double vcScales[], uint64 VCs, uint64 B) {
+    impl->multiplyXByVarianceComponent(outCovCompVecs, outVCstride, coefficients,
+                                       snpVCnums, vcScales, VCs, B);
   }
 
   void CudaStep1::multX(double outCovCompVecs[], const double coefficients[], uint64 B,

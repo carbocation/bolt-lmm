@@ -871,10 +871,11 @@ namespace LMM {
       checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA X transpose multiply");
     }
 
-    void beginBayes(const double yResid[], const uchar activeMask[], uint64 B) {
+    void beginBayes(const double yResid[], const uchar activeMask[], uint64 B,
+                    uint64 Bleft) {
       ensureBatchCapacity(B);
       checkCuda(cudaMemcpyAsync(inCovCompVecs, yResid,
-                                B * NCstride * sizeof(*inCovCompVecs),
+                                Bleft * NCstride * sizeof(*inCovCompVecs),
                                 cudaMemcpyHostToDevice, computeStream),
                 "copy Bayesian residuals to CUDA");
       checkCuda(cudaMemcpyAsync(activeMaskSnps, activeMask, M * sizeof(*activeMaskSnps),
@@ -964,9 +965,9 @@ namespace LMM {
       checkCuda(cudaStreamSynchronize(computeStream), "finish Bayesian residual update");
     }
 
-    void endBayes(double hostYResid[], uint64 B) {
+    void endBayes(double hostYResid[], uint64 Bleft) {
       checkCuda(cudaMemcpyAsync(hostYResid, inCovCompVecs,
-                                B * NCstride * sizeof(*inCovCompVecs),
+                                Bleft * NCstride * sizeof(*inCovCompVecs),
                                 cudaMemcpyDeviceToHost, computeStream),
                 "copy Bayesian residuals from CUDA");
       checkCuda(cudaStreamSynchronize(computeStream), "finish Bayesian iteration");
@@ -1271,8 +1272,9 @@ namespace LMM {
   }
 
   void CudaStep1::beginBayesIteration(const double yResidCovCompVecs[],
-                                      const uchar activeMaskSnps[], uint64 B) {
-    impl->beginBayes(yResidCovCompVecs, activeMaskSnps, B);
+                                      const uchar activeMaskSnps[], uint64 B,
+                                      uint64 Bleft) {
+    impl->beginBayes(yResidCovCompVecs, activeMaskSnps, B, Bleft);
   }
 
   void CudaStep1::computeBayesBlock(double XtransResids[], double snpDots[],
@@ -1287,8 +1289,8 @@ namespace LMM {
     impl->updateBayes(betaBlockUpdates, blockSize, B, Bleft);
   }
 
-  void CudaStep1::endBayesIteration(double yResidCovCompVecs[], uint64 B) {
-    impl->endBayes(yResidCovCompVecs, B);
+  void CudaStep1::endBayesIteration(double yResidCovCompVecs[], uint64 Bleft) {
+    impl->endBayes(yResidCovCompVecs, Bleft);
   }
 
 }

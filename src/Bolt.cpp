@@ -918,6 +918,11 @@ namespace LMM {
 
     int usedItersMCMC = 0;
     bool allConverged;
+#if defined(BOLT_USE_CUDA) && !defined(SINGLE_M_UPDATE)
+    // Device residuals remain current after a readback. Re-upload only when
+    // CPU-side convergence compaction permutes their active prefix.
+    bool cudaBayesUpload = true;
+#endif
 
     for (int iter = 0; iter < maxIters; iter++) {
 
@@ -934,11 +939,12 @@ namespace LMM {
       /***** BEGIN BIG ITERATION *****/
 
 #if defined(BOLT_USE_CUDA) && !defined(SINGLE_M_UPDATE)
-      if (cudaStep1 != NULL) {
+      if (cudaStep1 != NULL && cudaBayesUpload) {
 #ifdef MEASURE_DGEMM
 	const unsigned long long cudaTsc = Timer::rdtsc();
 #endif
-	cudaStep1->beginBayesIteration(yResidCovCompVecs, anyBatchMaskSnps, B);
+	cudaStep1->beginBayesIteration(yResidCovCompVecs, anyBatchMaskSnps, B, Bleft);
+	cudaBayesUpload = false;
 #ifdef MEASURE_DGEMM
 	dgemmTicks += Timer::rdtsc() - cudaTsc;
 #endif
@@ -1240,7 +1246,7 @@ namespace LMM {
 #ifdef MEASURE_DGEMM
 	const unsigned long long cudaTsc = Timer::rdtsc();
 #endif
-	cudaStep1->endBayesIteration(yResidCovCompVecs, B);
+	cudaStep1->endBayesIteration(yResidCovCompVecs, Bleft);
 #ifdef MEASURE_DGEMM
 	dgemmTicks += Timer::rdtsc() - cudaTsc;
 #endif
@@ -1308,6 +1314,9 @@ namespace LMM {
 		swapCovCompVecs(yResidCovCompVecs + b1*(Nstride+Cstride),
 				yResidCovCompVecs + b2*(Nstride+Cstride), snpCovCompVec);
 		swaps.push_back(std::make_pair(b1, b2));
+#if defined(BOLT_USE_CUDA) && !defined(SINGLE_M_UPDATE)
+		cudaBayesUpload = true;
+#endif
 		break;
 	      }
       }

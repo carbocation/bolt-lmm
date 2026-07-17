@@ -410,6 +410,23 @@ relative CUDA change was 10%, from 1.0e-7 to 1.1e-7, and no value crossed 5e-8.
 These small differences reflect the existing approximate-likelihood stopping
 criterion being reached from a different, much closer starting point.
 
+## CUDA Bayesian residual transfers
+
+The CUDA variational-Bayes loop keeps its residual vectors on the device.
+Previously, every iteration downloaded all residuals and then uploaded the
+same values again, even when the CPU had only read them to evaluate the
+existing convergence criterion. It also continued downloading rows belonging
+to models that had already converged. The optimized path skips an upload until
+the CPU actually permutes residual rows and transfers only the still-active
+prefix. The arithmetic and CPU convergence calculation are unchanged.
+
+Across two order-reversed pairs on the 131,072-sample fixture, median mixture
+fitting fell from 9.609 to 9.141 seconds (4.9%), final Bayesian fitting fell
+from 6.477 to 6.208 seconds (4.2%), and wall time fell from 27.42 to 26.895
+seconds (1.9%). All four Stage 1 model artifacts were byte-for-byte identical.
+The small end-to-end gain is retained because the implementation removes only
+redundant transfers and adds no alternate numerical path.
+
 ## Native x86 AVX genotype expansion
 
 Native x86 builds now expand each four-sample packed genotype lookup with one

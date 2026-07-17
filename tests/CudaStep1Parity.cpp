@@ -291,10 +291,10 @@ int main(int argc, char **argv) {
       }
   }
 
-  cuda.beginBayesIteration(residual.data(), activeMaskSnps, B);
+  cuda.beginBayesIteration(residual.data(), activeMaskSnps, B, B);
   cuda.computeBayesBlock(bayesXtrans.data(), snpDots.data(), M, 0, M, B, Bleft, true);
   cuda.updateBayesResidual(betaUpdates.data(), M, B, Bleft);
-  cuda.endBayesIteration(residual.data(), B);
+  cuda.endBayesIteration(residual.data(), Bleft);
 
   double maxBayesError = 0;
   for (uint64 m = 0; m < M; m++)

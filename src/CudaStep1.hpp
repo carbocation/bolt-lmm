@@ -45,13 +45,13 @@ namespace LMM {
     void multXtrans(double outSnpProducts[], const double inCovCompVecs[], uint64 B);
 
     void beginBayesIteration(const double yResidCovCompVecs[],
-                             const uchar activeMaskSnps[], uint64 B);
+                             const uchar activeMaskSnps[], uint64 B, uint64 Bleft);
     void computeBayesBlock(double XtransResids[], double snpDots[], uint64 snpDotsStride,
                            uint64 m0, uint64 blockSize, uint64 B, uint64 Bleft,
                            bool computeSnpDots);
     void updateBayesResidual(const double betaBlockUpdates[], uint64 blockSize,
                              uint64 B, uint64 Bleft);
-    void endBayesIteration(double yResidCovCompVecs[], uint64 B);
+    void endBayesIteration(double yResidCovCompVecs[], uint64 Bleft);
   };
 
 }

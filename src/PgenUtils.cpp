@@ -203,10 +203,10 @@ namespace LMM {
       // Two PGEN genotypes fit in a nibble. These tables let vpshufb count
       // nonmissing ALT alleles and missing calls while converting 128 calls
       // (32 packed bytes) at a time.
-      alignas(16) const uchar PGEN_NIBBLE_ALLELE_SUM[16] =
-        {0, 1, 2, 0, 1, 2, 3, 1, 2, 3, 4, 2, 0, 1, 2, 0};
-      alignas(16) const uchar PGEN_NIBBLE_MISSING_COUNT[16] =
-        {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 2};
+      // Low nibble: allele sum (maximum 4). High nibble: missing count
+      // (maximum 2). Adding two table results cannot carry between fields.
+      alignas(16) const uchar PGEN_NIBBLE_STATS[16] =
+        {0, 1, 2, 16, 1, 2, 3, 17, 2, 3, 4, 18, 16, 17, 18, 32};
 #endif
 
     }
@@ -423,10 +423,8 @@ namespace LMM {
       const __m256i lowBits = _mm256_set1_epi8(0x55);
       const __m256i highBits = _mm256_set1_epi8(static_cast<char>(0xaa));
       const __m256i nibbleMask = _mm256_set1_epi8(0x0f);
-      const __m256i alleleTable = _mm256_broadcastsi128_si256(
-        _mm_load_si128(reinterpret_cast<const __m128i *>(PGEN_NIBBLE_ALLELE_SUM)));
-      const __m256i missingTable = _mm256_broadcastsi128_si256(
-        _mm_load_si128(reinterpret_cast<const __m128i *>(PGEN_NIBBLE_MISSING_COUNT)));
+      const __m256i statsTable = _mm256_broadcastsi128_si256(
+        _mm_load_si128(reinterpret_cast<const __m128i *>(PGEN_NIBBLE_STATS)));
 
       for (; byte+32 <= fullBytes; byte += 32) {
 	const __m256i packed =
@@ -447,12 +445,12 @@ namespace LMM {
 	const __m256i lowNibbles = _mm256_and_si256(packed, nibbleMask);
 	const __m256i highNibbles = _mm256_and_si256(
 	  _mm256_srli_epi16(packed, 4), nibbleMask);
-	const __m256i byteAlleleSums = _mm256_add_epi8(
-	  _mm256_shuffle_epi8(alleleTable, lowNibbles),
-	  _mm256_shuffle_epi8(alleleTable, highNibbles));
-	const __m256i byteMissingCounts = _mm256_add_epi8(
-	  _mm256_shuffle_epi8(missingTable, lowNibbles),
-	  _mm256_shuffle_epi8(missingTable, highNibbles));
+	const __m256i byteStats = _mm256_add_epi8(
+	  _mm256_shuffle_epi8(statsTable, lowNibbles),
+	  _mm256_shuffle_epi8(statsTable, highNibbles));
+	const __m256i byteAlleleSums = _mm256_and_si256(byteStats, nibbleMask);
+	const __m256i byteMissingCounts = _mm256_and_si256(
+	  _mm256_srli_epi16(byteStats, 4), nibbleMask);
 	alleleSums = _mm256_add_epi64(alleleSums,
 				     _mm256_sad_epu8(byteAlleleSums, zero));
 	missingCounts = _mm256_add_epi64(missingCounts,

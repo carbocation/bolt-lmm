@@ -337,6 +337,13 @@ covers every packed input byte, including missing calls. On the 131,072-sample
 real-genotype PGEN fixture, the reverse-order warm-page pair fell from 1.41 to
 0.84 seconds (40.4%).
 
+A follow-up encoded each two-genotype nibble's allele sum and missing count in
+one byte. This replaced two lookup tables and four shuffles with one table and
+two shuffles. Across an order-reversed pair, the AVX2-v1 median was 15.355
+seconds and the combined-statistics median was 14.88 seconds, a further 3.1%
+reduction. It is retained despite the small incremental result because the
+implementation and dependency chain are simpler.
+
 This speedup applies to direct ingestion on every run and does not assume that
 a large converted cache has been transferred to the compute machine. The
 conversion work is O(NM); the bounded target-stride result is reported instead

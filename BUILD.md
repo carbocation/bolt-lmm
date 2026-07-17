@@ -14,6 +14,7 @@ legacy Intel/Linux release environments.
 - OpenMP for multithreading; a serial build is available when it is absent
 - One of Intel oneMKL, OpenBLAS, Apple Accelerate, or system BLAS/LAPACK
 - Optional: CUDA Toolkit with cuBLAS for Step 1 GPU acceleration
+- Optional: libdeflate for faster zlib-compressed layout-2 BGEN input
 
 ## Standard build
 
@@ -26,13 +27,19 @@ ctest --test-dir build --output-on-failure
 The executable is written to `build/bolt`. The equivalent convenience command
 is `make`; additional CMake options can be supplied through `CMAKE_ARGS`.
 
+libdeflate is detected automatically when its development headers and library
+are installed; otherwise BOLT retains its zlib decoder. Use
+`-DBOLT_LIBDEFLATE=ON` to require the accelerated decoder or
+`-DBOLT_LIBDEFLATE=OFF` to disable it explicitly. A nonstandard installation
+can be selected with `-DBOLT_LIBDEFLATE_ROOT=/path/to/libdeflate`.
+
 ## macOS on Apple Silicon
 
 Apple Accelerate is the default linear-algebra backend. Homebrew's OpenBLAS can
 be selected explicitly when reproducibility with Linux BLAS builds is useful:
 
 ```sh
-brew install cmake boost nlopt zstd libomp openblas
+brew install cmake boost nlopt zstd libdeflate libomp openblas
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$(brew --prefix)" \

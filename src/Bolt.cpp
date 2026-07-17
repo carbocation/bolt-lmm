@@ -40,6 +40,9 @@
 #include "OpenMpCompat.hpp"
 #include "zlib.h"
 #include "zstd.h"
+#ifdef BOLT_USE_LIBDEFLATE
+#include "libdeflate.h"
+#endif
 
 #include <boost/random.hpp>
 #include <boost/random/mersenne_twister.hpp>
@@ -3889,19 +3892,37 @@ namespace LMM {
    const string &allele0, double snpCovCompVec[], bool verboseStats,
    const vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
    double bgenMinMAF, double bgenMinINFO, int bgenMinMAC, bool bgenRefFirst,
-   Stage2VariantInfo *decodedVariant, bool *decoded) const {
+   libdeflate_decompressor *decompressor, Stage2VariantInfo *decodedVariant,
+   bool *decoded) const {
 
     if (decoded != NULL) *decoded = false;
+#ifndef BOLT_USE_LIBDEFLATE
+    (void) decompressor;
+#endif
 
     /********** decompress and check genotype probability block **********/
 
     //cout << "bufLen = " << bufLen << " zBufLen = " << zBufLen << endl;
     if (CompressedSNPBlocks == 1) {
+#ifdef BOLT_USE_LIBDEFLATE
+      if (decompressor != NULL) {
+	size_t actualLen = 0;
+	if (libdeflate_zlib_decompress(decompressor, zBuf, zBufLen, buf, bufLen,
+				       &actualLen) != LIBDEFLATE_SUCCESS || actualLen != bufLen) {
+	  cerr << "ERROR: libdeflate_zlib_decompress() failed" << endl;
+	  exit(1);
+	}
+      }
+      else {
+#endif
       uLongf destLen = bufLen;
       if (uncompress(buf, &destLen, zBuf, zBufLen) != Z_OK || destLen != bufLen) {
 	cerr << "ERROR: uncompress() failed" << endl;
 	exit(1);
       }
+#ifdef BOLT_USE_LIBDEFLATE
+      }
+#endif
     }
     else {
       if (ZSTD_decompress(buf, bufLen, zBuf, zBufLen) != bufLen) {
@@ -4130,7 +4151,7 @@ namespace LMM {
 			       bgenIndivInds, bgenIndivsIdentity, snpName, chrom, physpos,
 			       genpos, allele1, allele0, snpCovCompVec, verboseStats, retroData,
 			       domRecHetTest, bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst,
-			       NULL, NULL);
+			       NULL, NULL, NULL);
   }
 
   void Bolt::streamBgen2
@@ -4193,6 +4214,16 @@ namespace LMM {
 	for (uint n = 0; n < Nstride; n++) snpCovCompVecs[t][n] = -9;
       }
     vector < vector <uchar> > bufs(threads);
+    vector<libdeflate_decompressor *> decompressors(threads, NULL);
+#ifdef BOLT_USE_LIBDEFLATE
+    for (int t = 0; t < threads; t++) {
+      decompressors[t] = libdeflate_alloc_decompressor();
+      if (decompressors[t] == NULL) {
+	cerr << "ERROR: Unable to allocate libdeflate BGEN decompressor" << endl;
+	exit(1);
+      }
+    }
+#endif
     vector<Stage2VariantInfo> stage2Batch;
     stage2Batch.reserve(maxStage2BatchSize);
     Stage2ScoreWorkspace scoreWorkspace;
@@ -4331,7 +4362,7 @@ namespace LMM {
 				bgenIndivsIdentity, snpNames[b], chroms[b], bps[b], gps[b],
 				allele1s[b], allele0s[b], snpVector, verboseStats, retroData,
 				false, bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst,
-				&variantInfo, &decoded);
+				decompressors[0], &variantInfo, &decoded);
 	    if (decoded) {
 	      stage2Batch.push_back(variantInfo);
 	      if (stage2Batch.size() == maxStage2BatchSize) flushStage2Batch();
@@ -4345,12 +4376,12 @@ namespace LMM {
 	  for (int b = 0; b < B; b++) {
 	    int t = omp_get_thread_num();
 	    if (bufLens[b] > bufs[t].size()) bufs[t].resize(bufLens[b]);
-	    outStrs[b] = getSnpStatsBgen2(CompressedSNPBlocks, &bufs[t][0], bufLens[b], &zBufs[b][0],
-					zBufLens[b], Nbgen, bgenIndivInds, bgenIndivsIdentity,
-					snpNames[b], chroms[b],
-					bps[b], gps[b], allele1s[b], allele0s[b],
-					snpCovCompVecs[t], verboseStats, retroData, domRecHetTest,
-					bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst);
+	    outStrs[b] = decodeSnpStatsBgen2(
+	      CompressedSNPBlocks, &bufs[t][0], bufLens[b], &zBufs[b][0], zBufLens[b],
+	      Nbgen, bgenIndivInds, bgenIndivsIdentity, snpNames[b], chroms[b], bps[b],
+	      gps[b], allele1s[b], allele0s[b], snpCovCompVecs[t], verboseStats, retroData,
+	      domRecHetTest, bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst,
+	      decompressors[t], NULL, NULL);
 	  }
 
 	  for (int b = 0; b < B; b++)
@@ -4373,6 +4404,9 @@ namespace LMM {
     else
       for (int t = 0; t < threads; t++)
 	ALIGNED_FREE(snpCovCompVecs[t]);
+#ifdef BOLT_USE_LIBDEFLATE
+    for (int t = 0; t < threads; t++) libdeflate_free_decompressor(decompressors[t]);
+#endif
 
     fclose(fin);
     fout.close();

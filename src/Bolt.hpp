@@ -30,6 +30,8 @@
 #include "SnpData.hpp"
 #include "CovariateBasis.hpp"
 
+struct libdeflate_decompressor;
+
 namespace LMM {
 
 #ifdef BOLT_USE_CUDA
@@ -136,7 +138,8 @@ namespace LMM {
      const std::string &allele1, const std::string &allele0, double snpCovCompVec[],
      bool verboseStats, const std::vector<StatsDataRetroLOCO> &retroData,
      bool domRecHetTest, double bgenMinMAF, double bgenMinINFO, int bgenMinMAC,
-     bool bgenRefFirst, Stage2VariantInfo *decodedVariant, bool *decoded) const;
+     bool bgenRefFirst, ::libdeflate_decompressor *decompressor,
+     Stage2VariantInfo *decodedVariant, bool *decoded) const;
 
     inline void buildMaskedSnpNegCovCompVec(double snpCovCompVec[], uint64 m, double (*work)[4])
       const {

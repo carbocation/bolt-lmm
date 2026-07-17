@@ -237,6 +237,9 @@ int main(int argc, char *argv[]) {
 #ifdef BOLT_USE_CUDA
   cout << "Compiled with CUDA Step 1 acceleration" << endl;
 #endif
+#ifdef BOLT_USE_LIBDEFLATE
+  cout << "Compiled with libdeflate BGEN decompression" << endl;
+#endif
 #ifdef USE_MKL
   cout << "Compiled with USE_MKL: Intel Math Kernel Library linear algebra" << endl;
 #endif

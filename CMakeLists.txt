@@ -32,6 +32,10 @@ set(BOLT_SIMD "AUTO" CACHE STRING
   "Genotype decoding implementation: AUTO, SSE2, NEON, or SCALAR")
 set_property(CACHE BOLT_SIMD PROPERTY STRINGS AUTO SSE2 NEON SCALAR)
 
+set(BOLT_LIBDEFLATE "AUTO" CACHE STRING
+  "libdeflate acceleration for zlib-compressed BGEN: AUTO, ON, or OFF")
+set_property(CACHE BOLT_LIBDEFLATE PROPERTY STRINGS AUTO ON OFF)
+
 set(BOLT_CPU_TARGET "portable" CACHE STRING
   "CPU target: portable, native, or a compiler target such as x86-64-v3 or apple-m1")
 set(BOLT_CPU_TUNE "" CACHE STRING
@@ -46,12 +50,13 @@ set(BOLT_MKL_ROOT "" CACHE PATH "Root of an Intel oneMKL installation")
 set(BOLT_OPENBLAS_ROOT "" CACHE PATH "Root of an OpenBLAS installation")
 set(BOLT_NLOPT_ROOT "" CACHE PATH "Root of an NLopt installation")
 set(BOLT_ZSTD_ROOT "" CACHE PATH "Root of a zstd installation")
+set(BOLT_LIBDEFLATE_ROOT "" CACHE PATH "Root of a libdeflate installation")
 
 option(BOLT_USE_MKL_MALLOC "Use MKL's aligned allocator with the MKL backend" OFF)
 option(BOLT_WRAP_LEGACY_MEMCPY
   "Use BOLT's old-glibc memcpy symbol wrapper (Linux release compatibility only)" OFF)
 
-foreach(option_name IN ITEMS BOLT_BLAS BOLT_OPENMP BOLT_SIMD)
+foreach(option_name IN ITEMS BOLT_BLAS BOLT_OPENMP BOLT_SIMD BOLT_LIBDEFLATE)
   string(TOUPPER "${${option_name}}" normalized_value)
   set(${option_name} "${normalized_value}")
 endforeach()
@@ -64,6 +69,9 @@ if(NOT BOLT_OPENMP MATCHES "^(AUTO|ON|OFF)$")
 endif()
 if(NOT BOLT_SIMD MATCHES "^(AUTO|SSE2|NEON|SCALAR)$")
   message(FATAL_ERROR "Unsupported BOLT_SIMD='${BOLT_SIMD}'")
+endif()
+if(NOT BOLT_LIBDEFLATE MATCHES "^(AUTO|ON|OFF)$")
+  message(FATAL_ERROR "Unsupported BOLT_LIBDEFLATE='${BOLT_LIBDEFLATE}'")
 endif()
 
 set(BOLT_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
@@ -204,6 +212,30 @@ else()
   endif()
   target_include_directories(bolt_zstd INTERFACE "${BOLT_ZSTD_INCLUDE_DIR}")
   target_link_libraries(bolt_zstd INTERFACE "${BOLT_ZSTD_LIBRARY}")
+endif()
+
+add_library(bolt_libdeflate INTERFACE)
+set(BOLT_LIBDEFLATE_ENABLED FALSE)
+if(NOT BOLT_LIBDEFLATE STREQUAL "OFF")
+  set(libdeflate_hints "${BOLT_LIBDEFLATE_ROOT}" "$ENV{LIBDEFLATE_ROOT}")
+  find_path(BOLT_LIBDEFLATE_INCLUDE_DIR libdeflate.h HINTS ${libdeflate_hints}
+    PATH_SUFFIXES include)
+  find_library(BOLT_LIBDEFLATE_LIBRARY NAMES deflate libdeflate
+    HINTS ${libdeflate_hints} PATH_SUFFIXES lib lib64)
+  if(BOLT_LIBDEFLATE_INCLUDE_DIR AND BOLT_LIBDEFLATE_LIBRARY)
+    target_include_directories(bolt_libdeflate INTERFACE
+      "${BOLT_LIBDEFLATE_INCLUDE_DIR}")
+    target_link_libraries(bolt_libdeflate INTERFACE "${BOLT_LIBDEFLATE_LIBRARY}")
+    target_compile_definitions(bolt_libdeflate INTERFACE BOLT_USE_LIBDEFLATE)
+    set(BOLT_LIBDEFLATE_ENABLED TRUE)
+    message(STATUS "Using libdeflate for zlib-compressed BGEN")
+  elseif(BOLT_LIBDEFLATE STREQUAL "ON")
+    message(FATAL_ERROR
+      "libdeflate was not found. Set BOLT_LIBDEFLATE_ROOT or CMAKE_PREFIX_PATH, "
+      "or use BOLT_LIBDEFLATE=OFF.")
+  else()
+    message(STATUS "libdeflate not found; using zlib for compressed BGEN")
+  endif()
 endif()
 
 add_library(bolt_nlopt INTERFACE)
@@ -389,6 +421,7 @@ target_link_libraries(bolt PRIVATE
   bolt_nlopt
   bolt_openmp
   bolt_zstd
+  bolt_libdeflate
   Boost::program_options
   Boost::iostreams
   ZLIB::ZLIB
@@ -455,6 +488,7 @@ if(BUILD_TESTING)
     bolt_nlopt
     bolt_openmp
     bolt_zstd
+    bolt_libdeflate
     Boost::iostreams
     ZLIB::ZLIB
     Threads::Threads
@@ -495,6 +529,11 @@ if(BOLT_OPENMP_ENABLED)
   message(STATUS "BOLT OpenMP: enabled")
 else()
   message(STATUS "BOLT OpenMP: serial fallback")
+endif()
+if(BOLT_LIBDEFLATE_ENABLED)
+  message(STATUS "BOLT libdeflate BGEN acceleration: enabled")
+else()
+  message(STATUS "BOLT libdeflate BGEN acceleration: disabled")
 endif()
 if(BOLT_CUDA)
   message(STATUS "BOLT CUDA acceleration: enabled (${BOLT_CUDA_ARCHITECTURES})")

@@ -887,6 +887,26 @@ namespace LMM {
       sigma2beta2s[b] = sigma2Ks[b]/Ms[b] * varFrac2Ests[b] / (1-pEsts[b]);
     }
 
+    struct BayesSnpFactors {
+      double s1, s2;
+      double shrink1, shrink2;
+      double tau1sq, tau2sq;
+    };
+    vector<BayesSnpFactors> bayesSnpFactors(M*B);
+    for (uint64 m = 0; m < M; m++)
+      for (uint64 b = 0; b < B; b++)
+	if (projMaskSnps[m] && batchMaskSnps[m*B+b]) {
+	  BayesSnpFactors &factors = bayesSnpFactors[m*B+b];
+	  factors.s1 = sqrt(sigma2beta1s[b] + sigma2es[b]/Xnorm2s[m]);
+	  factors.s2 = sqrt(sigma2beta2s[b] + sigma2es[b]/Xnorm2s[m]);
+	  factors.shrink1 = sigma2beta1s[b] / NumericUtils::sq(factors.s1);
+	  factors.shrink2 = sigma2beta2s[b] / NumericUtils::sq(factors.s2);
+	  factors.tau1sq =
+	    1 / (1/sigma2beta1s[b] + 1/(sigma2es[b]/Xnorm2s[m]));
+	  factors.tau2sq =
+	    1 / (1/sigma2beta2s[b] + 1/(sigma2es[b]/Xnorm2s[m]));
+	}
+
     vector <bool> converged(B); uint64 Bleft = B; // number of un-converged computations in batch
     // un-converged yResids will be swapped forward in the batch to reduce work from B to Bleft
     vector < std::pair <uint64, uint64> > swaps; // save sequence of swaps
@@ -1098,29 +1118,21 @@ namespace LMM {
 	      double beta_new = 0.0;
 	      if (batchMaskSnps[m*B + b]) {
 		double beta_hat_m = beta_m_updates[b] + betas_m[b];
+		const BayesSnpFactors &factors = bayesSnpFactors[m*B+b];
 
-		// probably not worth precomputing and storing these in M x B matrices
-		double s1 = sqrt(sigma2beta1s[b] + sigma2es[b]/Xnorm2s[m]);
-		double s2 = sqrt(sigma2beta2s[b] + sigma2es[b]/Xnorm2s[m]);
-		double shrink1 = sigma2beta1s[b] / NumericUtils::sq(s1);
-		double shrink2 = sigma2beta2s[b] / NumericUtils::sq(s2);
-
-		double exponent1 = -0.5*NumericUtils::sq(beta_hat_m/s1);
-		double exponent2 = -0.5*NumericUtils::sq(beta_hat_m/s2);
+		double exponent1 = -0.5*NumericUtils::sq(beta_hat_m/factors.s1);
+		double exponent2 = -0.5*NumericUtils::sq(beta_hat_m/factors.s2);
 		double exponentMax = std::max(exponent1, exponent2);
 		exponent1 -= exponentMax; // TODO: one of these will be 0; can optimize
 		exponent2 -= exponentMax;
-		double p1 = pEsts[b]/s1 * exp(exponent1);
-		double p2 = (1-pEsts[b])/s2 * exp(exponent2);
+		double p1 = pEsts[b]/factors.s1 * exp(exponent1);
+		double p2 = (1-pEsts[b])/factors.s2 * exp(exponent2);
 		double p_m = p1 / (p1+p2);
 
-		double mu1 = beta_hat_m * shrink1;
-		double mu2 = beta_hat_m * shrink2;
+		double mu1 = beta_hat_m * factors.shrink1;
+		double mu2 = beta_hat_m * factors.shrink2;
 
 		double beta_mean = p_m * mu1 + (1-p_m) * mu2;
-
-		double tau1sq = 1 / (1/sigma2beta1s[b] + 1/(sigma2es[b]/Xnorm2s[m]));
-		double tau2sq = 1 / (1/sigma2beta2s[b] + 1/(sigma2es[b]/Xnorm2s[m]));
 
 		if (!MCMC)
 		  beta_new = beta_mean;
@@ -1129,23 +1141,26 @@ namespace LMM {
 		  if (useIterMCMC) betaBarsTrans[m*B + b] += beta_mean;
 		  // sample from the posterior for the actual MCMC update
 		  if (rand() < p_m)
-		    beta_new = mu1 + randn() * sqrt(tau1sq);
+		    beta_new = mu1 + randn() * sqrt(factors.tau1sq);
 		  else
-		    beta_new = mu2 + randn() * sqrt(tau2sq);
+		    beta_new = mu2 + randn() * sqrt(factors.tau2sq);
 		}
 
 		if (!MCMC) {
 		  // compute approx LL contribution (equivalently, penalty for beta_new)
 		  double mu1sq = NumericUtils::sq(mu1);
 		  double mu2sq = NumericUtils::sq(mu2);
-		  double var_q = p_m * (tau1sq + mu1sq) + (1-p_m) * (tau2sq + mu2sq)
+		  double var_q = p_m * (factors.tau1sq + mu1sq) +
+		    (1-p_m) * (factors.tau2sq + mu2sq)
 		    - NumericUtils::sq(beta_new);
 
 		  double KL = 0;
 		  if (p_m != 0) KL += p_m * log(p_m / pEsts[b]);
 		  if (1-p_m != 0) KL += (1-p_m) * log((1-p_m) / (1-pEsts[b]));
-		  KL -= p_m/2 * (1+log(tau1sq/sigma2beta1s[b]) - (tau1sq+mu1sq)/sigma2beta1s[b])
-		    + (1-p_m)/2 * (1+log(tau2sq/sigma2beta2s[b]) - (tau2sq+mu2sq)/sigma2beta2s[b]);
+		  KL -= p_m/2 * (1+log(factors.tau1sq/sigma2beta1s[b]) -
+				    (factors.tau1sq+mu1sq)/sigma2beta1s[b])
+		    + (1-p_m)/2 * (1+log(factors.tau2sq/sigma2beta2s[b]) -
+					(factors.tau2sq+mu2sq)/sigma2beta2s[b]);
 	      
 		  double penalty = Xnorm2s[m] / (2*sigma2es[b]) * var_q + KL;
 		  approxLLs[b] -= penalty;

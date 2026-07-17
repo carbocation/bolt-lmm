@@ -460,6 +460,29 @@ seconds (1.9%). All four Stage 1 model artifacts were byte-for-byte identical.
 The small end-to-end gain is retained because the implementation removes only
 redundant transfers and adds no alternate numerical path.
 
+## Bayesian SNP-factor precomputation
+
+The spike-and-slab scalar update previously recomputed two mixture standard
+deviations, two shrinkage factors, and two posterior variances for every SNP,
+model, and variational-Bayes iteration. These values depend only on the fixed
+variance parameters and the SNP norm. They are now evaluated once per fit with
+the same expressions and stored for reuse; update order, convergence criteria,
+and all floating-point formulas are unchanged.
+
+Across two order-reversed pairs on top of the CUDA residual-transfer change,
+median mixture fitting fell from 9.154 to 8.977 seconds (1.9%), final
+spike-and-slab fitting fell from 6.228 to 6.003 seconds (3.6%), and wall time
+fell from 26.855 to 26.335 seconds (1.9%). All four Stage 1 model artifacts
+were byte-for-byte identical. A bounded 8,192-sample CPU-only pair was noisier
+end to end, but its final spike-and-slab phase fell from 5.93 to 4.05 seconds
+(31.7%) and its model was also byte-identical.
+
+The factor table uses 48 bytes per SNP-model pair and exists only during a
+fit. At one million Stage 1 SNPs, the default 18-pair first CV fold requires
+about 0.80 GiB; a 22-chromosome final LOCO fit requires about 0.98 GiB. This is
+host working memory, not a persistent artifact, and therefore introduces no
+cache-transfer premise.
+
 ## Native x86 AVX genotype expansion
 
 Native x86 builds now expand each four-sample packed genotype lookup with one

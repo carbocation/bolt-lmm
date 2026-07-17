@@ -40,7 +40,11 @@
 #include <unistd.h>
 
 #ifdef USE_SSE
+#if defined(__AVX__)
+#include <immintrin.h>
+#else
 #include <emmintrin.h> // SSE2 for packed doubles
+#endif
 #endif
 #ifdef USE_NEON
 #include <arm_neon.h>
@@ -1967,7 +1971,9 @@ namespace LMM {
     if (allIndivsIncluded) {
       const uint64 Nfull = N & ~(uint64) 3;
       for (uint64 n4 = 0; n4 < Nfull; n4 += 4) {
-#if defined(USE_SSE)
+#if defined(USE_SSE) && defined(__AVX__)
+	_mm256_store_pd(&out[n4], _mm256_load_pd(&work[*ptr][0]));
+#elif defined(USE_SSE)
 	_mm_store_pd(&out[n4], _mm_load_pd(&work[*ptr][0]));
 	_mm_store_pd(&out[n4+2], _mm_load_pd(&work[*ptr][2]));
 #elif defined(USE_NEON)
@@ -1987,7 +1993,11 @@ namespace LMM {
       return;
     }
     for (uint64 n4 = 0; n4 < Nstride; n4 += 4) {
-#if defined(USE_SSE) // todo: add AVX instructions to do all at once?
+#if defined(USE_SSE) && defined(__AVX__)
+      __m256d x = _mm256_load_pd(&work[*ptr][0]);
+      __m256d mask = _mm256_load_pd(&subMaskIndivs[n4]);
+      _mm256_store_pd(&out[n4], _mm256_mul_pd(x, mask));
+#elif defined(USE_SSE)
       __m128d x01 = _mm_load_pd(&work[*ptr][0]);
       __m128d x23 = _mm_load_pd(&work[*ptr][2]);
       __m128d mask01 = _mm_load_pd(&subMaskIndivs[n4]);

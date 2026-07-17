@@ -391,3 +391,15 @@ and 1,163 CPU variants; the maximum absolute difference was 0.01, the largest
 relative CUDA change was 10%, from 1.0e-7 to 1.1e-7, and no value crossed 5e-8.
 These small differences reflect the existing approximate-likelihood stopping
 criterion being reached from a different, much closer starting point.
+
+## Native x86 AVX genotype expansion
+
+Native x86 builds now expand each four-sample packed genotype lookup with one
+256-bit AVX load/store, and apply cross-validation sample masks with one AVX
+multiply. Portable x86 builds retain the existing SSE2 path. On the pinned
+32,768-sample CPU fixture, cross-validation fell from 61.83 to 60.50 seconds
+(2.2%), final VB fell from 33.59 to 33.27 seconds (1.0%), and end-to-end Stage 1
+fell from 214.06 to 212.75 seconds (0.6%). The Stage 1 model artifact was
+byte-identical. This is retained despite the small total gain because the
+implementation is a narrow intrinsic-width substitution and production runs
+are expected to use AVX-capable x86 hosts.

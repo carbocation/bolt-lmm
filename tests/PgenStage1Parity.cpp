@@ -1,6 +1,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -39,6 +40,25 @@ int main(int argc, char **argv) {
   std::remove(persistentCache.c_str());
   const std::vector<std::string> empty;
   const std::vector<std::string> removeFiles(1, dir + "/remove.txt");
+
+  const std::string selectedPvar = std::string(argv[2]) + "/pvar-selected-fields.pvar";
+  {
+    std::ofstream out(selectedPvar.c_str());
+    out << "#CHROM\tINFO\tALT\tID\tPOS\tREF\tCM\tFILTER\n";
+    out << "1\t" << std::string(4096, 'x') << "\tG\trs1\t101\tA\t2.5\tPASS\n";
+    out << "2\t" << std::string(4096, 'y') << "\tT\trs2\t202\tC\t.\tPASS\n";
+  }
+  const std::vector<LMM::SnpInfo> selectedVariants =
+    LMM::PgenUtils::readPvarFile(selectedPvar, 22, NULL);
+  std::remove(selectedPvar.c_str());
+  if (selectedVariants.size() != 2 || selectedVariants[0].ID != "rs1" ||
+      selectedVariants[0].chrom != 1 || selectedVariants[0].physpos != 101 ||
+      selectedVariants[0].genpos != 0.025 || selectedVariants[0].allele1 != "G" ||
+      selectedVariants[0].allele2 != "A" || selectedVariants[1].ID != "rs2" ||
+      selectedVariants[1].chrom != 2 || selectedVariants[1].physpos != 202 ||
+      selectedVariants[1].genpos != 0 || selectedVariants[1].allele1 != "T" ||
+      selectedVariants[1].allele2 != "C")
+    return fail("selected-field PVAR parsing mismatch");
 
   LMM::SnpData bed(prefix + ".fam", std::vector<std::string>(1, prefix + ".bim"),
                    std::vector<std::string>(1, prefix + ".bed"), "", empty, empty,

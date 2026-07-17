@@ -59,6 +59,42 @@ namespace LMM {
         return StringUtils::tokenizeMultipleDelimiters(line, " \t");
       }
 
+      struct FieldSpan {
+        size_t begin;
+        size_t length;
+        FieldSpan() : begin(0), length(0) {}
+      };
+
+      // Record only requested fields while still counting all fields for the
+      // existing malformed-row check. This avoids copying large unused PVAR
+      // columns such as INFO into one std::string per row.
+      size_t selectFields(const string &line, const int selectedCols[], int numSelected,
+                          FieldSpan selected[]) {
+        size_t offset = 0;
+        int field = 0;
+        while (offset < line.size()) {
+          while (offset < line.size() &&
+                 (line[offset] == ' ' || line[offset] == '\t' || line[offset] == '\r'))
+            offset++;
+          if (offset == line.size()) break;
+          const size_t begin = offset;
+          while (offset < line.size() && line[offset] != ' ' && line[offset] != '\t' &&
+                 line[offset] != '\r')
+            offset++;
+          for (int j = 0; j < numSelected; j++)
+            if (selectedCols[j] == field) {
+              selected[j].begin = begin;
+              selected[j].length = offset-begin;
+            }
+          field++;
+        }
+        return field;
+      }
+
+      string fieldString(const string &line, const FieldSpan &span) {
+        return line.substr(span.begin, span.length);
+      }
+
       int findColumn(const vector<string> &header, const string &name) {
         for (uint i = 0; i < header.size(); i++)
           if (header[i] == name) return static_cast<int>(i);
@@ -296,25 +332,30 @@ namespace LMM {
         exit(1);
       }
 
+      const int selectedCols[6] = {chromCol, posCol, idCol, refCol, altCol, cmCol};
+      const int numSelected = cmCol == -1 ? 5 : 6;
+
       while (getline(fin, line)) {
         lineNum++;
-        vector<string> fields = splitFields(line);
-        if (fields.empty()) continue;
-        if (fields.size() < header.size()) {
+        FieldSpan fields[6];
+        const size_t numFields = selectFields(line, selectedCols, numSelected, fields);
+        if (numFields == 0) continue;
+        if (numFields < header.size()) {
           cerr << "ERROR: Too few fields at line " << lineNum << " of pvar file: "
                << pvarFile << endl;
           exit(1);
         }
 
         SnpInfo snp;
-        snp.ID = fields[idCol];
-        snp.chrom = SnpData::chrStrToInt(fields[chromCol], Nauto);
-        snp.physpos = parseInt(fields[posCol], "POS", pvarFile, lineNum);
+        snp.ID.assign(line, fields[2].begin, fields[2].length);
+        snp.chrom = SnpData::chrStrToInt(fieldString(line, fields[0]), Nauto);
+        snp.physpos = parseInt(fieldString(line, fields[1]), "POS", pvarFile, lineNum);
         // PVAR CM values are centimorgans; BOLT stores genetic positions in Morgans.
-        snp.genpos = cmCol == -1 || fields[cmCol] == "." ? 0 :
-          0.01 * parseDouble(fields[cmCol], "CM", pvarFile, lineNum);
-        snp.allele1 = fields[altCol];
-        snp.allele2 = fields[refCol];
+        snp.genpos = cmCol == -1 ||
+          (fields[5].length == 1 && line[fields[5].begin] == '.') ? 0 :
+          0.01 * parseDouble(fieldString(line, fields[5]), "CM", pvarFile, lineNum);
+        snp.allele1.assign(line, fields[4].begin, fields[4].length);
+        snp.allele2.assign(line, fields[3].begin, fields[3].length);
         if (snp.allele1.find(',') != string::npos) {
           cerr << "ERROR: Multiallelic PGEN variants are not supported (variant "
                << snp.ID << " at line " << lineNum << " of " << pvarFile << ")" << endl;

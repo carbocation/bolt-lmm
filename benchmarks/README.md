@@ -291,14 +291,23 @@ equivalent 712.9 MB BED plus BIM. Two guard-bounded repetitions were stable at
 That comparison includes metadata parsing: the DRAGEN PVAR is 1.386 GB
 uncompressed because of its INFO field. Repeating the PGEN measurement with a
 45.7 MB PVAR containing only BIM-equivalent required columns took 4.51/4.50
-seconds. The 9.36-second penalty on this small panel is therefore attributable
-to serial metadata parsing, not hardcall conversion; with compact metadata,
-PGEN was slightly faster than BED. Metadata parsing is O(M), however, while
-hardcall conversion is O(NM). The separate exact target-shape benchmark's
-528.8-second PGEN setup still motivates a persistent reusable converted-PGEN
-cache for repeated biobank analyses. The source `.pvar.zst` was decompressed
-on the benchmark host because BOLT currently accepts `.pvar` or `.pvar.gz`,
-not `.pvar.zst`.
+seconds. The 9.36-second penalty on this small panel was therefore attributable
+to copying and tokenizing unused metadata, not hardcall conversion.
+
+The selected-field PVAR parser removes that penalty without changing parsed
+variant metadata or skipping malformed-row validation. On the original 1.386
+GB PVAR, paired guard-bounded old-parser runs took 17.07/15.45 seconds and the
+new parser took 5.79/5.76 seconds: medians of 16.26 and 5.775 seconds, or a
+64.5% reduction. The optimized full-metadata path is now close to the compact
+metadata lower bound. A convergent 131,072-sample real-genotype Stage 1 run
+also produced a model byte-for-byte identical to the pre-change model.
+
+Metadata parsing is O(M), while hardcall conversion is O(NM). The separate
+exact target-shape benchmark's 528.8-second PGEN setup still motivates a
+persistent reusable converted-PGEN cache for repeated biobank analyses when
+that cache is already colocated with the compute job. The source `.pvar.zst`
+was decompressed on the benchmark host because BOLT currently accepts `.pvar`
+or `.pvar.gz`, not `.pvar.zst`.
 
 The full 1.107-million-marker panel is intentionally not an end-to-end model
 fixture with only 2,573 samples: after raising `--maxModelSnps`, its

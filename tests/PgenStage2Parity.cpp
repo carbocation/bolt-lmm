@@ -134,8 +134,8 @@ int main(int argc, char **argv) {
   }
 #endif
 
-  // Exercise single-threaded layout-2 BGEN batching with enough covariate and
-  // statistic vectors to cross the production batching threshold.
+  // Exercise serial and parallel layout-2 BGEN batching with enough covariate
+  // and statistic vectors to cross the production batching threshold.
   {
     std::vector<double> bgenBasis(3*Nstride, 0);
     for (size_t n = 0; n < Nstride; n++) bgenBasis[n] = covBasis[n];
@@ -171,20 +171,28 @@ int main(int argc, char **argv) {
       boundaries, scales));
 
     const std::string bgenOut = outputDir + "/pgen_stage2_bgen.stats";
+    const std::string bgenParallelOut = outputDir + "/pgen_stage2_bgen_parallel.stats";
     const std::string bgenReferenceOut = outputDir + "/pgen_stage2_bgen_reference.stats";
     bgenBolt.streamBgen2(bgenOut, 0, fixtureDir + "/example-bgen.bgen",
                          fixtureDir + "/example-bgen.sample", 0, 0, 0, "", true,
                          bgenRetroData, false, false, 1, true);
+    bgenBolt.streamBgen2(bgenParallelOut, 0, fixtureDir + "/example-bgen.bgen",
+                         fixtureDir + "/example-bgen.sample", 0, 0, 0, "", true,
+                         bgenRetroData, false, false, 2, true);
     bgenBolt.streamBgen2(bgenReferenceOut, 0, fixtureDir + "/example-bgen.bgen",
                          fixtureDir + "/example-bgen.sample", 0, 0, 0, "", true,
                          bgenRetroData, false, false, 1, false);
     const std::string bgenStats = readFile(bgenOut);
+    const std::string bgenParallelStats = readFile(bgenParallelOut);
     const std::string bgenReferenceStats = readFile(bgenReferenceOut);
     std::remove(bgenOut.c_str());
+    std::remove(bgenParallelOut.c_str());
     std::remove(bgenReferenceOut.c_str());
     if (bgenStats.empty()) return fail("BGEN association output is empty");
     if (bgenStats != bgenReferenceStats)
       return fail("batched and scalar BGEN association outputs differ");
+    if (bgenParallelStats != bgenReferenceStats)
+      return fail("parallel batched and scalar BGEN association outputs differ");
   }
 
   // Exercise the identity-order path separately. AVX builds select direct

@@ -4324,11 +4324,16 @@ namespace LMM {
     // With only the intercept and two mixed-model statistics, the existing fused
     // scalar scan is already optimal. Dense batching wins once projection/scoring
     // requires at least five independent vectors.
-    const bool useStage2Batch = optimizedStage2 && threads == 1 && !domRecHetTest &&
-      numScoreVectors >= 5;
+    const bool useStage2Batch = optimizedStage2 && !domRecHetTest && numScoreVectors >= 5;
     const uint64 targetBatchBytes = 256ULL << 20;
     const uint64 maxStage2BatchSize = useStage2Batch ? std::max<uint64>(
       1, std::min<uint64>(128, targetBatchBytes/(Nstride*sizeof(double)))) : 1;
+#ifdef USE_MKL
+    // Batched decoding and DGEMM run in separate regions, so both can use the
+    // requested threads without nesting. The per-variant path keeps MKL serial
+    // because its DGEMV calls execute inside the OpenMP loop below.
+    if (useStage2Batch) mkl_set_num_threads(threads);
+#endif
 
     // allocate thread-specific memory buffers, or one bounded dense Stage 2 batch
     double *snpCovCompVecs[threads];
@@ -4482,21 +4487,39 @@ namespace LMM {
 
       if (B == B_MAX || mbgen+1 == Mbgen) { // process the block of SNPs
 	if (useStage2Batch) {
-	  for (int b = 0; b < B; b++) {
-	    Stage2VariantInfo variantInfo;
-	    bool decoded = false;
-	    double *snpVector = snpCovCompVecs[0] + stage2Batch.size()*Nstride;
-	    if (bufLens[b] > bufs[0].size()) bufs[0].resize(bufLens[b]);
-	    decodeSnpStatsBgen2(CompressedSNPBlocks, &bufs[0][0], bufLens[b],
-				&zBufs[b][0], zBufLens[b], Nbgen, bgenIndivInds,
-				bgenIndivsIdentity, snpNames[b], chroms[b], bps[b], gps[b],
-				allele1s[b], allele0s[b], snpVector, verboseStats, retroData,
-				false, bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst,
-				decompressors[0], &variantInfo, &decoded);
-	    if (decoded) {
-	      stage2Batch.push_back(variantInfo);
-	      if (stage2Batch.size() == maxStage2BatchSize) flushStage2Batch();
+	  const int batchCapacity = static_cast<int>(maxStage2BatchSize);
+	  for (int begin = 0; begin < B; begin += batchCapacity) {
+	    const int count = std::min(B-begin, batchCapacity);
+	    vector<Stage2VariantInfo> decodedVariants(count);
+	    vector<uchar> decodedFlags(count, 0);
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(dynamic) num_threads(threads)
+#endif
+	    for (int local = 0; local < count; local++) {
+	      const int b = begin+local;
+	      const int t = omp_get_thread_num();
+	      if (bufLens[b] > bufs[t].size()) bufs[t].resize(bufLens[b]);
+	      bool decoded = false;
+	      decodeSnpStatsBgen2(
+		CompressedSNPBlocks, &bufs[t][0], bufLens[b], &zBufs[b][0],
+		zBufLens[b], Nbgen, bgenIndivInds, bgenIndivsIdentity, snpNames[b],
+		chroms[b], bps[b], gps[b], allele1s[b], allele0s[b],
+		snpCovCompVecs[0]+local*Nstride, verboseStats, retroData, false,
+		bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst, decompressors[t],
+		&decodedVariants[local], &decoded);
+	      decodedFlags[local] = decoded;
 	    }
+
+	    // Filtering can leave holes in the fixed parallel decode slots. Compact
+	    // accepted columns in input order before the single batched multiply.
+	    for (int local = 0; local < count; local++)
+	      if (decodedFlags[local]) {
+		if (stage2Batch.size() != static_cast<uint64>(local))
+		  memcpy(snpCovCompVecs[0]+stage2Batch.size()*Nstride,
+			 snpCovCompVecs[0]+local*Nstride, Nstride*sizeof(double));
+		stage2Batch.push_back(decodedVariants[local]);
+	      }
+	    flushStage2Batch();
 	  }
 	}
 	else {

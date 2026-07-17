@@ -716,6 +716,40 @@ Dense BGEN dosage scoring was also implemented and tested experimentally. On
 the paired A100 real-LD workload it changed readout only from 24.061 to 23.052
 seconds (4.2%). CPU probability decoding and dense host-to-device traffic
 dominated, so the added CUDA and pinned-buffer ownership complexity was removed.
-BGEN keeps the 3.37x CPU acceleration documented in the preceding section.
+BGEN keeps the CPU path: its 3.37x single-thread acceleration is documented in
+the preceding section, and production CPU scaling is documented below.
 
 Raw A100 timings are in `results/a100_stage2_cuda.tsv`.
+
+## Multithreaded Stage 2 BGEN scaling
+
+The algorithmic Stage 2 improvements above were established with one thread
+before adding production CPU parallelism. The high-dimensional layout-2 BGEN
+path now decompresses and decodes independent variants with OpenMP, compacts
+any variants surviving QC in input order, and scores each bounded dense batch
+with threaded BLAS. Decode and BLAS regions do not overlap, avoiding nested
+thread teams. Models below the batching crossover retain the existing fused
+per-variant OpenMP path.
+
+The scaling ladder used the same real-LD 131,072-sample by 16,384-variant BGEN
+fixture and 21-basis plus two-statistic Stage 1 model as the single-core audit.
+The A100 VM exposes six physical Xeon cores and 12 logical CPUs. All outputs
+were byte-identical to the scalar and single-thread optimized references.
+
+| CPU path | Threads | Readout | Speedup vs optimized 1-thread sequential build |
+| --- | ---: | ---: | ---: |
+| Optimized sequential-oneMKL control | 1 | 21.812 s | 1.00x |
+| Previous per-variant threaded path | 2 | 21.741 s | 1.00x |
+| Previous per-variant threaded path | 4 | 11.173 s | 1.95x |
+| Previous per-variant threaded path | 6 | 7.902 s | 2.76x |
+| Parallel decode + batched scoring | 2 | 13.668 s | 1.60x |
+| Parallel decode + batched scoring | 4 | 6.998 s | 3.12x |
+| Parallel decode + batched scoring | 6 | 4.973 s | 4.39x |
+| Parallel decode + batched scoring | 12 | 6.076 s | 3.59x |
+
+At two, four, and six threads, retaining batching reduced readout by about 37%
+relative to the prior threaded path at the same thread count. Six physical
+cores were 18% faster than all 12 SMT threads on this VM. Compared with the
+original split-stage BGEN readout of 73.956 seconds, the six-core path is about
+14.9x faster. Raw measurements are in
+`results/a100_stage2_threads.tsv`.

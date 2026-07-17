@@ -71,8 +71,11 @@ automatically. In a CUDA build, Stage 2 sends their two-bit packed data directly
 to the GPU and supports sample subsetting and reordering without first expanding
 genotypes on the CPU. Up to 32 combined covariate and statistic vectors use this
 path; larger models fall back to CPU scoring. Single-threaded layout-2 BGEN
-readout retains the optimized CPU path and batches scoring when the number of
-covariate and statistic vectors is large enough to benefit.
+readout retains the optimized CPU path. With `--numThreads` greater than one,
+layout-2 BGEN decompresses and decodes variants in parallel and then uses the
+same batched scoring algorithm when the number of covariate and statistic
+vectors is large enough to benefit. Using the number of physical CPU cores is
+a good starting point; SMT may not improve this memory-intensive pipeline.
 `--stage2Scalar` selects the original per-variant arithmetic for these formats
 as a validation/reference path; it does not change the statistical model or
 output columns.

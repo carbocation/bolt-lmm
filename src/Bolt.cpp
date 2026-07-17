@@ -4053,9 +4053,8 @@ namespace LMM {
 
     const double outputInfo = info * (1-missingNum/(missingNum+dosageNum));
     if (decodedVariant != NULL) {
-      const double alleleFreq = snpData.computeAlleleFreq(snpCovCompVec, maskIndivs);
-      snpData.dosageLineToMaskedSnpVector(snpCovCompVec, maskIndivs, alleleFreq,
-					  maskCoversAllIndivs);
+      const double alleleFreq = bgenIndivsIdentity && missingNum == 0 ?
+	0.5*dosageSum/dosageNum : snpData.computeAlleleFreq(snpCovCompVec, maskIndivs);
       decodedVariant->ID = snpName;
       decodedVariant->chrom = chrom;
       decodedVariant->physpos = physpos;
@@ -4065,7 +4064,8 @@ namespace LMM {
       decodedVariant->alleleFreq = alleleFreq;
       decodedVariant->missing = 0;
       decodedVariant->info = outputInfo;
-      decodedVariant->rawNorm2 = NumericUtils::norm2(snpCovCompVec, Nstride);
+      decodedVariant->rawNorm2 = snpData.dosageLineToMaskedSnpVectorAndNorm2(
+	snpCovCompVec, maskIndivs, alleleFreq, maskCoversAllIndivs);
       if (decoded != NULL) *decoded = true;
       return "";
     }

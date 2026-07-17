@@ -185,6 +185,10 @@ namespace LMM {
     // assumes maskedSnpVector has dimension Nstride; zero-fills
     void dosageLineToMaskedSnpVector(double dosageLineVec[], const double subMaskIndivs[],
 				     double MAF, bool allIndivsIncluded=false) const;
+    // Same conversion while returning the squared norm of the centered vector.
+    double dosageLineToMaskedSnpVectorAndNorm2(double dosageLineVec[],
+					       const double subMaskIndivs[], double MAF,
+					       bool allIndivsIncluded=false) const;
 
     uint64 getM(void) const;
     // don't provide getN: don't want the rest of the program to even know N!

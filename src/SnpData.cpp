@@ -994,6 +994,30 @@ namespace LMM {
       dosageLineVec[n] = 0;
   }
 
+  double SnpData::dosageLineToMaskedSnpVectorAndNorm2(double dosageLineVec[],
+						      const double subMaskIndivs[],
+						      double alleleFreq,
+						      bool allIndivsIncluded) const {
+    double norm2 = 0;
+    if (allIndivsIncluded) {
+      for (size_t n = 0; n < N; n++) {
+	const double centered = dosageValid(dosageLineVec[n]) ?
+	  dosageLineVec[n] - 2*alleleFreq : 0;
+	dosageLineVec[n] = centered;
+	norm2 += centered*centered;
+      }
+    }
+    else
+      for (size_t n = 0; n < N; n++) {
+	const double centered = subMaskIndivs[n] && dosageValid(dosageLineVec[n]) ?
+	  dosageLineVec[n] - 2*alleleFreq : 0;
+	dosageLineVec[n] = centered;
+	norm2 += centered*centered;
+      }
+    for (uint64 n = N; n < Nstride; n++) dosageLineVec[n] = 0;
+    return norm2;
+  }
+
   /**    
    * reads indiv info from fam file, snp info from bim file
    * allocates memory, reads genotypes, and does QC

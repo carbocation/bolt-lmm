@@ -221,6 +221,30 @@ int main(int argc, char **argv) {
       return fail("direct-packed BED and PGEN association outputs differ");
     if (directBedStats != directReferenceStats)
       return fail("direct-packed and scalar association outputs differ");
+
+    // Cover the identity-order BGEN fast path, including reuse of the dosage
+    // sum when a variant has no missing probabilities.
+    std::vector<LMM::Bolt::StatsDataRetroLOCO> identityBgenRetroData;
+    for (int s = 0; s < 4; s++)
+      identityBgenRetroData.push_back(LMM::Bolt::StatsDataRetroLOCO(
+        "STAT" + std::to_string(s+1), noStats, identityResids, boundaries, scales));
+    const std::string identityBgenOut = outputDir + "/pgen_stage2_identity_bgen.stats";
+    const std::string identityBgenReferenceOut =
+      outputDir + "/pgen_stage2_identity_bgen_reference.stats";
+    identityBedBolt.streamBgen2(
+      identityBgenOut, 0, fixtureDir + "/example-bgen.bgen",
+      fixtureDir + "/example-bgen.sample", 0, 0, 0, "", true,
+      identityBgenRetroData, false, false, 1, true);
+    identityBedBolt.streamBgen2(
+      identityBgenReferenceOut, 0, fixtureDir + "/example-bgen.bgen",
+      fixtureDir + "/example-bgen.sample", 0, 0, 0, "", true,
+      identityBgenRetroData, false, false, 1, false);
+    const std::string identityBgenStats = readFile(identityBgenOut);
+    const std::string identityBgenReferenceStats = readFile(identityBgenReferenceOut);
+    std::remove(identityBgenOut.c_str());
+    std::remove(identityBgenReferenceOut.c_str());
+    if (identityBgenStats != identityBgenReferenceStats)
+      return fail("identity-order batched and scalar BGEN association outputs differ");
   }
 
   std::cout << "BED/PGEN/BGEN Stage 2 association output is byte-identical after "

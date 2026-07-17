@@ -36,7 +36,7 @@ namespace LMM {
 
     static const double MIX_PARAM_ESTIMATE_FLAG; // flag for estimating mixture params using CV
 
-    int stage; // exactly one of 1 (fit) or 2 (association readout)
+    int stage; // 0 (persistent PGEN cache), 1 (fit), or 2 (association readout)
     std::string stage1Model; // Stage 1 output / Stage 2 input
 
     // main input files
@@ -44,7 +44,7 @@ namespace LMM {
     std::vector <std::string> bimFiles, bedFiles; // possibly multiple files and/or range templates
     std::string pfilePrefix;
     std::string pgenFile, pvarFile, psamFile;
-    std::string pgenCacheDir;
+    std::string pgenCacheDir, pgenCacheFile;
 
     // optional reference map file for filling in genpos
     std::string geneticMapFile;

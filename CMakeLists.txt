@@ -436,7 +436,8 @@ if(BUILD_TESTING)
     ${CMAKE_DL_LIBS})
   add_test(NAME pgen_stage1_hardcall_parity
     COMMAND pgen_stage1_parity_test
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity")
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/data/pgen_parity"
+      "${CMAKE_CURRENT_BINARY_DIR}")
 
   set(BOLT_STAGE2_TEST_SOURCES ${BOLT_SOURCES})
   list(REMOVE_ITEM BOLT_STAGE2_TEST_SOURCES

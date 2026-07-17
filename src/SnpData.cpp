@@ -22,6 +22,7 @@
 #include <array>
 #include <climits>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -32,7 +33,9 @@
 #include <unordered_set>
 #include <utility>
 
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
@@ -120,6 +123,93 @@ namespace LMM {
       out << std::fixed << std::setprecision(1)
 	  << bytes / static_cast<double>(1ULL << 30);
       return out.str();
+    }
+
+    const uint64 PGEN_CACHE_HEADER_BYTES = 65536;
+    const uint64 PGEN_CACHE_COMPLETE = 0x424f4c5443414348ULL;
+    const uint32_t PGEN_CACHE_VERSION = 1;
+    const uint32_t PGEN_CACHE_ENDIAN = 0x01020304U;
+    const int PGEN_CACHE_NON_MODEL = -3;
+    const char PGEN_CACHE_MAGIC[16] = "BOLTPGENCACHE";
+
+    struct PgenCacheHeader {
+      char magic[16];
+      uint32_t version;
+      uint32_t endian;
+      uint64 complete;
+      uint64 fingerprintLo;
+      uint64 fingerprintHi;
+      uint64 Nbed;
+      uint64 Mbed;
+      uint64 N;
+      uint64 Nstride;
+      uint64 M;
+      uint64 genotypeBytes;
+      uint64 mappingOffset;
+      uint64 mafOffset;
+      uint64 maskOffset;
+      uint64 fileBytes;
+    };
+
+    static_assert(sizeof(PgenCacheHeader) <= PGEN_CACHE_HEADER_BYTES,
+                  "PGEN cache header exceeds reserved space");
+    static_assert(sizeof(int) == sizeof(int32_t), "PGEN cache requires 32-bit int");
+
+    class FingerprintBuilder {
+      uint64 lo;
+      uint64 hi;
+    public:
+      FingerprintBuilder() : lo(14695981039346656037ULL), hi(7809847782465536322ULL) {}
+
+      void addBytes(const void *data, size_t size) {
+        const uchar *bytes = static_cast<const uchar *>(data);
+        for (size_t i = 0; i < size; i++) {
+          lo ^= bytes[i];
+          lo *= 1099511628211ULL;
+          hi ^= static_cast<uchar>(bytes[i] + 0x9dU);
+          hi *= 14029467366897019727ULL;
+        }
+      }
+
+      template <class T> void addValue(const T &value) {
+        addBytes(&value, sizeof(value));
+      }
+
+      void addString(const string &value) {
+        const uint64 size = value.size();
+        addValue(size);
+        addBytes(value.data(), value.size());
+      }
+
+      pair<uint64, uint64> finish() const { return std::make_pair(lo, hi); }
+    };
+
+    bool readExactAt(int fd, void *data, size_t size, uint64 offset) {
+      uchar *out = static_cast<uchar *>(data);
+      size_t done = 0;
+      while (done < size) {
+        const ssize_t count = pread(fd, out + done, size - done,
+                                    static_cast<off_t>(offset + done));
+        if (count <= 0) return false;
+        done += static_cast<size_t>(count);
+      }
+      return true;
+    }
+
+    bool writeExactAt(int fd, const void *data, size_t size, uint64 offset) {
+      const uchar *in = static_cast<const uchar *>(data);
+      size_t done = 0;
+      while (done < size) {
+        const ssize_t count = pwrite(fd, in + done, size - done,
+                                     static_cast<off_t>(offset + done));
+        if (count <= 0) return false;
+        done += static_cast<size_t>(count);
+      }
+      return true;
+    }
+
+    bool addWouldOverflow(uint64 lhs, uint64 rhs) {
+      return lhs > std::numeric_limits<uint64>::max() - rhs;
     }
 
   }
@@ -1048,8 +1138,379 @@ namespace LMM {
     }
   }
 
-  void SnpData::allocatePgenGenotypes(uint64 bytes, const string &cacheDirIn) {
+  pair<uint64, uint64> SnpData::computePgenCacheFingerprint
+  (const string &pgenFile, const vector<SnpInfo> &inputSnps,
+   double maxMissingPerSnp, double maxMissingPerIndiv) const {
+    FingerprintBuilder fingerprint;
+    fingerprint.addString("BOLT-PGEN-STAGE0-V1");
+    fingerprint.addValue(Nbed);
+    fingerprint.addValue(Mbed);
+    fingerprint.addValue(N);
+    fingerprint.addValue(Nstride);
+    fingerprint.addValue(Nautosomes);
+    fingerprint.addValue(maxMissingPerSnp);
+    fingerprint.addValue(maxMissingPerIndiv);
+
+    struct stat pgenStat;
+    if (stat(pgenFile.c_str(), &pgenStat) != 0 || pgenStat.st_size < 0) {
+      cerr << "ERROR: Unable to inspect PGEN source " << pgenFile << ": "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+    const uint64 pgenBytes = static_cast<uint64>(pgenStat.st_size);
+    fingerprint.addValue(pgenBytes);
+#ifdef __APPLE__
+    fingerprint.addValue(pgenStat.st_mtimespec.tv_sec);
+    fingerprint.addValue(pgenStat.st_mtimespec.tv_nsec);
+#else
+    fingerprint.addValue(pgenStat.st_mtim.tv_sec);
+    fingerprint.addValue(pgenStat.st_mtim.tv_nsec);
+#endif
+    const int pgenFd = open(pgenFile.c_str(), O_RDONLY);
+    if (pgenFd == -1) {
+      cerr << "ERROR: Unable to open PGEN source " << pgenFile << ": "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+    const uint64 sampleBytes = std::min<uint64>(PGEN_CACHE_HEADER_BYTES, pgenBytes);
+    vector<uchar> sample(sampleBytes);
+    if (sampleBytes && !readExactAt(pgenFd, sample.data(), sample.size(), 0)) {
+      const int savedErrno = errno;
+      close(pgenFd);
+      cerr << "ERROR: Unable to fingerprint PGEN source " << pgenFile << ": "
+	   << std::strerror(savedErrno) << endl;
+      exit(1);
+    }
+    fingerprint.addValue(sampleBytes);
+    fingerprint.addBytes(sample.data(), sample.size());
+    if (sampleBytes && !readExactAt(pgenFd, sample.data(), sample.size(), pgenBytes-sampleBytes)) {
+      const int savedErrno = errno;
+      close(pgenFd);
+      cerr << "ERROR: Unable to fingerprint PGEN source " << pgenFile << ": "
+	   << std::strerror(savedErrno) << endl;
+      exit(1);
+    }
+    fingerprint.addBytes(sample.data(), sample.size());
+    close(pgenFd);
+
+    fingerprint.addValue(bedIndivToRemoveIndex.size());
+    if (!bedIndivToRemoveIndex.empty())
+      fingerprint.addBytes(bedIndivToRemoveIndex.data(),
+			   bedIndivToRemoveIndex.size()*sizeof(bedIndivToRemoveIndex[0]));
+    for (uint64 n = 0; n < indivs.size(); n++) {
+      fingerprint.addString(indivs[n].famID);
+      fingerprint.addString(indivs[n].indivID);
+      fingerprint.addString(indivs[n].paternalID);
+      fingerprint.addString(indivs[n].maternalID);
+      fingerprint.addValue(indivs[n].sex);
+      fingerprint.addValue(indivs[n].pheno);
+    }
+    for (uint64 v = 0; v < vcNames.size(); v++) fingerprint.addString(vcNames[v]);
+
+    fingerprint.addValue(inputSnps.size());
+    for (uint64 mbed = 0; mbed < inputSnps.size(); mbed++) {
+      const SnpInfo &snp = inputSnps[mbed];
+      fingerprint.addValue(snp.chrom);
+      fingerprint.addString(snp.ID);
+      fingerprint.addValue(snp.genpos);
+      fingerprint.addValue(snp.physpos);
+      fingerprint.addString(snp.allele1);
+      fingerprint.addString(snp.allele2);
+      fingerprint.addValue(snp.vcNum);
+    }
+    return fingerprint.finish();
+  }
+
+  void SnpData::loadPgenCache(const string &cacheFile,
+			       const pair<uint64, uint64> &fingerprint,
+			       const vector<SnpInfo> &inputSnps) {
+    const int fd = open(cacheFile.c_str(), O_RDONLY);
+    if (fd == -1) {
+      cerr << "ERROR: Unable to open persistent PGEN cache " << cacheFile << ": "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+    PgenCacheHeader header = {};
+    struct stat cacheStat;
+    if (!readExactAt(fd, &header, sizeof(header), 0) || fstat(fd, &cacheStat) != 0) {
+      const int savedErrno = errno;
+      close(fd);
+      cerr << "ERROR: Unable to read persistent PGEN cache " << cacheFile << ": "
+	   << std::strerror(savedErrno) << endl;
+      exit(1);
+    }
+    const bool basicHeaderValid =
+      std::memcmp(header.magic, PGEN_CACHE_MAGIC, sizeof(header.magic)) == 0 &&
+      header.version == PGEN_CACHE_VERSION && header.endian == PGEN_CACHE_ENDIAN &&
+      header.complete == PGEN_CACHE_COMPLETE && header.Nbed == Nbed &&
+      header.Mbed == Mbed && header.N == N && header.Nstride == Nstride &&
+      header.fingerprintLo == fingerprint.first && header.fingerprintHi == fingerprint.second;
+    if (!basicHeaderValid) {
+      close(fd);
+      cerr << "ERROR: Persistent PGEN cache does not match the PGEN/PVAR/PSAM inputs, "
+	   << "sample/variant filters, packing, or QC settings: " << cacheFile << endl;
+      cerr << "       Rebuild it with --stage=0 and the same genotype options" << endl;
+      exit(1);
+    }
+    if (header.M == 0 || header.M > M || header.M > std::numeric_limits<uint64>::max()/(Nstride/4)) {
+      close(fd);
+      cerr << "ERROR: Invalid model-variant dimensions in persistent PGEN cache "
+	   << cacheFile << endl;
+      exit(1);
+    }
+    const uint64 genotypeBytes = header.M * (Nstride/4);
+    if (Mbed > std::numeric_limits<uint64>::max()/sizeof(int32_t) ||
+	header.M > std::numeric_limits<uint64>::max()/sizeof(double)) {
+      close(fd);
+      cerr << "ERROR: Persistent PGEN cache metadata dimensions overflow" << endl;
+      exit(1);
+    }
+    const uint64 mappingBytes = Mbed*sizeof(int32_t);
+    const uint64 mafBytes = header.M*sizeof(double);
+    uint64 expectedMappingOffset = PGEN_CACHE_HEADER_BYTES;
+    if (addWouldOverflow(expectedMappingOffset, genotypeBytes)) {
+      close(fd); cerr << "ERROR: Persistent PGEN cache dimensions overflow" << endl; exit(1);
+    }
+    expectedMappingOffset += genotypeBytes;
+    uint64 expectedMafOffset = expectedMappingOffset;
+    if (addWouldOverflow(expectedMafOffset, mappingBytes)) {
+      close(fd); cerr << "ERROR: Persistent PGEN cache dimensions overflow" << endl; exit(1);
+    }
+    expectedMafOffset += mappingBytes;
+    uint64 expectedMaskOffset = expectedMafOffset;
+    if (addWouldOverflow(expectedMaskOffset, mafBytes)) {
+      close(fd); cerr << "ERROR: Persistent PGEN cache dimensions overflow" << endl; exit(1);
+    }
+    expectedMaskOffset += mafBytes;
+    if (addWouldOverflow(expectedMaskOffset, Nstride)) {
+      close(fd); cerr << "ERROR: Persistent PGEN cache dimensions overflow" << endl; exit(1);
+    }
+    const uint64 expectedFileBytes = expectedMaskOffset + Nstride;
+    if (header.genotypeBytes != genotypeBytes ||
+	header.mappingOffset != expectedMappingOffset || header.mafOffset != expectedMafOffset ||
+	header.maskOffset != expectedMaskOffset || header.fileBytes != expectedFileBytes ||
+	cacheStat.st_size < 0 || static_cast<uint64>(cacheStat.st_size) != expectedFileBytes) {
+      close(fd);
+      cerr << "ERROR: Persistent PGEN cache is incomplete or corrupt: " << cacheFile << endl;
+      exit(1);
+    }
+
+    vector<int32_t> cachedMapping(Mbed);
+    vector<double> cachedMafs(header.M);
+    vector<uchar> cachedMask(Nstride);
+    if (!readExactAt(fd, cachedMapping.data(), mappingBytes, header.mappingOffset) ||
+	!readExactAt(fd, cachedMafs.data(), mafBytes, header.mafOffset) ||
+	!readExactAt(fd, cachedMask.data(), cachedMask.size(), header.maskOffset)) {
+      const int savedErrno = errno;
+      close(fd);
+      cerr << "ERROR: Unable to read persistent PGEN cache metadata: "
+	   << std::strerror(savedErrno) << endl;
+      exit(1);
+    }
+
+    vector<SnpInfo> cachedSnps;
+    cachedSnps.reserve(header.M);
+    for (uint64 mbed = 0; mbed < Mbed; mbed++) {
+      if (inputSnps[mbed].vcNum >= 1) {
+	const int32_t cachedIndex = cachedMapping[mbed];
+	if (cachedIndex == -2) {
+	  bedSnpToGrmIndex[mbed] = -2;
+	  continue;
+	}
+	if (cachedIndex != static_cast<int32_t>(cachedSnps.size()) ||
+	    static_cast<uint64>(cachedIndex) >= header.M) {
+	  close(fd);
+	  cerr << "ERROR: Invalid variant mapping in persistent PGEN cache" << endl;
+	  exit(1);
+	}
+	bedSnpToGrmIndex[mbed] = cachedIndex;
+	cachedSnps.push_back(inputSnps[mbed]);
+	cachedSnps.back().MAF = cachedMafs[cachedIndex];
+      }
+      else if (cachedMapping[mbed] != PGEN_CACHE_NON_MODEL) {
+	close(fd);
+	cerr << "ERROR: Invalid non-model variant mapping in persistent PGEN cache" << endl;
+	exit(1);
+      }
+    }
+    if (cachedSnps.size() != header.M) {
+      close(fd);
+      cerr << "ERROR: Persistent PGEN cache model-variant count is inconsistent" << endl;
+      exit(1);
+    }
+
+    numIndivsQC = 0;
+    for (uint64 n = 0; n < Nstride; n++) {
+      if (cachedMask[n] > 1 || (maskIndivs[n] == 0 && cachedMask[n])) {
+	close(fd);
+	cerr << "ERROR: Invalid sample mask in persistent PGEN cache" << endl;
+	exit(1);
+      }
+      maskIndivs[n] = cachedMask[n];
+      numIndivsQC += cachedMask[n];
+    }
+    snps.swap(cachedSnps);
+    M = header.M;
+    maskSnps = ALIGNED_MALLOC_UCHARS(M);
+    memset(maskSnps, 1, M*sizeof(maskSnps[0]));
+
+    void *mapping = mmap(NULL, genotypeBytes, PROT_READ, MAP_PRIVATE, fd,
+			 static_cast<off_t>(PGEN_CACHE_HEADER_BYTES));
+    const int mapErrno = errno;
+    close(fd);
+    if (mapping == MAP_FAILED) {
+      cerr << "ERROR: Unable to map persistent PGEN cache " << cacheFile << ": "
+	   << std::strerror(mapErrno) << endl;
+      exit(1);
+    }
+    genotypes = static_cast<uchar *>(mapping);
+    genotypeStorageBytes = genotypeBytes;
+    genotypesFileBacked = true;
+    cout << "Loaded persistent Step 0 PGEN cache: " << cacheFile << " ("
+	 << M << " variants, " << N << " samples, " << formatGiB(genotypeBytes)
+	 << " GiB packed)" << endl;
+    cout << "Total indivs after QC: " << numIndivsQC << endl;
+    cout << "Total post-QC SNPs: M = " << M << endl;
+  }
+
+  void SnpData::finalizePgenCache(const string &cacheFile,
+				   const pair<uint64, uint64> &fingerprint,
+				   const vector<SnpInfo> &inputSnps) {
+    if (pgenCacheBuildTempPath.empty() || genotypes == NULL || !genotypesFileBacked) {
+      cerr << "ERROR: Internal persistent PGEN cache build state is invalid" << endl;
+      exit(1);
+    }
+    const uint64 capacityBytes = genotypeStorageBytes;
+    if (M > std::numeric_limits<uint64>::max()/(Nstride/4)) {
+      cerr << "ERROR: Persistent PGEN cache dimensions overflow" << endl;
+      exit(1);
+    }
+    const uint64 genotypeBytes = M*(Nstride/4);
+    if (genotypeBytes > capacityBytes || msync(genotypes, capacityBytes, MS_SYNC) != 0) {
+      cerr << "ERROR: Unable to flush persistent PGEN cache payload: "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+    if (munmap(genotypes, capacityBytes) != 0) {
+      cerr << "ERROR: Unable to unmap persistent PGEN cache payload: "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+    genotypes = NULL;
+    genotypeStorageBytes = 0;
+    genotypesFileBacked = false;
+
+    vector<int32_t> cachedMapping(Mbed, PGEN_CACHE_NON_MODEL);
+    for (uint64 mbed = 0; mbed < Mbed; mbed++)
+      if (inputSnps[mbed].vcNum >= 1)
+	cachedMapping[mbed] = static_cast<int32_t>(bedSnpToGrmIndex[mbed]);
+    vector<double> cachedMafs(M);
+    for (uint64 m = 0; m < M; m++) cachedMafs[m] = snps[m].MAF;
+    vector<uchar> cachedMask(Nstride);
+    for (uint64 n = 0; n < Nstride; n++) cachedMask[n] = maskIndivs[n] != 0;
+
+    PgenCacheHeader header = {};
+    memcpy(header.magic, PGEN_CACHE_MAGIC, sizeof(header.magic));
+    header.version = PGEN_CACHE_VERSION;
+    header.endian = PGEN_CACHE_ENDIAN;
+    header.complete = PGEN_CACHE_COMPLETE;
+    header.fingerprintLo = fingerprint.first;
+    header.fingerprintHi = fingerprint.second;
+    header.Nbed = Nbed;
+    header.Mbed = Mbed;
+    header.N = N;
+    header.Nstride = Nstride;
+    header.M = M;
+    header.genotypeBytes = genotypeBytes;
+    header.mappingOffset = PGEN_CACHE_HEADER_BYTES + genotypeBytes;
+    header.mafOffset = header.mappingOffset + Mbed*sizeof(int32_t);
+    header.maskOffset = header.mafOffset + M*sizeof(double);
+    header.fileBytes = header.maskOffset + Nstride;
+    if (header.fileBytes > static_cast<uint64>(std::numeric_limits<off_t>::max())) {
+      cerr << "ERROR: Persistent PGEN cache exceeds supported file size" << endl;
+      exit(1);
+    }
+
+    const int fd = open(pgenCacheBuildTempPath.c_str(), O_RDWR);
+    if (fd == -1 || ftruncate(fd, static_cast<off_t>(header.fileBytes)) != 0 ||
+	!writeExactAt(fd, cachedMapping.data(), cachedMapping.size()*sizeof(cachedMapping[0]),
+		      header.mappingOffset) ||
+	!writeExactAt(fd, cachedMafs.data(), cachedMafs.size()*sizeof(cachedMafs[0]),
+		      header.mafOffset) ||
+	!writeExactAt(fd, cachedMask.data(), cachedMask.size(), header.maskOffset) ||
+	!writeExactAt(fd, &header, sizeof(header), 0) || fsync(fd) != 0) {
+      const int savedErrno = errno;
+      if (fd != -1) close(fd);
+      cerr << "ERROR: Unable to finalize persistent PGEN cache " << cacheFile << ": "
+	   << std::strerror(savedErrno) << endl;
+      exit(1);
+    }
+    close(fd);
+    if (rename(pgenCacheBuildTempPath.c_str(), cacheFile.c_str()) != 0) {
+      cerr << "ERROR: Unable to publish persistent PGEN cache " << cacheFile << ": "
+	   << std::strerror(errno) << endl;
+      exit(1);
+    }
+    pgenCacheBuildTempPath.clear();
+    cout << "Wrote persistent Step 0 PGEN cache: " << cacheFile << " ("
+	 << M << " variants, " << N << " samples, " << formatGiB(genotypeBytes)
+	 << " GiB packed)" << endl;
+  }
+
+  void SnpData::allocatePgenGenotypes(uint64 bytes, const string &cacheDirIn,
+			       const string &buildCacheFile) {
     genotypeStorageBytes = bytes;
+    if (!buildCacheFile.empty()) {
+      uint64 requiredBytes = PGEN_CACHE_HEADER_BYTES;
+      const uint64 metadataBytes = Mbed*sizeof(int32_t) + M*sizeof(double) + Nstride;
+      if (addWouldOverflow(requiredBytes, bytes) ||
+	  addWouldOverflow(requiredBytes + bytes, metadataBytes)) {
+	cerr << "ERROR: Persistent PGEN cache dimensions overflow" << endl;
+	exit(1);
+      }
+      requiredBytes += bytes + metadataBytes;
+      const size_t slash = buildCacheFile.find_last_of('/');
+      const string cacheDir = slash == string::npos ? "." :
+	(slash == 0 ? "/" : buildCacheFile.substr(0, slash));
+      struct statvfs fsInfo;
+      if (statvfs(cacheDir.c_str(), &fsInfo) != 0) {
+	cerr << "ERROR: Unable to inspect persistent PGEN cache directory " << cacheDir << ": "
+	     << std::strerror(errno) << endl;
+	exit(1);
+      }
+      const uint64 freeBytes = static_cast<uint64>(fsInfo.f_bavail) * fsInfo.f_frsize;
+      if (freeBytes < requiredBytes) {
+	cerr << "ERROR: Persistent PGEN cache requires up to " << formatGiB(requiredBytes)
+	     << " GiB, but only " << formatGiB(freeBytes) << " GiB is available in "
+	     << cacheDir << endl;
+	exit(1);
+      }
+      pgenCacheBuildTempPath = buildCacheFile + ".tmp." + std::to_string(getpid());
+      const int fd = open(pgenCacheBuildTempPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+      if (fd == -1 || bytes > static_cast<uint64>(std::numeric_limits<off_t>::max()) -
+	  PGEN_CACHE_HEADER_BYTES ||
+	  ftruncate(fd, static_cast<off_t>(PGEN_CACHE_HEADER_BYTES + bytes)) != 0) {
+	const int savedErrno = errno;
+	if (fd != -1) close(fd);
+	cerr << "ERROR: Unable to allocate persistent PGEN cache " << buildCacheFile << ": "
+	     << std::strerror(savedErrno) << endl;
+	exit(1);
+      }
+      void *mapping = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+			   static_cast<off_t>(PGEN_CACHE_HEADER_BYTES));
+      const int mapErrno = errno;
+      close(fd);
+      if (mapping == MAP_FAILED) {
+	cerr << "ERROR: Unable to map persistent PGEN cache " << buildCacheFile << ": "
+	     << std::strerror(mapErrno) << endl;
+	exit(1);
+      }
+      genotypes = static_cast<uchar *>(mapping);
+      genotypesFileBacked = true;
+      cout << "Building persistent Step 0 PGEN cache at " << buildCacheFile << " ("
+	   << formatGiB(bytes) << " GiB maximum packed payload)" << endl;
+      return;
+    }
     const uint64 memoryBytes = physicalMemoryBytes();
     const bool forceFileBacked = !cacheDirIn.empty();
     genotypesFileBacked = forceFileBacked || (memoryBytes && bytes > memoryBytes / 2);
@@ -1122,7 +1583,8 @@ namespace LMM {
 		   const vector <string> &removeFiles,
 		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
 		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes,
-		   const string &pgenCacheDir)
+		   const string &pgenCacheDir, const string &pgenCacheFile,
+		   bool buildPgenCache)
     : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL),
       genotypeStorageBytes(0), genotypesFileBacked(false), maskSnps(NULL),
       maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
@@ -1146,13 +1608,21 @@ namespace LMM {
       exit(1);
     }
 
+    const pair<uint64, uint64> cacheFingerprint = computePgenCacheFingerprint
+      (pgenFile, bedSnps, maxMissingPerSnp, maxMissingPerIndiv);
+    if (!pgenCacheFile.empty() && !buildPgenCache) {
+      loadPgenCache(pgenCacheFile, cacheFingerprint, bedSnps);
+      return;
+    }
+
     if (M > std::numeric_limits<uint64>::max() / (Nstride/4)) {
       cerr << "ERROR: Packed PGEN genotype dimensions overflow addressable storage" << endl;
       exit(1);
     }
     const uint64 genotypeBytes = M * (Nstride/4);
     cout << "Allocating " << M << " x " << Nstride << "/4 bytes to store genotypes" << endl;
-    allocatePgenGenotypes(genotypeBytes, pgenCacheDir);
+    allocatePgenGenotypes(genotypeBytes, pgenCacheDir,
+			  buildPgenCache ? pgenCacheFile : string());
     numIndivsQC = N;
 
     vector <int> subsetIndices1based;
@@ -1223,6 +1693,8 @@ namespace LMM {
       cout << "Filtered " << numSnpsFailedQC << " SNPs with > " << maxMissingPerSnp
 	   << " missing" << endl;
     finishGenoQc(numMissingPerIndiv, maxMissingPerIndiv);
+    if (buildPgenCache)
+      finalizePgenCache(pgenCacheFile, cacheFingerprint, bedSnps);
   }
 
   SnpData::SnpData(const vector < pair <string, string> > &_indivIds,

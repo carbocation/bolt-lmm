@@ -50,6 +50,7 @@ namespace LMM {
     uchar *genotypes; // [[MATRIX]]: M x Nstride/4 (PLINK bed format, restricted to M x N)
     uint64 genotypeStorageBytes;
     bool genotypesFileBacked;
+    std::string pgenCacheBuildTempPath;
 
     // maskSnps is all-1s M-vector (currently unused; keep in case masking is eventually needed)
     // maskIndivs is zero-filled to Nstride; only indivs failing missingness QC are masked
@@ -106,7 +107,17 @@ namespace LMM {
 					     int numMissingPerIndiv[]) const;
     void finishGenoQc(const std::vector <int> &numMissingPerIndiv,
                       double maxMissingPerIndiv);
-    void allocatePgenGenotypes(uint64 bytes, const std::string &cacheDir);
+    void allocatePgenGenotypes(uint64 bytes, const std::string &cacheDir,
+                               const std::string &buildCacheFile);
+    std::pair<uint64, uint64> computePgenCacheFingerprint
+      (const std::string &pgenFile, const std::vector<SnpInfo> &inputSnps,
+       double maxMissingPerSnp, double maxMissingPerIndiv) const;
+    void loadPgenCache(const std::string &cacheFile,
+                       const std::pair<uint64, uint64> &fingerprint,
+                       const std::vector<SnpInfo> &inputSnps);
+    void finalizePgenCache(const std::string &cacheFile,
+                           const std::pair<uint64, uint64> &fingerprint,
+                           const std::vector<SnpInfo> &inputSnps);
 
   public:
     /**    
@@ -132,7 +143,8 @@ namespace LMM {
             double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
             std::vector <std::string> vcNamesIn=std::vector <std::string> (),
             bool loadNonModelSnps=true, int _Nautosomes=22,
-            const std::string &pgenCacheDir="");
+            const std::string &pgenCacheDir="",
+            const std::string &pgenCacheFile="", bool buildPgenCache=false);
 
     // Stage 2 sample state. If sampleFile is set, also initializes input sample mapping.
     SnpData(const std::vector < std::pair <std::string, std::string> > &_indivIds,

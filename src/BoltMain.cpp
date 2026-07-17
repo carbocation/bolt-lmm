@@ -293,8 +293,14 @@ int main(int argc, char *argv[]) {
   mkl_set_num_threads(params.numThreads);
 #endif
 
-  cout << "Running Stage " << params.stage << endl;
-  cout << "Stage 1 model: " << params.stage1Model << endl;
+  if (params.stage == 0) {
+    cout << "Running Step 0 persistent PGEN cache build" << endl;
+    cout << "PGEN cache file: " << params.pgenCacheFile << endl;
+  }
+  else {
+    cout << "Running Stage " << params.stage << endl;
+    cout << "Stage 1 model: " << params.stage1Model << endl;
+  }
 
   if (params.stage == 2) {
     cout << endl << "=== Loading Stage 1 model ===" << endl << endl;
@@ -352,8 +358,8 @@ int main(int argc, char *argv[]) {
 				 params.modelSnpsFiles, params.removeFiles,
 				 params.maxMissingPerSnp, params.maxMissingPerIndiv,
 			 params.noMapCheck, params.remlGuessVCnames,
-			 !params.reml && params.lmmInf, params.Nautosomes,
-			 params.pgenCacheDir));
+			 params.stage == 1 && !params.reml && params.lmmInf, params.Nautosomes,
+			 params.pgenCacheDir, params.pgenCacheFile, params.stage == 0));
   else
     snpDataPtr.reset(new SnpData(params.famFile, params.bimFiles, params.bedFiles,
 				 params.geneticMapFile, params.excludeFiles,
@@ -368,6 +374,12 @@ int main(int argc, char *argv[]) {
   // - maskIndivs is zero-filled to Nstride; only indivs failing missingness QC are masked
   // - M = # of snps in .bim file not in --exclude file and not failing QC
   // - maskSnps is all-1s M-vector (leave in code; useful if masking eventually needs to be done)
+
+  if (params.stage == 0) {
+    cout << "Total elapsed time for Step 0 = " << (timer.get_time() - start_time) << " sec"
+	 << endl;
+    return 0;
+  }
 
   if ((int) snps.size() > params.maxModelSnps) {
     cerr << "ERROR: Number of SNPs exceeds maxModelSnps = " << params.maxModelSnps << endl;

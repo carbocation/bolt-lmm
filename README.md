@@ -138,6 +138,44 @@ This repository accepts biallelic PGEN variants and reads their hardcalls;
 dosage overrides in a PGEN file are reported and ignored. The manual documents
 additional Stage 2 inputs for BGEN, IMPUTE2, and dosage formats.
 
+For repeated Stage 1 analyses of the same PGEN cohort and model-marker set,
+build the converted hardcall artifact explicitly in CPU-only Step 0:
+
+```sh
+./build/bolt \
+  --stage=0 \
+  --pfile=data/cohort \
+  --pgenCacheFile=/scratch/cohort.bolt-pgen-cache \
+  --remove=data/remove.txt \
+  --modelSnps=data/model.snps \
+  --numThreads=1
+```
+
+Then pass the same genotype filtering, model-marker, map, and QC options in
+Stage 1, adding the cache input:
+
+```sh
+./build/bolt \
+  --stage=1 \
+  --stage1Model=cohort.stage1.model \
+  --pfile=data/cohort \
+  --pgenCacheFile=/scratch/cohort.bolt-pgen-cache \
+  --remove=data/remove.txt \
+  --modelSnps=data/model.snps \
+  --phenoFile=data/phenotypes.tsv \
+  --phenoCol=TRAIT \
+  --lmm
+```
+
+Step 0 is CPU-only even when the binary contains CUDA support. It writes the
+post-filter/QC packed hardcalls, variant mapping and MAFs, and sample QC mask
+atomically. Stage 1 never creates this artifact: it parses the named
+PGEN/PVAR/PSAM files, verifies their identity together with sample/variant
+selection, packing, and QC settings, and only then memory-maps the cache.
+Phenotypes and covariates are deliberately not part of the identity, so the
+artifact can be reused across traits. `--pgenCacheDir` remains the separate
+option for an unlinked, per-run scratch cache.
+
 For BOLT-REML, use `--stage=1 --reml`; no Stage 2 association readout is
 required. See the bundled REML example for multi-trait syntax.
 

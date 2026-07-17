@@ -295,6 +295,32 @@ therefore use the convergent 16,384-variant fixtures, while the full panel is
 used only for parser, hardcall-conversion, QC, and storage measurements. Raw
 measurements are in `results/a100_stage1_real_genotypes.tsv`.
 
+## Persistent CPU Step 0 PGEN cache
+
+`--stage=0 --pfile PREFIX --pgenCacheFile FILE` performs PGEN hardcall
+conversion and genotype QC once, writing a durable packed artifact directly
+without a second full-size copy. Stage 1 accepts the artifact only when a
+fingerprint of the PGEN source, parsed PVAR/PSAM identities, sample removal,
+variant/model selection, packing dimensions, map-derived metadata, and QC
+thresholds matches. It never silently builds or refreshes the artifact. A
+CUDA-enabled binary still executes Step 0 entirely on the CPU, allowing
+production caches to be prepared away from accelerator nodes.
+
+On the 131,072-sample by 16,384-variant real-reference fixture, Step 0 took
+2.97 seconds once. Reuse reduced Stage 1 `SnpData` setup from 1.593 to 0.213
+seconds (86.6%) and end-to-end CUDA wall time from 31.95 to 30.22 seconds
+(5.4%). The direct-PGEN and persistent-cache Stage 1 model artifacts were
+byte-identical.
+
+The exact 500,000-sample by 1,000,000-variant artifact contains 116.4 GiB of
+packed hardcalls. Building and durably flushing it took 522.53 seconds on one
+pinned Xeon core, compared with the prior 528.8-second per-run PGEN conversion.
+Two guard-bounded Stage 1 loads took 2.50 and 2.47 seconds with about 605 MiB
+peak RSS: a 213x setup speedup and roughly 8 minutes 46 seconds saved on every
+reuse. One-MiB regions at the beginning, middle, and end of the payload matched
+the original BED-equivalent hardcalls byte-for-byte. These target-shape runs
+measure setup only; they do not attempt a full million-variant model fit.
+
 ## Variance-component CG warm starts
 
 The h2 secant search repeatedly solves closely related systems at nearby

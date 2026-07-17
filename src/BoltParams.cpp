@@ -137,7 +137,8 @@ namespace LMM {
     typical.add_options()
       ("help,h", "print help message with typical options")
       ("helpFull", "print help message with full option list")
-      ("stage", po::value<int>(&stage), "run exactly one stage: 1 (fit model) or 2 (association readout)")
+      ("stage", po::value<int>(&stage),
+       "run exactly one stage: 0 (build PGEN cache), 1 (fit), or 2 (association readout)")
       ("stage1Model", po::value<string>(&stage1Model),
        "Stage 1 model artifact (output in Stage 1; input in Stage 2)")
 
@@ -247,6 +248,8 @@ namespace LMM {
        "an error-check: if millions of SNPs are imputed, it's inefficient to use them all")
       ("pgenCacheDir", po::value<string>(&pgenCacheDir),
        "scratch directory for a file-backed Stage 1 PGEN hardcall cache")
+      ("pgenCacheFile", po::value<string>(&pgenCacheFile),
+       "persistent Step 0 PGEN hardcall cache (output in Stage 0; input in Stage 1)")
       ("cudaCacheGiB", po::value<double>(&cudaCacheGiB)->default_value(-1),
        "maximum CUDA packed-genotype cache size in GiB (-1 = automatic, 0 = disabled)")
       ("cudaHostCacheGiB", po::value<double>(&cudaHostCacheGiB)->default_value(-1),
@@ -379,16 +382,20 @@ namespace LMM {
       
       po::notify(vm); // throws an error if there are any problems
 
-      if (!vm.count("stage") || (stage != 1 && stage != 2)) {
-	cerr << "ERROR: --stage must be specified as either 1 or 2" << endl;
+      if (!vm.count("stage") || (stage != 0 && stage != 1 && stage != 2)) {
+	cerr << "ERROR: --stage must be specified as 0, 1, or 2" << endl;
 	return false;
       }
-      if (stage1Model.empty() && !(stage == 1 && vm.count("reml"))) {
+      if (stage != 0 && stage1Model.empty() && !(stage == 1 && vm.count("reml"))) {
 	cerr << "ERROR: --stage1Model is required (output for Stage 1; input for Stage 2)" << endl;
 	return false;
       }
       int numPlinkFormats = vm.count("bfile") + vm.count("bfilegz") + vm.count("pfile") +
 	(vm.count("fam") || vm.count("bim") || vm.count("bed"));
+      if (stage == 0 && (numPlinkFormats != 1 || !vm.count("pfile"))) {
+	cerr << "ERROR: Stage 0 requires exactly one --pfile input" << endl;
+	return false;
+      }
       if ((stage == 1 && numPlinkFormats != 1) || (stage == 2 && numPlinkFormats > 1)) {
 	cerr << "ERROR: Use one of --bfile, --bfilegz, --pfile, or --fam,--bim,--bed"
 	     << (stage == 2 ? " (PLINK input is optional in Stage 2)" : "") << endl;
@@ -417,6 +424,19 @@ namespace LMM {
       }
       if (!pgenCacheDir.empty() && (stage != 1 || pgenFile.empty())) {
 	cerr << "ERROR: --pgenCacheDir requires Stage 1 --pfile input" << endl;
+	return false;
+      }
+      if (stage == 0 && pgenCacheFile.empty()) {
+	cerr << "ERROR: Stage 0 requires --pgenCacheFile output" << endl;
+	return false;
+      }
+      if (!pgenCacheFile.empty() && ((stage != 0 && stage != 1) || pgenFile.empty())) {
+	cerr << "ERROR: --pgenCacheFile requires Stage 0 or Stage 1 --pfile input" << endl;
+	return false;
+      }
+      if (stage == 0 && (pgenCacheFile == pgenFile || pgenCacheFile == pvarFile ||
+			 pgenCacheFile == psamFile)) {
+	cerr << "ERROR: --pgenCacheFile must not overwrite a --pfile source file" << endl;
 	return false;
       }
       if (!std::isfinite(cudaCacheGiB) || (cudaCacheGiB < 0 && cudaCacheGiB != -1)) {
@@ -475,6 +495,16 @@ namespace LMM {
       noImpute2IDcheck = vm.count("noImpute2IDcheck");
       noBgenIDcheck = vm.count("noBgenIDcheck");
       bgenRefFirst = vm.count("bgenRefFirst");
+
+      if (stage == 0 &&
+	  (!stage1Model.empty() || vm.count("phenoFile") || vm.count("phenoCol") ||
+	   phenoUseFam || vm.count("covarFile") || vm.count("covarCol") ||
+	   vm.count("qCovarCol") || reml || lmmInf || vm.count("predBetasFile") ||
+	   vm.count("snpInfoFile") || vm.count("cuda") || vm.count("no-cuda") || noLinreg)) {
+	cerr << "ERROR: Stage 0 accepts genotype filtering/QC options but not phenotype, "
+	     << "covariate, model-fitting, prediction, or CUDA options" << endl;
+	return false;
+      }
 
       domRecHetTest = vm.count("domRecHetTest");
       
@@ -1055,6 +1085,10 @@ namespace LMM {
       FileUtils::requireEmptyOrReadable(pgenFile);
       FileUtils::requireEmptyOrReadable(pvarFile);
       FileUtils::requireEmptyOrReadable(psamFile);
+      if (stage == 0)
+	FileUtils::requireEmptyOrWriteable(pgenCacheFile);
+      else if (stage == 1)
+	FileUtils::requireEmptyOrReadable(pgenCacheFile);
       FileUtils::requireEmptyOrReadable(geneticMapFile);
       FileUtils::requireEachEmptyOrReadable(removeFiles);
       FileUtils::requireEachEmptyOrReadable(excludeFiles);
@@ -1072,7 +1106,7 @@ namespace LMM {
       if (stage == 1) {
 	if (!stage1Model.empty()) FileUtils::requireEmptyOrWriteable(stage1Model);
       }
-      else FileUtils::requireEmptyOrReadable(stage1Model);
+      else if (stage == 2) FileUtils::requireEmptyOrReadable(stage1Model);
 
       FileUtils::requireEmptyOrReadable(MAFhistFile);
       FileUtils::requireEmptyOrReadable(phenoStratFile);

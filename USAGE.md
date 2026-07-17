@@ -67,8 +67,10 @@ The Stage 1 artifact makes it possible to run multiple independent Stage 2
 jobs against different variant files without refitting the model.
 
 BED and hardcall-PGEN inputs use bounded CPU batching or direct packed scoring
-automatically. `--stage2Scalar` selects the original per-variant arithmetic as
-a validation/reference path; it does not change the statistical model or
+automatically. Single-threaded layout-2 BGEN readout also batches scoring when
+the number of covariate and statistic vectors is large enough to benefit.
+`--stage2Scalar` selects the original per-variant arithmetic for these formats
+as a validation/reference path; it does not change the statistical model or
 output columns.
 
 ## Numerical compatibility

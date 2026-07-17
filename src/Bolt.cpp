@@ -3882,15 +3882,16 @@ namespace LMM {
     fout.close();
   }
 
-  string Bolt::getSnpStatsBgen2(uint CompressedSNPBlocks, uchar *buf, uint bufLen,
-				const uchar *zBuf, uint zBufLen, uint Nbgen,
-				const vector <uint64> &bgenIndivInds, bool bgenIndivsIdentity,
-				const string &snpName,
-				int chrom, int physpos,double genpos, const string &allele1,
-				const string &allele0, double snpCovCompVec[], bool verboseStats,
-				const vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
-				double bgenMinMAF, double bgenMinINFO, int bgenMinMAC,
-				bool bgenRefFirst) const {
+  string Bolt::decodeSnpStatsBgen2
+  (uint CompressedSNPBlocks, uchar *buf, uint bufLen, const uchar *zBuf, uint zBufLen,
+   uint Nbgen, const vector <uint64> &bgenIndivInds, bool bgenIndivsIdentity,
+   const string &snpName, int chrom, int physpos, double genpos, const string &allele1,
+   const string &allele0, double snpCovCompVec[], bool verboseStats,
+   const vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
+   double bgenMinMAF, double bgenMinINFO, int bgenMinMAC, bool bgenRefFirst,
+   Stage2VariantInfo *decodedVariant, bool *decoded) const {
+
+    if (decoded != NULL) *decoded = false;
 
     /********** decompress and check genotype probability block **********/
 
@@ -4050,8 +4051,27 @@ namespace LMM {
 	}
     }
 
+    const double outputInfo = info * (1-missingNum/(missingNum+dosageNum));
+    if (decodedVariant != NULL) {
+      const double alleleFreq = snpData.computeAlleleFreq(snpCovCompVec, maskIndivs);
+      snpData.dosageLineToMaskedSnpVector(snpCovCompVec, maskIndivs, alleleFreq,
+					  maskCoversAllIndivs);
+      decodedVariant->ID = snpName;
+      decodedVariant->chrom = chrom;
+      decodedVariant->physpos = physpos;
+      decodedVariant->genpos = genpos;
+      decodedVariant->allele1 = allele1;
+      decodedVariant->allele0 = allele0;
+      decodedVariant->alleleFreq = alleleFreq;
+      decodedVariant->missing = 0;
+      decodedVariant->info = outputInfo;
+      decodedVariant->rawNorm2 = NumericUtils::norm2(snpCovCompVec, Nstride);
+      if (decoded != NULL) *decoded = true;
+      return "";
+    }
+
     oss << getSnpStats(snpName, chrom, physpos, genpos, allele1, allele0, snpCovCompVec,
-		       verboseStats, retroData, info * (1-missingNum/(missingNum+dosageNum)));
+		       verboseStats, retroData, outputInfo);
     if (domRecHetTest) {
       string testSuffixes[3] = {":Dom", ":Het", ":Rec"};
       string allele1s[3] = {string(allele1)+allele1 + "|" + allele1+allele0,
@@ -4097,11 +4117,27 @@ namespace LMM {
     return oss.str();
   }
 
+  string Bolt::getSnpStatsBgen2(uint CompressedSNPBlocks, uchar *buf, uint bufLen,
+				const uchar *zBuf, uint zBufLen, uint Nbgen,
+				const vector <uint64> &bgenIndivInds, bool bgenIndivsIdentity,
+				const string &snpName,
+				int chrom, int physpos,double genpos, const string &allele1,
+				const string &allele0, double snpCovCompVec[], bool verboseStats,
+				const vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
+				double bgenMinMAF, double bgenMinINFO, int bgenMinMAC,
+				bool bgenRefFirst) const {
+    return decodeSnpStatsBgen2(CompressedSNPBlocks, buf, bufLen, zBuf, zBufLen, Nbgen,
+			       bgenIndivInds, bgenIndivsIdentity, snpName, chrom, physpos,
+			       genpos, allele1, allele0, snpCovCompVec, verboseStats, retroData,
+			       domRecHetTest, bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst,
+			       NULL, NULL);
+  }
+
   void Bolt::streamBgen2
   (const string &outFile, int f, const string &bgenFile, const string &sampleFile,
    double bgenMinMAF, double bgenMinINFO, int bgenMinMAC, const string &geneticMapFile,
    bool verboseStats, const vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
-   bool bgenRefFirst, int threads) const {
+   bool bgenRefFirst, int threads, bool optimizedStage2) const {
 
 #ifdef USE_MKL
     mkl_set_num_threads(1); // don't use nested threading in DGEMV calls (for covariate projection)
@@ -4133,14 +4169,40 @@ namespace LMM {
     cout << endl << "Read " << Nsample << " indivs; using "
 	 << numFound << " in filtered PLINK data and not masked" << endl;
 
-    // allocate thread-specific memory buffers
+    const uint64 numScoreVectors = Cindep + retroData.size();
+    // With only the intercept and two mixed-model statistics, the existing fused
+    // scalar scan is already optimal. Dense batching wins once projection/scoring
+    // requires at least five independent vectors.
+    const bool useStage2Batch = optimizedStage2 && threads == 1 && !domRecHetTest &&
+      numScoreVectors >= 5;
+    const uint64 targetBatchBytes = 256ULL << 20;
+    const uint64 maxStage2BatchSize = useStage2Batch ? std::max<uint64>(
+      1, std::min<uint64>(128, targetBatchBytes/(Nstride*sizeof(double)))) : 1;
+
+    // allocate thread-specific memory buffers, or one bounded dense Stage 2 batch
     double *snpCovCompVecs[threads];
-    for (int t = 0; t < threads; t++) {
-      snpCovCompVecs[t] = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
-      memset(snpCovCompVecs[t]+Nstride, 0, Cstride * sizeof(snpCovCompVecs[t][0])); // important!
-      for (uint n = 0; n < Nstride; n++) snpCovCompVecs[t][n] = -9; // initalize dosages to missing
+    if (useStage2Batch) {
+      snpCovCompVecs[0] = ALIGNED_MALLOC_DOUBLES(Nstride*maxStage2BatchSize);
+      for (uint64 n = 0; n < Nstride*maxStage2BatchSize; n++) snpCovCompVecs[0][n] = -9;
     }
+    else
+      for (int t = 0; t < threads; t++) {
+	snpCovCompVecs[t] = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
+	memset(snpCovCompVecs[t]+Nstride, 0,
+	       Cstride * sizeof(snpCovCompVecs[t][0])); // important!
+	for (uint n = 0; n < Nstride; n++) snpCovCompVecs[t][n] = -9;
+      }
     vector < vector <uchar> > bufs(threads);
+    vector<Stage2VariantInfo> stage2Batch;
+    stage2Batch.reserve(maxStage2BatchSize);
+    Stage2ScoreWorkspace scoreWorkspace;
+    const auto flushStage2Batch = [&]() {
+      if (!stage2Batch.empty()) {
+	scoreStage2Batch(fout, stage2Batch, snpCovCompVecs[0], verboseStats, retroData,
+			 scoreWorkspace);
+	stage2Batch.clear();
+      }
+    };
 
     /********** READ HEADER **********/
 
@@ -4257,36 +4319,60 @@ namespace LMM {
       if (bgenVariantsToTest.empty() || bgenVariantsToTest.find(variant)!=bgenVariantsToTest.end())
 	B++;
 
-      if (B == B_MAX || mbgen+1 == Mbgen) { // process the block of SNPs using multi-threading
+      if (B == B_MAX || mbgen+1 == Mbgen) { // process the block of SNPs
+	if (useStage2Batch) {
+	  for (int b = 0; b < B; b++) {
+	    Stage2VariantInfo variantInfo;
+	    bool decoded = false;
+	    double *snpVector = snpCovCompVecs[0] + stage2Batch.size()*Nstride;
+	    if (bufLens[b] > bufs[0].size()) bufs[0].resize(bufLens[b]);
+	    decodeSnpStatsBgen2(CompressedSNPBlocks, &bufs[0][0], bufLens[b],
+				&zBufs[b][0], zBufLens[b], Nbgen, bgenIndivInds,
+				bgenIndivsIdentity, snpNames[b], chroms[b], bps[b], gps[b],
+				allele1s[b], allele0s[b], snpVector, verboseStats, retroData,
+				false, bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst,
+				&variantInfo, &decoded);
+	    if (decoded) {
+	      stage2Batch.push_back(variantInfo);
+	      if (stage2Batch.size() == maxStage2BatchSize) flushStage2Batch();
+	    }
+	  }
+	}
+	else {
 #ifdef BOLT_USE_OPENMP
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) num_threads(threads)
 #endif
-	for (int b = 0; b < B; b++) {
-	  int t = omp_get_thread_num();
-	  if (bufLens[b] > bufs[t].size()) bufs[t].resize(bufLens[b]);
-	  outStrs[b] = getSnpStatsBgen2(CompressedSNPBlocks, &bufs[t][0], bufLens[b], &zBufs[b][0],
+	  for (int b = 0; b < B; b++) {
+	    int t = omp_get_thread_num();
+	    if (bufLens[b] > bufs[t].size()) bufs[t].resize(bufLens[b]);
+	    outStrs[b] = getSnpStatsBgen2(CompressedSNPBlocks, &bufs[t][0], bufLens[b], &zBufs[b][0],
 					zBufLens[b], Nbgen, bgenIndivInds, bgenIndivsIdentity,
 					snpNames[b], chroms[b],
 					bps[b], gps[b], allele1s[b], allele0s[b],
 					snpCovCompVecs[t], verboseStats, retroData, domRecHetTest,
 					bgenMinMAF, bgenMinINFO, bgenMinMAC, bgenRefFirst);
-	}
+	  }
 
-	for (int b = 0; b < B; b++)
-	  fout << outStrs[b];
+	  for (int b = 0; b < B; b++)
+	    fout << outStrs[b];
+	}
 
 	B = 0; // reset current block size
       }
       if (mbgen % 100000 == 99999)
 	cout << "At SNP " << mbgen+1 << "; time for block: " << timer.update_time() << endl;
     }
+    flushStage2Batch();
 
     free(variant);
     free(allele0);
     free(allele1);
 
-    for (int t = 0; t < threads; t++)
-      ALIGNED_FREE(snpCovCompVecs[t]);
+    if (useStage2Batch)
+      ALIGNED_FREE(snpCovCompVecs[0]);
+    else
+      for (int t = 0; t < threads; t++)
+	ALIGNED_FREE(snpCovCompVecs[t]);
 
     fclose(fin);
     fout.close();

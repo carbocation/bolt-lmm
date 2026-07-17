@@ -111,6 +111,59 @@ int main(int argc, char **argv) {
   if (bedStats != bedReferenceStats)
     return fail("optimized and scalar Stage 2 association outputs differ");
 
+  // Exercise single-threaded layout-2 BGEN batching with enough covariate and
+  // statistic vectors to cross the production batching threshold.
+  {
+    std::vector<double> bgenBasis(3*Nstride, 0);
+    for (size_t n = 0; n < Nstride; n++) bgenBasis[n] = covBasis[n];
+    for (size_t n = 0; n < ids.size(); n++)
+      if (mask[n]) {
+        bgenBasis[Nstride+n] = std::sin(0.071*n);
+        bgenBasis[2*Nstride+n] = std::cos(0.043*n);
+      }
+    for (size_t c = 1; c < 3; c++) {
+      for (size_t prev = 0; prev < c; prev++) {
+        double dot = 0;
+        for (size_t n = 0; n < Nstride; n++)
+          dot += bgenBasis[c*Nstride+n] * bgenBasis[prev*Nstride+n];
+        for (size_t n = 0; n < Nstride; n++)
+          bgenBasis[c*Nstride+n] -= dot*bgenBasis[prev*Nstride+n];
+      }
+      double norm2 = 0;
+      for (size_t n = 0; n < Nstride; n++)
+        norm2 += bgenBasis[c*Nstride+n] * bgenBasis[c*Nstride+n];
+      const double invNorm = 1/std::sqrt(norm2);
+      for (size_t n = 0; n < Nstride; n++) bgenBasis[c*Nstride+n] *= invNorm;
+    }
+
+    LMM::Bolt bgenBolt(bedData, mask, bgenBasis, 3, 22, noBgenVariants);
+    std::vector<double> resid2(Nstride, 0);
+    for (size_t n = 0; n < ids.size(); n++)
+      if (mask[n]) resid2[n] = std::cos(0.11*n) - 0.2*std::sin(0.037*n);
+    std::vector<LMM::Bolt::StatsDataRetroLOCO> bgenRetroData;
+    bgenRetroData.push_back(LMM::Bolt::StatsDataRetroLOCO(
+      "BOLT_LMM_INF", noStats, resids, boundaries, scales));
+    bgenRetroData.push_back(LMM::Bolt::StatsDataRetroLOCO(
+      "BOLT_LMM", noStats, std::vector< std::vector<double> >(1, resid2),
+      boundaries, scales));
+
+    const std::string bgenOut = outputDir + "/pgen_stage2_bgen.stats";
+    const std::string bgenReferenceOut = outputDir + "/pgen_stage2_bgen_reference.stats";
+    bgenBolt.streamBgen2(bgenOut, 0, fixtureDir + "/example-bgen.bgen",
+                         fixtureDir + "/example-bgen.sample", 0, 0, 0, "", true,
+                         bgenRetroData, false, false, 1, true);
+    bgenBolt.streamBgen2(bgenReferenceOut, 0, fixtureDir + "/example-bgen.bgen",
+                         fixtureDir + "/example-bgen.sample", 0, 0, 0, "", true,
+                         bgenRetroData, false, false, 1, false);
+    const std::string bgenStats = readFile(bgenOut);
+    const std::string bgenReferenceStats = readFile(bgenReferenceOut);
+    std::remove(bgenOut.c_str());
+    std::remove(bgenReferenceOut.c_str());
+    if (bgenStats.empty()) return fail("BGEN association output is empty");
+    if (bgenStats != bgenReferenceStats)
+      return fail("batched and scalar BGEN association outputs differ");
+  }
+
   // Exercise the identity-order path separately. AVX builds select direct
   // packed scoring here; portable builds retain the dense batched fallback.
   {
@@ -170,7 +223,7 @@ int main(int argc, char **argv) {
       return fail("direct-packed and scalar association outputs differ");
   }
 
-  std::cout << "BED/PGEN Stage 2 association output is byte-identical after subsetting, "
-            << "reordering, and masking samples" << std::endl;
+  std::cout << "BED/PGEN/BGEN Stage 2 association output is byte-identical after "
+            << "subsetting, reordering, and masking samples" << std::endl;
   return 0;
 }

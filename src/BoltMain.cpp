@@ -191,7 +191,8 @@ static void runStage2(const BoltParams &params, const Bolt &bolt,
 	bolt.streamBgen2(params.statsFileBgenSnps, f, params.bgenFiles[f], params.sampleFiles[f],
 			 params.bgenMinMAF, params.bgenMinINFO, params.bgenMinMAC,
 			 params.geneticMapFile, params.verboseStats, retroData,
-			 params.domRecHetTest, params.bgenRefFirst, params.numThreads);
+			 params.domRecHetTest, params.bgenRefFirst, params.numThreads,
+			 !params.stage2Scalar);
     }
     cout << endl << "Time for BGEN association readout = " << timer.update_time()
 	 << " sec" << endl << endl;

@@ -256,7 +256,7 @@ namespace LMM {
        "maximum retained host cache for file-backed CUDA genotypes in GiB "
        "(-1 = automatic, 0 = disabled)")
       ("noLinreg", "skip LINREG statistics in Stage 1 LMM association analysis")
-      ("stage2Scalar", "use upstream scalar BED/PGEN Stage 2 scoring for validation")
+      ("stage2Scalar", "use upstream scalar BED/PGEN/BGEN Stage 2 scoring for validation")
       ("warmStartVarianceCG",
        "warm-start variance-component CG solves (opt-in; may change numerical output)")
       ("warmStartFinalVB",

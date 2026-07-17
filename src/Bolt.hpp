@@ -129,6 +129,14 @@ namespace LMM {
 			  const double genotypeBatch[], bool verboseStats,
 			  const std::vector<StatsDataRetroLOCO> &retroData,
 			  Stage2ScoreWorkspace &workspace) const;
+    std::string decodeSnpStatsBgen2
+    (uint CompressedSNPBlocks, uchar *buf, uint bufLen, const uchar *zBuf, uint zBufLen,
+     uint Nbgen, const std::vector<uint64> &bgenIndivInds, bool bgenIndivsIdentity,
+     const std::string &snpName, int chrom, int physpos, double genpos,
+     const std::string &allele1, const std::string &allele0, double snpCovCompVec[],
+     bool verboseStats, const std::vector<StatsDataRetroLOCO> &retroData,
+     bool domRecHetTest, double bgenMinMAF, double bgenMinINFO, int bgenMinMAC,
+     bool bgenRefFirst, Stage2VariantInfo *decodedVariant, bool *decoded) const;
 
     inline void buildMaskedSnpNegCovCompVec(double snpCovCompVec[], uint64 m, double (*work)[4])
       const {
@@ -445,7 +453,7 @@ namespace LMM {
     (const std::string &outFile, int f, const std::string &bgenFile, const std::string &sampleFile,
      double bgenMinMAF, double bgenMinINFO, int bgenMinMAC, const std::string &geneticMapFile,
      bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData, bool domRecHetTest,
-     bool bgenRefFirst, int threads) const;
+     bool bgenRefFirst, int threads, bool optimizedStage2=true) const;
   };
 }
 

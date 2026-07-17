@@ -503,3 +503,40 @@ fell from 214.06 to 212.75 seconds (0.6%). The Stage 1 model artifact was
 byte-identical. This is retained despite the small total gain because the
 implementation is a narrow intrinsic-width substitution and production runs
 are expected to use AVX-capable x86 hosts.
+
+## Current single-core CPU ceiling audit
+
+After the PGEN, warm-start, and Bayesian-factor changes above, a fresh pinned
+profile used the 8,192-sample by 16,384-variant real-reference fixture with
+`--noLinreg`. End-to-end Stage 1 took 35.26 seconds: 8.64 seconds for variance
+fitting, 9.86 seconds for infinitesimal scoring, 11.72 seconds for mixture
+estimation, and 4.05 seconds for final spike-and-slab scoring.
+
+The main executable's profile attributed 1,425,498 calls to packed-genotype
+expansion: 589,824 from the CG matrix multiply and 671,744 from variational
+Bayes. Expansion accounted for 72.9% of samples collected in the executable,
+but that percentage excludes time inside dynamically linked oneMKL and must
+not be interpreted as its share of wall time. Four output-preservation
+experiments tested the remaining local opportunities:
+
+| Experiment | Bounded result | Decision |
+| --- | --- | --- |
+| Fuse CPU marker centering and normalization | Initialization 0.656 to 0.489 s; wall 35.01 to 34.81 s | Rejected: Stage 2 statistics were byte-identical, but the internal model differed and moderate duplicated decode logic bought only 0.6% wall time |
+| Address active Bayesian models through their compacted indices | Wall 34.95 to 35.19 s | Rejected: byte-identical model, slightly slower |
+| Manually unroll native AVX lookup expansion four ways | Wall 35.03 to 36.06 s | Rejected: byte-identical model, 2.9% slower |
+| Decode with AVX-512 variable permutation instead of a per-SNP lookup table | Wall 34.90 to 33.62 s at N=8,192 | Rejected at target stride: the 500,000-sample initialization median changed from 9.937 to 9.990 s |
+
+The AVX-512 check is important because it prevents a small-sample benchmark
+from selecting the wrong production path. Its target-stride comparison used
+4,096 model markers, so each initialization expanded 16.384 GB of doubles;
+two order-reversed pairs were neutral to slightly unfavorable despite the
+small-fixture win. Raw measurements are in
+`results/a100_stage1_cpu_ceiling.tsv`.
+
+The remaining substantial CPU opportunity is to avoid materializing dense
+double genotype blocks and multiply directly from packed hardcalls. That is a
+different matrix arithmetic and summation path, not an obvious local
+optimization, and therefore needs a separate scientific-output validation
+before it could become a default. Under the requirement that the current
+numerical path and real-data output remain unchanged, this audit found no
+untried single-core CPU change with a credible 10% end-to-end gain.

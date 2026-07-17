@@ -1,0 +1,13 @@
+experiment	implementation	N	M	marker_init_sec	variance_sec	infinitesimal_sec	mixture_sec	bayes_sec	wall_sec	model_sha256
+marker_center	baseline	8192	16384	0.656383	NA	NA	11.6960	4.00099	35.01	5473ea07c9d6eedf0d59751508cd9dc177ae3c2f7b3abf9bc5543c8ef753f14d
+marker_center	candidate	8192	16384	0.488573	NA	NA	11.6599	4.00521	34.81	004d894f98b2b483920ae8465cb011967dd1f6567573704db4514e6ac162483c
+active_model_indices	baseline	8192	16384	NA	NA	NA	11.6493	3.99429	34.95	5473ea07c9d6eedf0d59751508cd9dc177ae3c2f7b3abf9bc5543c8ef753f14d
+active_model_indices	candidate	8192	16384	NA	NA	NA	11.7412	4.01312	35.19	5473ea07c9d6eedf0d59751508cd9dc177ae3c2f7b3abf9bc5543c8ef753f14d
+avx_unroll	baseline	8192	16384	0.654725	8.58578	9.79301	11.6737	4.00656	35.03	5473ea07c9d6eedf0d59751508cd9dc177ae3c2f7b3abf9bc5543c8ef753f14d
+avx_unroll	candidate	8192	16384	0.671975	8.87287	9.96297	12.1114	4.11437	36.06	5473ea07c9d6eedf0d59751508cd9dc177ae3c2f7b3abf9bc5543c8ef753f14d
+avx512_decode	baseline	8192	16384	0.653988	8.54957	9.73621	11.6385	4.01383	34.90	5473ea07c9d6eedf0d59751508cd9dc177ae3c2f7b3abf9bc5543c8ef753f14d
+avx512_decode	candidate	8192	16384	0.638105	8.09770	9.67899	11.0089	3.88163	33.62	5473ea07c9d6eedf0d59751508cd9dc177ae3c2f7b3abf9bc5543c8ef753f14d
+avx512_target_stride	baseline_1	500000	4096	9.89786	NA	NA	NA	NA	NA	NA
+avx512_target_stride	candidate_1	500000	4096	9.97636	NA	NA	NA	NA	NA	NA
+avx512_target_stride	candidate_2	500000	4096	10.0039	NA	NA	NA	NA	NA	NA
+avx512_target_stride	baseline_2	500000	4096	9.97602	NA	NA	NA	NA	NA	NA

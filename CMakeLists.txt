@@ -41,8 +41,8 @@ set(BOLT_CPU_TARGET "portable" CACHE STRING
 set(BOLT_CPU_TUNE "" CACHE STRING
   "Optional x86 compiler tuning target, for example generic or native")
 
-option(BOLT_CUDA "Build optional CUDA acceleration for Step 1" OFF)
-set(BOLT_CUDA_ARCHITECTURES "80" CACHE STRING
+option(BOLT_CUDA "Build optional CUDA acceleration" OFF)
+set(BOLT_CUDA_ARCHITECTURES "75;80" CACHE STRING
   "CUDA architectures to compile when BOLT_CUDA is enabled")
 
 set(BOLT_OPENMP_ROOT "" CACHE PATH "Root of an OpenMP installation")
@@ -402,7 +402,7 @@ set(BOLT_SOURCES
   src/Timer.cpp)
 
 if(BOLT_CUDA)
-  list(APPEND BOLT_SOURCES src/CudaStep1.cu)
+  list(APPEND BOLT_SOURCES src/CudaStep1.cu src/CudaStage2.cu)
 endif()
 
 if(BOLT_WRAP_LEGACY_MEMCPY)
@@ -518,6 +518,16 @@ if(BUILD_TESTING)
       COMMAND cuda_step1_parity_test --no-cache)
     add_test(NAME cuda_step1_host_cache_parity
       COMMAND cuda_step1_parity_test --host-cache)
+
+    add_executable(cuda_stage2_parity_test
+      tests/CudaStage2Parity.cpp
+      src/CudaStage2.cu)
+    target_include_directories(cuda_stage2_parity_test PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(cuda_stage2_parity_test PRIVATE CUDA::cudart)
+    set_target_properties(cuda_stage2_parity_test PROPERTIES
+      CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
+    add_test(NAME cuda_stage2_packed_parity COMMAND cuda_stage2_parity_test)
   endif()
 endif()
 

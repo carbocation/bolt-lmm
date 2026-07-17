@@ -19,6 +19,7 @@ BOLT-LMM-XL is a fork of BOLT-LMM that aims to accelerate workflows built on
 BOLT-LMM. 
 
 ### Split-stage analyses
+
 It separates association analysis into two phases: Stage 1 fits the phenotype,
 covariates, and mixed model once and saves a reusable model artifact; Stage 2
 reloads that artifact and streams the variants to test.
@@ -27,10 +28,21 @@ This design avoids repeating model fitting when the same model is used to test
 multiple variant sets, and it allows association readout to be divided among
 independent Stage 2 jobs. 
 
+### CUDA-accelerated Stage 1
+
+An optional CUDA backend accelerates the genotype matrix operations used by
+Stage 1 variance fitting, infinitesimal-model scoring, cross-validation, and
+spike-and-slab fitting. Packed genotypes are cached or streamed to the GPU
+without materializing a dense genotype matrix across PCIe. CUDA-enabled builds
+use the GPU automatically for Stage 1 and accept `--no-cuda` for comparison or
+testing; CPU-only builds remain fully supported and have no CUDA dependency.
+
 ### PGEN (plink2 file format) partial support
+
 BOLT-LMM-XL also adds PLINK 2 PGEN hardcall input. 
 
 ### Easier builds
+
 Implements a portable CMake build for Linux and macOS.
 
 ## Documentation

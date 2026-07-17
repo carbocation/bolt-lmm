@@ -13,7 +13,7 @@ legacy Intel/Linux release environments.
 - NLopt, including its C++ header (`nlopt.hpp`)
 - OpenMP for multithreading; a serial build is available when it is absent
 - One of Intel oneMKL, OpenBLAS, Apple Accelerate, or system BLAS/LAPACK
-- Optional: CUDA Toolkit with cuBLAS for Step 1 GPU acceleration
+- Optional: CUDA Toolkit with cuBLAS for Stage 1, BOLT-REML, and packed Stage 2 acceleration
 - Optional: libdeflate for faster zlib-compressed layout-2 BGEN input
 
 ## Standard build
@@ -79,7 +79,8 @@ binary that will stay on the build machine.
 CUDA support is optional and leaves the standard CPU build unchanged. Building
 with CUDA requires the CUDA Toolkit, cuBLAS, and a selected device architecture.
 
-For an NVIDIA A100 (compute capability 8.0):
+The default build targets both NVIDIA T4 (compute capability 7.5) and A100
+(compute capability 8.0). To build only for an A100:
 
 ```sh
 cmake -S . -B build/cuda -DCMAKE_BUILD_TYPE=Release \

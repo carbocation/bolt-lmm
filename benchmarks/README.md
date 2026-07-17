@@ -671,3 +671,46 @@ gave the 21.704-second headline above. libdeflate is optional and auto-detected;
 builds without it retain the zlib path and the same scientific output.
 
 Raw timings and output hashes are in `results/a100_stage2_cpu.tsv`.
+
+## CUDA Stage 2 hardcall scoring
+
+CUDA-enabled Stage 2 now scores BED and hardcall-PGEN data directly from their
+two-bit representation. Allele frequency, missingness, mean centering, raw
+norms, covariate products, and mixed-model products are computed on device.
+The kernel accepts the Stage 2 input-to-model sample map, so exclusions,
+reordering, and phenotype/covariate masks do not require dense CPU genotype
+expansion. Models with more than 32 combined basis and statistic vectors retain
+the CPU path.
+
+The A100 comparison reused the real-LD 131,072-sample by 16,384-variant fixture
+and the same sequential oneMKL CPU control described above. CUDA and CPU were
+run from the same CUDA-enabled executable, with `--no-cuda` selecting the CPU
+control. Times are complete association readout phases; total Stage 2 also
+includes model loading and CUDA context initialization.
+
+| Model and input | CPU readout | A100 readout | Readout speedup | CPU total | A100 total | Total speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 basis + 2 stats, BED | 3.137 s | 0.308 s | 10.19x | 3.477 s | 0.919 s | 3.79x |
+| 21 bases + 2 stats, BED | 9.413 s | 0.838 s | 11.23x | 9.816 s | 1.496 s | 6.56x |
+| 21 bases + 2 stats, PGEN | 7.726 s | 1.072 s | 7.21x | 8.153 s | 1.755 s | 4.64x |
+
+Every A100 output was byte-identical to its CPU control. The integration test
+also compares CUDA BED and PGEN with the scalar CPU reference after subsetting,
+reordering, and masking samples. A lower-level test covers both encodings with
+3 and 23 score vectors on A100 and T4.
+
+An exact production-engine probe on the T4 used N=500,000, 256-variant pinned
+batches, and identity sample order. After GPU clock warm-up, packed transfer,
+allele-frequency and missingness calculation, centering, scoring, and result
+transfer projected to 43.3-43.7 seconds per million variants with 3 vectors and
+211.2 seconds with 23 vectors. These are scorer-only feasibility measurements,
+not end-to-end file timings. A four-way transfer/compute pipeline slowed the
+3-vector case; a two-way pipeline was neutral, so neither was retained.
+
+Dense BGEN dosage scoring was also implemented and tested experimentally. On
+the paired A100 real-LD workload it changed readout only from 24.061 to 23.052
+seconds (4.2%). CPU probability decoding and dense host-to-device traffic
+dominated, so the added CUDA and pinned-buffer ownership complexity was removed.
+BGEN keeps the 3.37x CPU acceleration documented in the preceding section.
+
+Raw A100 timings are in `results/a100_stage2_cuda.tsv`.

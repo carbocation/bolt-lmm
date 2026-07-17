@@ -28,13 +28,15 @@ This design avoids repeating model fitting when the same model is used to test
 multiple variant sets, and it allows association readout to be divided among
 independent Stage 2 jobs. 
 
-### CUDA-accelerated Stage 1 and BOLT-REML
+### CUDA-accelerated Stage 1, Stage 2 hardcalls, and BOLT-REML
 
 An optional CUDA backend accelerates the genotype matrix operations used by
 Stage 1 variance fitting, infinitesimal-model scoring, cross-validation, and
 spike-and-slab fitting. Packed genotypes are cached or streamed to the GPU
-without materializing a dense genotype matrix across PCIe. CUDA-enabled builds
-use the GPU automatically for Stage 1 and accept `--no-cuda` for comparison or
+without materializing a dense genotype matrix across PCIe. Stage 2 also scores
+BED and hardcall-PGEN inputs directly from packed genotypes on the GPU; BGEN
+dosage readout retains its optimized CPU path. CUDA-enabled builds use the GPU
+automatically for Stages 1 and 2 and accept `--no-cuda` for comparison or
 testing; CPU-only builds remain fully supported and have no CUDA dependency.
 For BOLT-REML, the same backend accelerates AI-REML solves, variance-component
 derivative products, and genetic Monte Carlo pseudo-phenotype generation for

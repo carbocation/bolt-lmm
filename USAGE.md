@@ -67,8 +67,12 @@ The Stage 1 artifact makes it possible to run multiple independent Stage 2
 jobs against different variant files without refitting the model.
 
 BED and hardcall-PGEN inputs use bounded CPU batching or direct packed scoring
-automatically. Single-threaded layout-2 BGEN readout also batches scoring when
-the number of covariate and statistic vectors is large enough to benefit.
+automatically. In a CUDA build, Stage 2 sends their two-bit packed data directly
+to the GPU and supports sample subsetting and reordering without first expanding
+genotypes on the CPU. Up to 32 combined covariate and statistic vectors use this
+path; larger models fall back to CPU scoring. Single-threaded layout-2 BGEN
+readout retains the optimized CPU path and batches scoring when the number of
+covariate and statistic vectors is large enough to benefit.
 `--stage2Scalar` selects the original per-variant arithmetic for these formats
 as a validation/reference path; it does not change the statistical model or
 output columns.
@@ -151,7 +155,7 @@ already shared with the Stage 1 environment. At the target shape it is about
 minute 46 second direct-PGEN conversion cost. If the cache must be built or
 transferred for each analysis, use direct PGEN ingestion instead.
 
-## CUDA Stage 1 and BOLT-REML execution
+## CUDA Stage 1, packed Stage 2, and BOLT-REML execution
 
 CUDA-enabled binaries accelerate the projected genotype matrix products used
 by variance estimation and the infinitesimal model, the block operations in
@@ -165,9 +169,11 @@ Carlo pseudo-phenotypes. This applies to univariate, multivariate, and multiple
 variance-component REML. The estimator, CPU RNG and draw order, convergence
 tolerances, trial counts, and refinement behavior are unchanged.
 
-A CUDA-enabled binary uses the GPU automatically for Stage 1. Pass `--no-cuda`
-to exercise its CPU path for comparison or testing. The legacy `--cuda` flag is
-still accepted. A CPU-only build has no CUDA runtime dependency.
+A CUDA-enabled binary uses the GPU automatically for Stages 1 and 2. In Stage 2,
+this applies to BED and hardcall-PGEN association input; BGEN, IMPUTE2, and text
+dosage formats stay on CPU. Pass `--no-cuda` to exercise the CPU path for
+comparison or testing. The legacy `--cuda` flag is still accepted. A CPU-only
+build has no CUDA runtime dependency.
 
 ### Device genotype cache
 

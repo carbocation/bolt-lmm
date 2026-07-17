@@ -86,7 +86,7 @@ namespace LMM {
       }
     }
 
-    template<unsigned int K>
+    template<unsigned int K, int MAPPING_MODE>
     __global__ void scorePackedKernel(const uchar packedGenotypes[],
                                       const int inputToModel[], uint64 inputSamples,
                                       uint64 bytesPerVariant, bool pgenEncoding,
@@ -101,7 +101,9 @@ namespace LMM {
       for (unsigned int k = 0; k <= K; k++) accum[k] = 0;
 
       for (uint64 input = threadIdx.x; input < inputSamples; input += blockDim.x) {
-        const int model = identityMapping ? static_cast<int>(input) : inputToModel[input];
+        const int model = MAPPING_MODE == 1 ? static_cast<int>(input) :
+          MAPPING_MODE == 0 ? inputToModel[input] :
+          identityMapping ? static_cast<int>(input) : inputToModel[input];
         if (model < 0) continue;
         double genotype;
         bool missing;
@@ -133,7 +135,7 @@ namespace LMM {
           output[variant * (K+1) + k] = partial[static_cast<uint64>(k) * blockDim.x];
     }
 
-    template<unsigned int K>
+    template<unsigned int K, int MAPPING_MODE>
     void launchScoreKernel(const uchar packedGenotypes[], const int inputToModel[],
                            uint64 inputSamples, uint64 bytesPerVariant,
                            bool pgenEncoding, bool identityMapping,
@@ -141,30 +143,26 @@ namespace LMM {
                            uint64 Nstride, double output[], uint64 variants,
                            cudaStream_t stream) {
       const unsigned int threads = K <= 8 ? 256 : 128;
-      scorePackedKernel<K><<<static_cast<unsigned int>(variants), threads,
-                             (K+1) * threads * sizeof(double), stream>>>
+      scorePackedKernel<K, MAPPING_MODE>
+        <<<static_cast<unsigned int>(variants), threads,
+           (K+1) * threads * sizeof(double), stream>>>
         (packedGenotypes, inputToModel, inputSamples, bytesPerVariant, pgenEncoding,
          identityMapping, alleleFreqs, scoreVectors, Nstride, output);
     }
 
-    void launchScore(uint64 K, const uchar packedGenotypes[], const int inputToModel[],
-                     uint64 inputSamples, uint64 bytesPerVariant, bool pgenEncoding,
-                     bool identityMapping, const double alleleFreqs[],
-                     const double scoreVectors[], uint64 Nstride, double output[],
-                     uint64 variants, cudaStream_t stream) {
+    template<bool IDENTITY_MAPPING>
+    void launchScoreMapping(uint64 K, const uchar packedGenotypes[],
+                            const int inputToModel[], uint64 inputSamples,
+                            uint64 bytesPerVariant, bool pgenEncoding,
+                            const double alleleFreqs[], const double scoreVectors[],
+                            uint64 Nstride, double output[], uint64 variants,
+                            cudaStream_t stream) {
 #define BOLT_CUDA_STAGE2_SCORE_CASE(K_) \
-      case K_: launchScoreKernel<K_>(packedGenotypes, inputToModel, inputSamples, \
-        bytesPerVariant, pgenEncoding, identityMapping, alleleFreqs, scoreVectors, \
+      case K_: launchScoreKernel<K_, IDENTITY_MAPPING ? 1 : 0>(packedGenotypes, \
+        inputToModel, inputSamples, bytesPerVariant, pgenEncoding, IDENTITY_MAPPING, \
+        alleleFreqs, scoreVectors, \
         Nstride, output, variants, stream); break
       switch (K) {
-        BOLT_CUDA_STAGE2_SCORE_CASE(1);
-        BOLT_CUDA_STAGE2_SCORE_CASE(2);
-        BOLT_CUDA_STAGE2_SCORE_CASE(3);
-        BOLT_CUDA_STAGE2_SCORE_CASE(4);
-        BOLT_CUDA_STAGE2_SCORE_CASE(5);
-        BOLT_CUDA_STAGE2_SCORE_CASE(6);
-        BOLT_CUDA_STAGE2_SCORE_CASE(7);
-        BOLT_CUDA_STAGE2_SCORE_CASE(8);
         BOLT_CUDA_STAGE2_SCORE_CASE(9);
         BOLT_CUDA_STAGE2_SCORE_CASE(10);
         BOLT_CUDA_STAGE2_SCORE_CASE(11);
@@ -192,6 +190,40 @@ namespace LMM {
         default: throw std::runtime_error("Unsupported CUDA Stage 2 score-vector count");
       }
 #undef BOLT_CUDA_STAGE2_SCORE_CASE
+    }
+
+    void launchScore(uint64 K, const uchar packedGenotypes[], const int inputToModel[],
+                     uint64 inputSamples, uint64 bytesPerVariant, bool pgenEncoding,
+                     bool identityMapping, const double alleleFreqs[],
+                     const double scoreVectors[], uint64 Nstride, double output[],
+                     uint64 variants, cudaStream_t stream) {
+      if (K <= 8) {
+#define BOLT_CUDA_STAGE2_RUNTIME_CASE(K_) \
+        case K_: launchScoreKernel<K_, -1>(packedGenotypes, inputToModel, inputSamples, \
+          bytesPerVariant, pgenEncoding, identityMapping, alleleFreqs, scoreVectors, \
+          Nstride, output, variants, stream); break
+        switch (K) {
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(1);
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(2);
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(3);
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(4);
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(5);
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(6);
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(7);
+          BOLT_CUDA_STAGE2_RUNTIME_CASE(8);
+          default: throw std::runtime_error("Unsupported CUDA Stage 2 score-vector count");
+        }
+#undef BOLT_CUDA_STAGE2_RUNTIME_CASE
+        return;
+      }
+      if (identityMapping)
+        launchScoreMapping<true>(K, packedGenotypes, inputToModel, inputSamples,
+          bytesPerVariant, pgenEncoding, alleleFreqs, scoreVectors, Nstride,
+          output, variants, stream);
+      else
+        launchScoreMapping<false>(K, packedGenotypes, inputToModel, inputSamples,
+          bytesPerVariant, pgenEncoding, alleleFreqs, scoreVectors, Nstride,
+          output, variants, stream);
     }
 
   }

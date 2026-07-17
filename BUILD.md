@@ -44,6 +44,21 @@ Packed-code conversion, allele/missingness accumulation, sample-missingness
 tracking, and the final cache write are fused into one host pass during PGEN
 ingestion.
 
+For repeated analyses with identical genotype filtering, an explicit CPU
+Step 0 can persist that packed representation:
+
+```sh
+bolt --stage=0 --pfile PREFIX --pgenCacheFile /shared/bolt/cohort.step0
+bolt --stage=1 --pfile PREFIX --pgenCacheFile /shared/bolt/cohort.step0 ...
+```
+
+This is beneficial only when the artifact remains on storage local to or
+already shared with the Stage 1 environment. At N=500,000 and M=1,000,000 the
+artifact is about 116.4 GiB. Staging it afresh must sustain more than about
+226 MiB/s one-way—or 453 MiB/s for two sequential copies—just to break even
+with the measured 8 minute 46 second conversion saving. If the cache must be
+built or transferred for each analysis, use direct PGEN ingestion instead.
+
 ## macOS on Apple Silicon
 
 Apple Accelerate is the default linear-algebra backend. Homebrew's OpenBLAS can

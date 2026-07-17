@@ -316,7 +316,8 @@ fingerprint of the PGEN source, parsed PVAR/PSAM identities, sample removal,
 variant/model selection, packing dimensions, map-derived metadata, and QC
 thresholds matches. It never silently builds or refreshes the artifact. A
 CUDA-enabled binary still executes Step 0 entirely on the CPU, allowing
-production caches to be prepared away from accelerator nodes.
+production caches to be prepared away from accelerator nodes when both see the
+same high-throughput storage.
 
 On the 131,072-sample by 16,384-variant real-reference fixture, Step 0 took
 2.97 seconds once. Reuse reduced Stage 1 `SnpData` setup from 1.593 to 0.213
@@ -332,6 +333,14 @@ peak RSS: a 213x setup speedup and roughly 8 minutes 46 seconds saved on every
 reuse. One-MiB regions at the beginning, middle, and end of the payload matched
 the original BED-equivalent hardcalls byte-for-byte. These target-shape runs
 measure setup only; they do not attempt a full million-variant model fit.
+
+The artifact is not intended to be copied from a separate machine for every
+run. At 116.4 GiB, a one-way transfer must exceed about 226 MiB/s to finish
+within the 526-second conversion saving; a build-host upload followed by a
+compute-host download must exceed about 453 MiB/s across both sequential
+copies. These break-even rates omit transfer setup and storage costs. Direct
+PGEN ingestion is therefore faster whenever the cache is not already local or
+available through shared high-throughput storage.
 
 ## Variance-component CG warm starts
 

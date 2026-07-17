@@ -507,6 +507,86 @@ namespace LMM {
       return stats;
     }
 
+    PackedHardcallStats packedPgenStats(const uchar in[], uint64 N) {
+      PackedHardcallStats stats = {0, 0};
+      const uint64 fullBytes = N >> 2;
+      uint64 byte = 0;
+#if defined(__AVX2__)
+      __m256i alleleSums = _mm256_setzero_si256();
+      __m256i missingCounts = _mm256_setzero_si256();
+      const __m256i zero = _mm256_setzero_si256();
+      const __m256i nibbleMask = _mm256_set1_epi8(0x0f);
+      const __m256i statsTable = _mm256_broadcastsi128_si256(
+        _mm_load_si128(reinterpret_cast<const __m128i *>(PGEN_NIBBLE_STATS)));
+      for (; byte+32 <= fullBytes; byte += 32) {
+	const __m256i packed =
+	  _mm256_loadu_si256(reinterpret_cast<const __m256i *>(in+byte));
+	const __m256i lowNibbles = _mm256_and_si256(packed, nibbleMask);
+	const __m256i highNibbles = _mm256_and_si256(
+	  _mm256_srli_epi16(packed, 4), nibbleMask);
+	const __m256i byteStats = _mm256_add_epi8(
+	  _mm256_shuffle_epi8(statsTable, lowNibbles),
+	  _mm256_shuffle_epi8(statsTable, highNibbles));
+	const __m256i byteAlleleSums = _mm256_and_si256(byteStats, nibbleMask);
+	const __m256i byteMissingCounts = _mm256_and_si256(
+	  _mm256_srli_epi16(byteStats, 4), nibbleMask);
+	alleleSums = _mm256_add_epi64(alleleSums,
+				     _mm256_sad_epu8(byteAlleleSums, zero));
+	missingCounts = _mm256_add_epi64(missingCounts,
+					_mm256_sad_epu8(byteMissingCounts, zero));
+      }
+      alignas(32) uint64 alleleSumParts[4], missingCountParts[4];
+      _mm256_store_si256(reinterpret_cast<__m256i *>(alleleSumParts), alleleSums);
+      _mm256_store_si256(reinterpret_cast<__m256i *>(missingCountParts), missingCounts);
+      for (int part = 0; part < 4; part++) {
+	stats.alleleSum += alleleSumParts[part];
+	stats.numMissing += missingCountParts[part];
+      }
+#endif
+      for (; byte < fullBytes; byte++) {
+	stats.alleleSum += PACKED_BYTE_STATS[in[byte]].alleleSum;
+	stats.numMissing += PACKED_BYTE_STATS[in[byte]].numMissing;
+      }
+      if (N & 3) {
+	const uchar packed = in[fullBytes];
+	for (uint32_t offset = 0; offset < (N&3); offset++) {
+	  const uchar genotype = (packed >> (2*offset)) & 3;
+	  if (genotype == 3)
+	    stats.numMissing++;
+	  else
+	    stats.alleleSum += genotype;
+	}
+      }
+      return stats;
+    }
+
+    double packedPgenToCenteredVector(double out[], const uchar in[], uint64 N,
+				       uint64 Nstride, double alleleFreq) {
+      const double mean = 2*alleleFreq;
+      const double values[4] = {-mean, 1-mean, 2-mean, 0};
+      double rawNorm2 = 0;
+      const uint64 fullBytes = N >> 2;
+      for (uint64 byte = 0; byte < fullBytes; byte++) {
+	const uchar packed = in[byte];
+	const uint64 n = byte << 2;
+	for (uint64 offset = 0; offset < 4; offset++) {
+	  const double value = values[(packed >> (2*offset)) & 3];
+	  out[n+offset] = value;
+	  rawNorm2 += value*value;
+	}
+      }
+      if (N & 3) {
+	const uchar packed = in[fullBytes];
+	for (uint64 offset = 0; offset < (N&3); offset++) {
+	  const double value = values[(packed >> (2*offset)) & 3];
+	  out[(fullBytes << 2)+offset] = value;
+	  rawNorm2 += value*value;
+	}
+      }
+      for (uint64 n = N; n < Nstride; n++) out[n] = 0;
+      return rawNorm2;
+    }
+
     void packedPgenToGeno(uchar out[], const uchar in[],
                           const vector<int> &sourceToTarget) {
       const uchar pgenToGeno[4] = {0, 1, 2, 9};

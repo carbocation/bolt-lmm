@@ -66,6 +66,11 @@ fitted Stage 1 cohort.
 The Stage 1 artifact makes it possible to run multiple independent Stage 2
 jobs against different variant files without refitting the model.
 
+BED and hardcall-PGEN inputs use bounded CPU batching or direct packed scoring
+automatically. `--stage2Scalar` selects the original per-variant arithmetic as
+a validation/reference path; it does not change the statistical model or
+output columns.
+
 ## Numerical compatibility
 
 By default, Stage 1 retains the upstream v2.5 cold-start behavior for

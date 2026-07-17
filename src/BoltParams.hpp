@@ -37,6 +37,7 @@ namespace LMM {
     static const double MIX_PARAM_ESTIMATE_FLAG; // flag for estimating mixture params using CV
 
     int stage; // 0 (persistent PGEN cache), 1 (fit), or 2 (association readout)
+    bool stage2Scalar; // validation/reference path matching upstream per-variant arithmetic
     std::string stage1Model; // Stage 1 output / Stage 2 input
 
     // main input files

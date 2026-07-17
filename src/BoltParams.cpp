@@ -256,6 +256,7 @@ namespace LMM {
        "maximum retained host cache for file-backed CUDA genotypes in GiB "
        "(-1 = automatic, 0 = disabled)")
       ("noLinreg", "skip LINREG statistics in Stage 1 LMM association analysis")
+      ("stage2Scalar", "use upstream scalar BED/PGEN Stage 2 scoring for validation")
       ("warmStartVarianceCG",
        "warm-start variance-component CG solves (opt-in; may change numerical output)")
       ("warmStartFinalVB",
@@ -467,10 +468,15 @@ namespace LMM {
       lmmBayesMCMC = vm.count("lmmBayesMCMC");
       lmmInf = vm.count("lmmInfOnly") || lmmBayes || lmmBayesMCMC; // Bayes needs inf for calib
       noLinreg = vm.count("noLinreg");
+      stage2Scalar = vm.count("stage2Scalar");
       warmStartVarianceCG = vm.count("warmStartVarianceCG");
       warmStartFinalVB = vm.count("warmStartFinalVB");
       if (noLinreg && (stage != 1 || reml || !lmmInf)) {
 	cerr << "ERROR: --noLinreg requires Stage 1 LMM association analysis" << endl;
+	return false;
+      }
+      if (stage2Scalar && stage != 2) {
+	cerr << "ERROR: --stage2Scalar requires Stage 2 association analysis" << endl;
 	return false;
       }
       if (warmStartVarianceCG && (stage != 1 || (!reml && !lmmInf))) {

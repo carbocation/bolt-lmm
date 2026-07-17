@@ -33,6 +33,10 @@
 #include <utility>
 #include <unordered_set>
 
+#if defined(__AVX__)
+#include <immintrin.h>
+#endif
+
 #include "OpenMpCompat.hpp"
 #include "zlib.h"
 #include "zstd.h"
@@ -62,6 +66,14 @@
 #include "FileUtils.hpp"
 #include "StatsUtils.hpp"
 #include "Bolt.hpp"
+
+#ifndef BOLT_STAGE2_DIRECT_MAX_SCORE_VECTORS
+#if defined(__AVX__)
+#define BOLT_STAGE2_DIRECT_MAX_SCORE_VECTORS 6
+#else
+#define BOLT_STAGE2_DIRECT_MAX_SCORE_VECTORS 0
+#endif
+#endif
 
 namespace LMM {
 
@@ -2690,20 +2702,229 @@ namespace LMM {
     fout << endl;
   }
 
+  void Bolt::prepareStage2ScoreVectors(Stage2ScoreWorkspace &workspace, int chrom, int physpos,
+				       const vector <StatsDataRetroLOCO> &retroData) const {
+    vector<int> chunks(retroData.size());
+    for (uint64 s = 0; s < retroData.size(); s++)
+      chunks[s] = findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
+    const uint64 numScoreVectors = Cindep + retroData.size();
+    const uint64 scoreValues = numScoreVectors * Nstride;
+    if (workspace.initialized && workspace.chunks == chunks &&
+	workspace.scoreVectors.size() == scoreValues)
+      return;
+
+    workspace.scoreVectors.resize(scoreValues);
+    if (Cindep)
+      memcpy(&workspace.scoreVectors[0], covBasis.getBasis(false),
+	     Cindep*Nstride*sizeof(workspace.scoreVectors[0]));
+    for (uint64 s = 0; s < retroData.size(); s++)
+      memcpy(&workspace.scoreVectors[(Cindep+s)*Nstride],
+	     &retroData[s].calibratedResids[chunks[s]][0],
+	     Nstride*sizeof(workspace.scoreVectors[0]));
+    workspace.chunks.swap(chunks);
+    workspace.initialized = true;
+  }
+
+  string Bolt::formatStage2Stats(const Stage2VariantInfo &variant, double rawNorm2,
+				 double covNorm2, const double dotProds[], const int chunks[],
+				 bool verboseStats,
+				 const vector <StatsDataRetroLOCO> &retroData) const {
+    std::ostringstream fout;
+    fout << variant.ID << "\t" << variant.chrom << "\t" << variant.physpos << "\t"
+	 << variant.genpos << "\t" << variant.allele1 << "\t" << variant.allele0 << "\t"
+	 << variant.alleleFreq;
+    if (variant.info != -9) fout << "\t" << variant.info;
+    else fout << "\t" << variant.missing;
+
+    const double projNorm2 = rawNorm2 - covNorm2;
+    const double invNorm2 = 1 / projNorm2;
+    boost::math::chi_squared chisq_dist(1);
+    double dotProd = 0, stat = BAD_SNP_STAT;
+    bool beta_printed = false;
+    for (uint s = 0; s < retroData.size(); s++) {
+      dotProd = dotProds[s];
+      stat = BAD_SNP_STAT;
+      double pValue = 1;
+      if (!(projNorm2 < 0.1)) {
+	stat = invNorm2 * NumericUtils::sq(dotProd);
+	pValue = boost::math::cdf(complement(chisq_dist, stat));
+      }
+      char pValueBuf[100];
+      if (pValue != 0)
+	sprintf(pValueBuf, "%.1E", pValue);
+      else {
+	double log10p = log10(2.0) - M_LOG10E*stat/2 - 0.5*log10(stat*2*M_PI);
+	int exponent = floor(log10p);
+	double fraction = pow(10.0, log10p - exponent);
+	if (fraction >= 9.95) {
+	  fraction = 1;
+	  exponent++;
+	}
+	sprintf(pValueBuf, "%.1fE%d", fraction, exponent);
+      }
+
+      if (retroData[s].VinvScaleFactors.size() > 1U) {
+	double xPerAlleleVinvPhi = retroData[s].VinvScaleFactors[chunks[s]] * dotProd;
+	double beta = (stat==BAD_SNP_STAT) ? 0 : stat / xPerAlleleVinvPhi;
+	double se = fabs(beta) / sqrt(stat);
+	fout << "\t" << beta << "\t" << se;
+	beta_printed = true;
+      }
+      if (verboseStats) fout << "\t" << stat;
+      fout << "\t" << string(pValueBuf);
+    }
+    if (!beta_printed) {
+      double beta = (stat==BAD_SNP_STAT) ? 0 : invNorm2*dotProd / retroData[0].VinvScaleFactors[0];
+      double se = fabs(beta) / sqrt(stat);
+      fout << "\t" << beta << "\t" << se;
+    }
+    fout << endl;
+    return fout.str();
+  }
+
+  string Bolt::scorePackedStage2(const Stage2VariantInfo &variant, const uchar packed[],
+				 bool pgenEncoding, bool verboseStats,
+				 const vector <StatsDataRetroLOCO> &retroData,
+				 Stage2ScoreWorkspace &workspace) const {
+    prepareStage2ScoreVectors(workspace, variant.chrom, variant.physpos, retroData);
+    const uint64 numScoreVectors = Cindep + retroData.size();
+    workspace.products.assign(numScoreVectors, 0);
+    const double mean = 2*variant.alleleFreq;
+    const double pgenValues[4] = {-mean, 1-mean, 2-mean, 0};
+    const double bedValues[4] = {2-mean, 0, 1-mean, -mean};
+    const double *values = pgenEncoding ? pgenValues : bedValues;
+    alignas(32) double byteValues[256][4];
+    for (uint64 byte = 0; byte < 256; byte++)
+      for (uint64 offset = 0; offset < 4; offset++)
+	byteValues[byte][offset] = values[(byte >> (2*offset)) & 3];
+    const uint64 fullBytes = Nused >> 2;
+    double rawNorm2 = 0;
+#if defined(__AVX__)
+    __m256d rawParts[4] = {_mm256_setzero_pd(), _mm256_setzero_pd(),
+			  _mm256_setzero_pd(), _mm256_setzero_pd()};
+    uint64 rawByte = 0;
+    for (; rawByte+4 <= fullBytes; rawByte += 4)
+      for (uint64 j = 0; j < 4; j++) {
+	const __m256d x = _mm256_load_pd(byteValues[packed[rawByte+j]]);
+	rawParts[j] = _mm256_add_pd(rawParts[j], _mm256_mul_pd(x, x));
+      }
+    rawParts[0] = _mm256_add_pd(rawParts[0], rawParts[1]);
+    rawParts[2] = _mm256_add_pd(rawParts[2], rawParts[3]);
+    rawParts[0] = _mm256_add_pd(rawParts[0], rawParts[2]);
+    alignas(32) double rawLanes[4];
+    _mm256_store_pd(rawLanes, rawParts[0]);
+    for (uint64 lane = 0; lane < 4; lane++) rawNorm2 += rawLanes[lane];
+    for (; rawByte < fullBytes; rawByte++)
+      for (uint64 offset = 0; offset < 4; offset++) {
+	const double x = byteValues[packed[rawByte]][offset];
+	rawNorm2 += x*x;
+      }
+
+    for (uint64 k = 0; k < numScoreVectors; k++) {
+      const double *scoreVector = &workspace.scoreVectors[k*Nstride];
+      __m256d dotParts[4] = {_mm256_setzero_pd(), _mm256_setzero_pd(),
+			    _mm256_setzero_pd(), _mm256_setzero_pd()};
+      uint64 byte = 0;
+      for (; byte+4 <= fullBytes; byte += 4)
+	for (uint64 j = 0; j < 4; j++) {
+	  const __m256d x = _mm256_load_pd(byteValues[packed[byte+j]]);
+	  const __m256d y = _mm256_loadu_pd(scoreVector+((byte+j)<<2));
+	  dotParts[j] = _mm256_add_pd(dotParts[j], _mm256_mul_pd(x, y));
+	}
+      dotParts[0] = _mm256_add_pd(dotParts[0], dotParts[1]);
+      dotParts[2] = _mm256_add_pd(dotParts[2], dotParts[3]);
+      dotParts[0] = _mm256_add_pd(dotParts[0], dotParts[2]);
+      alignas(32) double dotLanes[4];
+      _mm256_store_pd(dotLanes, dotParts[0]);
+      double dot = 0;
+      for (uint64 lane = 0; lane < 4; lane++) dot += dotLanes[lane];
+      for (; byte < fullBytes; byte++)
+	for (uint64 offset = 0; offset < 4; offset++)
+	  dot += byteValues[packed[byte]][offset] * scoreVector[(byte<<2)+offset];
+      workspace.products[k] = dot;
+    }
+#else
+    double rawParts[4] = {0, 0, 0, 0};
+    for (uint64 byte = 0; byte < fullBytes; byte++)
+      for (uint64 offset = 0; offset < 4; offset++) {
+	const double x = byteValues[packed[byte]][offset];
+	rawParts[offset] += x*x;
+      }
+    for (uint64 offset = 0; offset < 4; offset++) rawNorm2 += rawParts[offset];
+    for (uint64 k = 0; k < numScoreVectors; k++) {
+      const double *scoreVector = &workspace.scoreVectors[k*Nstride];
+      double dotParts[4] = {0, 0, 0, 0};
+      for (uint64 byte = 0; byte < fullBytes; byte++)
+	for (uint64 offset = 0; offset < 4; offset++)
+	  dotParts[offset] += byteValues[packed[byte]][offset] *
+	    scoreVector[(byte<<2)+offset];
+      for (uint64 offset = 0; offset < 4; offset++) workspace.products[k] += dotParts[offset];
+    }
+#endif
+    if (Nused & 3) {
+      const uchar packedByte = packed[fullBytes];
+      for (uint64 offset = 0; offset < (Nused&3); offset++) {
+	const uint64 n = (fullBytes << 2)+offset;
+	const double x = values[(packedByte >> (2*offset)) & 3];
+	rawNorm2 += x*x;
+	for (uint64 k = 0; k < numScoreVectors; k++)
+	  workspace.products[k] += x*workspace.scoreVectors[k*Nstride+n];
+      }
+    }
+    double covNorm2 = 0;
+    for (uint64 c = 0; c < Cindep; c++) covNorm2 += NumericUtils::sq(workspace.products[c]);
+    return formatStage2Stats(variant, rawNorm2, covNorm2,
+			     &workspace.products[Cindep], &workspace.chunks[0],
+			     verboseStats, retroData);
+  }
+
+  void Bolt::scoreStage2Batch(FileUtils::AutoGzOfstream &fout,
+			      const vector<Stage2VariantInfo> &variants,
+			      const double genotypeBatch[], bool verboseStats,
+			      const vector<StatsDataRetroLOCO> &retroData,
+			      Stage2ScoreWorkspace &workspace) const {
+    const uint64 numScoreVectors = Cindep + retroData.size();
+    uint64 start = 0;
+    while (start < variants.size()) {
+      prepareStage2ScoreVectors(workspace, variants[start].chrom, variants[start].physpos,
+				retroData);
+      uint64 end = start+1;
+      for (; end < variants.size(); end++) {
+	bool sameChunks = true;
+	for (uint64 s = 0; s < retroData.size(); s++)
+	  if (findChunkAssignment(retroData[s].snpChunkEnds, variants[end].chrom,
+				 variants[end].physpos) != workspace.chunks[s]) {
+	    sameChunks = false;
+	    break;
+	  }
+	if (!sameChunks) break;
+      }
+      const uint64 runSize = end-start;
+      workspace.products.resize(numScoreVectors*runSize);
+      char TRANS_A = 'T', TRANS_B = 'N';
+      int M_ = numScoreVectors, N_ = runSize, K_ = Nstride;
+      double ALPHA_ = 1, BETA_ = 0;
+      int LDA_ = Nstride, LDB_ = Nstride, LDC_ = numScoreVectors;
+      DGEMM_MACRO(&TRANS_A, &TRANS_B, &M_, &N_, &K_, &ALPHA_,
+		  &workspace.scoreVectors[0], &LDA_, genotypeBatch+start*Nstride, &LDB_,
+		  &BETA_, &workspace.products[0], &LDC_);
+      for (uint64 b = 0; b < runSize; b++) {
+	const double *products = &workspace.products[b*numScoreVectors];
+	double covNorm2 = 0;
+	for (uint64 c = 0; c < Cindep; c++) covNorm2 += NumericUtils::sq(products[c]);
+	fout << formatStage2Stats(variants[start+b], variants[start+b].rawNorm2, covNorm2,
+				  products+Cindep, &workspace.chunks[0], verboseStats,
+				  retroData);
+      }
+      start = end;
+    }
+  }
+
   string Bolt::getSnpStats(const string &ID, int chrom,
 			   int physpos, double genpos, const string &allele1,
 			   const string &allele0, double alleleFreq, double missing,
 			   double workVec[], bool verboseStats,
 			   const vector <StatsDataRetroLOCO> &retroData, double info) const {
-
-    std::ostringstream fout;
-    // output snp info
-    fout << ID << "\t" << chrom << "\t" << physpos << "\t" << genpos << "\t"
-	 << allele1 << "\t" << allele0 << "\t" << alleleFreq;
-
-    if (info != -9) fout << "\t" << info;
-    else fout << "\t" << missing;
-
     // compute components along cov basis vectors and put in [Nstride..Nstride+Cstride)
     // no need to zero out components after Cindep: workVec already 0-initialized
     covBasis.computeCindepComponents(workVec + Nstride, workVec);
@@ -2729,57 +2950,25 @@ namespace LMM {
     else {
       rawNorm2 = NumericUtils::norm2(workVec, Nstride);
     }
-    const double projNorm2 = rawNorm2 - NumericUtils::norm2(workVec + Nstride, Cstride);
-    double invNorm2 = 1 / projNorm2;
-    double dotProd, stat;
-
-    boost::math::chi_squared chisq_dist(1);
-
-    // compute and output assoc stats
-    bool beta_printed = false;
-    for (uint s = 0; s < retroData.size(); s++) {
-      const int chunk = numStats <= 4 ? chunks[s] :
-	findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
-      dotProd = numStats <= 4 ? dotProds[s] :
-	NumericUtils::dot(workVec, &retroData[s].calibratedResids[chunk][0], Nstride);
-      stat = BAD_SNP_STAT; double pValue = 1;
-      if (!(projNorm2 < 0.1)) {
-	stat = invNorm2 * NumericUtils::sq(dotProd);
-	pValue = boost::math::cdf(complement(chisq_dist, stat));
-	//if (dotProd<0) stat = -stat;
+    vector<int> chunksMore;
+    vector<double> dotProdsMore;
+    if (numStats > 4) {
+      chunksMore.resize(numStats);
+      dotProdsMore.resize(numStats);
+      for (uint64 s = 0; s < numStats; s++) {
+	chunksMore[s] = findChunkAssignment(retroData[s].snpChunkEnds, chrom, physpos);
+	dotProdsMore[s] = NumericUtils::dot(
+	  workVec, &retroData[s].calibratedResids[chunksMore[s]][0], Nstride);
       }
-      char pValueBuf[100];
-      if (pValue != 0)
-	sprintf(pValueBuf, "%.1E", pValue);
-      else {
-	double log10p = log10(2.0) - M_LOG10E*stat/2 - 0.5*log10(stat*2*M_PI);
-	int exponent = floor(log10p);
-	double fraction = pow(10.0, log10p - exponent);
-	if (fraction >= 9.95) {
-	  fraction = 1;
-	  exponent++;
-	}
-	sprintf(pValueBuf, "%.1fE%d", fraction, exponent);
-      }
-
-      if (retroData[s].VinvScaleFactors.size() > 1U) { // infinitesimal model: approx beta, se
-	double xPerAlleleVinvPhi = retroData[s].VinvScaleFactors[chunk] * dotProd;
-	double beta = (stat==BAD_SNP_STAT) ? 0 : stat / xPerAlleleVinvPhi;
-	double se = fabs(beta) / sqrt(stat);
-	fout << "\t" << beta << "\t" << se;
-	beta_printed = true;
-      }
-      if (verboseStats) // only output chisq if verbose output
-	fout << "\t" << stat;
-      fout << "\t" << string(pValueBuf); // always output p-value
     }
-    if (!beta_printed) { // special case: linear regression only
-      double beta = (stat==BAD_SNP_STAT) ? 0 : invNorm2*dotProd / retroData[0].VinvScaleFactors[0];
-      double se = fabs(beta) / sqrt(stat);
-      fout << "\t" << beta << "\t" << se;	
-    }
-    fout << endl;
-    return fout.str();
+    Stage2VariantInfo variant;
+    variant.ID = ID; variant.chrom = chrom; variant.physpos = physpos; variant.genpos = genpos;
+    variant.allele1 = allele1; variant.allele0 = allele0; variant.alleleFreq = alleleFreq;
+    variant.missing = missing; variant.info = info;
+    return formatStage2Stats(variant, rawNorm2,
+			     NumericUtils::norm2(workVec + Nstride, Cstride),
+			     numStats <= 4 ? dotProds : &dotProdsMore[0],
+			     numStats <= 4 ? chunks : &chunksMore[0], verboseStats, retroData);
   }
 
   string Bolt::getSnpStats(const string &ID, int chrom,
@@ -2820,7 +3009,7 @@ namespace LMM {
   (const string &outFile, const vector <string> &bimFiles, const vector <string> &bedFiles,
    const string &geneticMapFile, const vector <string> &excludeFiles, double maxMissingPerSnp,
    bool verboseStats,
-   const vector <StatsDataRetroLOCO> &retroData) const {
+   const vector <StatsDataRetroLOCO> &retroData, bool optimizedStage2) const {
 
     FileUtils::AutoGzOfstream fout; fout.openOrExit(outFile);
     
@@ -2838,12 +3027,38 @@ namespace LMM {
     FileUtils::AutoGzIfstream finBim, finBed;
     const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
     const bool usePackedIdentity = allIndivsIncluded && snpData.getBedIndivsIdentity();
+    const uint64 numScoreVectors = Cindep + retroData.size();
+    const bool useDirectPacked = optimizedStage2 && usePackedIdentity &&
+      numScoreVectors <= BOLT_STAGE2_DIRECT_MAX_SCORE_VECTORS;
+    const uint64 targetBatchBytes = 256ULL << 20;
+    const uint64 maxBatchSize = optimizedStage2 ? std::max<uint64>(
+      1, std::min<uint64>(128, targetBatchBytes/(Nstride*sizeof(double)))) : 1;
+    const uint64 genotypeColumnStride = optimizedStage2 ? Nstride : Nstride+Cstride;
     uchar *genoLine = usePackedIdentity ? NULL : ALIGNED_MALLOC_UCHARS(Nstride);
     uchar *bedLineIn = ALIGNED_MALLOC_UCHARS((snpData.getNbed()+3)>>2);
-    double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
-    double (*work)[4] = usePackedIdentity ?
+    double *genotypeBatch = useDirectPacked ? NULL :
+      ALIGNED_MALLOC_DOUBLES(genotypeColumnStride*maxBatchSize);
+    double (*work)[4] = usePackedIdentity && !useDirectPacked ?
       (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work)) : NULL;
-    memset(snpCovCompVec, 0, (Nstride+Cstride)*sizeof(snpCovCompVec[0])); // important!
+    vector<Stage2VariantInfo> batch;
+    batch.reserve(maxBatchSize);
+    Stage2ScoreWorkspace scoreWorkspace;
+    const auto flushBatch = [&]() {
+      if (!batch.empty()) {
+	if (optimizedStage2)
+	  scoreStage2Batch(fout, batch, genotypeBatch, verboseStats, retroData, scoreWorkspace);
+	else
+	  for (uint64 b = 0; b < batch.size(); b++) {
+	    const Stage2VariantInfo &variant = batch[b];
+	    fout << getSnpStats(variant.ID, variant.chrom, variant.physpos, variant.genpos,
+				variant.allele1, variant.allele0, variant.alleleFreq,
+				variant.missing, genotypeBatch+b*genotypeColumnStride,
+				verboseStats, retroData,
+				variant.info);
+	  }
+	batch.clear();
+      }
+    };
 
     for (uint f = 0; f < bimFiles.size(); f++) {
       finBim.openOrExit(bimFiles[f]);
@@ -2890,16 +3105,30 @@ namespace LMM {
 	    snpData.computeAlleleFreqAndMissing(genoLine, maskIndivs, &missing,
 					  allIndivsIncluded);
 	  if (missing <= maxMissingPerSnp) {
-	    if (usePackedIdentity)
-	      snpData.identityBedLineToSnpVector(snpCovCompVec, bedLineIn, alleleFreq, work);
-	    else
-	      snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
-						 allIndivsIncluded);
-	    fout << getSnpStats(ID, chrom, physpos, genpos, allele1, allele0, alleleFreq, missing,
-			 snpCovCompVec, verboseStats, retroData);
+	    Stage2VariantInfo variant;
+	    variant.ID = ID; variant.chrom = chrom; variant.physpos = physpos;
+	    variant.genpos = genpos; variant.allele1 = allele1; variant.allele0 = allele0;
+	    variant.alleleFreq = alleleFreq; variant.missing = missing;
+	    if (useDirectPacked)
+	      fout << scorePackedStage2(variant, bedLineIn, false, verboseStats, retroData,
+					 scoreWorkspace);
+	    else {
+	      double *snpVector = genotypeBatch + batch.size()*genotypeColumnStride;
+	      if (usePackedIdentity)
+		snpData.identityBedLineToSnpVector(snpVector, bedLineIn, alleleFreq, work);
+	      else
+		snpData.genoLineToMaskedSnpVector(snpVector, genoLine, maskIndivs, alleleFreq,
+						   allIndivsIncluded);
+	      if (!optimizedStage2)
+		memset(snpVector+Nstride, 0, Cstride*sizeof(snpVector[0]));
+	      variant.rawNorm2 = NumericUtils::norm2(snpVector, Nstride);
+	      batch.push_back(variant);
+	      if (batch.size() == maxBatchSize) flushBatch();
+	    }
 	  }
 	}
       }
+      flushBatch();
       if (!finBed || finBed.get() != EOF) {
 	cerr << "ERROR: Wrong file size or reading error for bed file: " << bedFiles[f] << endl;
 	exit(1);
@@ -2909,7 +3138,7 @@ namespace LMM {
     }
 
     if (work != NULL) ALIGNED_FREE(work);
-    ALIGNED_FREE(snpCovCompVec);
+    if (genotypeBatch != NULL) ALIGNED_FREE(genotypeBatch);
     ALIGNED_FREE(bedLineIn);
     if (genoLine != NULL) ALIGNED_FREE(genoLine);
     fout.close();
@@ -2919,7 +3148,7 @@ namespace LMM {
   (const string &outFile, const string &pgenFile, const string &pvarFile,
    const string &geneticMapFile, const vector <string> &excludeFiles,
    double maxMissingPerSnp, bool verboseStats,
-   const vector <StatsDataRetroLOCO> &retroData) const {
+   const vector <StatsDataRetroLOCO> &retroData, bool optimizedStage2) const {
 
     FileUtils::AutoGzOfstream fout; fout.openOrExit(outFile);
     printStatsHeader(fout, verboseStats, false, retroData);
@@ -2987,14 +3216,37 @@ namespace LMM {
     MapInterpolater mapInterpolater(geneticMapFile);
     const bool allIndivsIncluded = snpData.allIndivsIncluded(maskIndivs);
     const bool usePackedIdentity = allIndivsIncluded && snpData.getBedIndivsIdentity();
+    const uint64 numScoreVectors = Cindep + retroData.size();
+    const bool useDirectPacked = optimizedStage2 && usePackedIdentity &&
+      numScoreVectors <= BOLT_STAGE2_DIRECT_MAX_SCORE_VECTORS;
+    const uint64 targetBatchBytes = 256ULL << 20;
+    const uint64 maxBatchSize = optimizedStage2 ? std::max<uint64>(
+      1, std::min<uint64>(128, targetBatchBytes/(Nstride*sizeof(double)))) : 1;
+    const uint64 genotypeColumnStride = optimizedStage2 ? Nstride : Nstride+Cstride;
     const uint64 packedBytes = (modelSampleCount+3)>>2;
     vector <uchar> pgenLine(packedBytes);
-    vector <uchar> bedLine(usePackedIdentity ? Nstride/4 : 0);
     uchar *genoLine = usePackedIdentity ? NULL : ALIGNED_MALLOC_UCHARS(Nstride);
-    double *snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
-    double (*work)[4] = usePackedIdentity ?
-      (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work)) : NULL;
-    memset(snpCovCompVec, 0, (Nstride+Cstride)*sizeof(snpCovCompVec[0]));
+    double *genotypeBatch = useDirectPacked ? NULL :
+      ALIGNED_MALLOC_DOUBLES(genotypeColumnStride*maxBatchSize);
+    vector<Stage2VariantInfo> batch;
+    batch.reserve(maxBatchSize);
+    Stage2ScoreWorkspace scoreWorkspace;
+    const auto flushBatch = [&]() {
+      if (!batch.empty()) {
+	if (optimizedStage2)
+	  scoreStage2Batch(fout, batch, genotypeBatch, verboseStats, retroData, scoreWorkspace);
+	else
+	  for (uint64 b = 0; b < batch.size(); b++) {
+	    const Stage2VariantInfo &variant = batch[b];
+	    fout << getSnpStats(variant.ID, variant.chrom, variant.physpos, variant.genpos,
+				variant.allele1, variant.allele0, variant.alleleFreq,
+				variant.missing, genotypeBatch+b*genotypeColumnStride,
+				verboseStats, retroData,
+				variant.info);
+	  }
+	batch.clear();
+      }
+    };
 
     for (uint64 variantIndex = 0; variantIndex < variants.size(); variantIndex++) {
       SnpInfo &snp = variants[variantIndex];
@@ -3008,9 +3260,10 @@ namespace LMM {
 				     variantIndex, 1);
       double missing, alleleFreq;
       if (usePackedIdentity) {
-	PgenUtils::packedPgenToBed(bedLine.data(), pgenLine.data(), modelSampleCount,
-				       Nstride);
-	alleleFreq = snpData.computeIdentityBedAlleleFreqAndMissing(bedLine.data(), &missing);
+	const PgenUtils::PackedHardcallStats stats =
+	  PgenUtils::packedPgenStats(pgenLine.data(), modelSampleCount);
+	missing = static_cast<double>(stats.numMissing) / modelSampleCount;
+	alleleFreq = 0.5 * stats.alleleSum / (modelSampleCount-stats.numMissing);
       }
       else {
 	PgenUtils::packedPgenToGeno(genoLine, pgenLine.data(), subsetToModel);
@@ -3019,19 +3272,34 @@ namespace LMM {
       }
       if (missing > maxMissingPerSnp) continue;
 
-      if (usePackedIdentity)
-	snpData.identityBedLineToSnpVector(snpCovCompVec, bedLine.data(), alleleFreq, work);
-      else
-	snpData.genoLineToMaskedSnpVector(snpCovCompVec, genoLine, maskIndivs, alleleFreq,
-					  allIndivsIncluded);
-      fout << getSnpStats(snp.ID, snp.chrom, snp.physpos, snp.genpos, snp.allele1,
-			  snp.allele2, alleleFreq, missing, snpCovCompVec,
-			  verboseStats, retroData);
+      Stage2VariantInfo variant;
+      variant.ID = snp.ID; variant.chrom = snp.chrom; variant.physpos = snp.physpos;
+      variant.genpos = snp.genpos; variant.allele1 = snp.allele1;
+      variant.allele0 = snp.allele2; variant.alleleFreq = alleleFreq;
+      variant.missing = missing;
+      if (useDirectPacked)
+	fout << scorePackedStage2(variant, pgenLine.data(), true, verboseStats, retroData,
+				  scoreWorkspace);
+      else {
+	double *snpVector = genotypeBatch + batch.size()*genotypeColumnStride;
+	if (usePackedIdentity)
+	  variant.rawNorm2 = PgenUtils::packedPgenToCenteredVector(
+	    snpVector, pgenLine.data(), modelSampleCount, Nstride, alleleFreq);
+	else {
+	  snpData.genoLineToMaskedSnpVector(snpVector, genoLine, maskIndivs, alleleFreq,
+					    allIndivsIncluded);
+	  variant.rawNorm2 = NumericUtils::norm2(snpVector, Nstride);
+	}
+	if (!optimizedStage2)
+	  memset(snpVector+Nstride, 0, Cstride*sizeof(snpVector[0]));
+	batch.push_back(variant);
+	if (batch.size() == maxBatchSize) flushBatch();
+      }
     }
+    flushBatch();
 
     pgenReader.Close();
-    if (work != NULL) ALIGNED_FREE(work);
-    ALIGNED_FREE(snpCovCompVec);
+    if (genotypeBatch != NULL) ALIGNED_FREE(genotypeBatch);
     if (genoLine != NULL) ALIGNED_FREE(genoLine);
     fout.close();
   }

@@ -59,6 +59,15 @@ namespace LMM {
       uchar out[], const uchar in[], uint64 N, uint64 Nstride,
       std::vector<uint32_t> &missingIndices);
 
+    // Computes hardcall allele and missing counts directly from pgenlib's
+    // packed 0/1/2/missing codes without converting to PLINK 1 BED encoding.
+    PackedHardcallStats packedPgenStats(const uchar in[], uint64 N);
+
+    // Expands pgenlib hardcalls directly to the mean-centered Stage 2 vector.
+    // Missing calls and stride padding are zero-filled. Returns its raw norm2.
+    double packedPgenToCenteredVector(double out[], const uchar in[], uint64 N,
+                                      uint64 Nstride, double alleleFreq);
+
     // Expands pgenlib codes and scatters source-order samples into model order.
     // sourceToTarget contains one target index for each packed input sample.
     void packedPgenToGeno(uchar out[], const uchar in[],

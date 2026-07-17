@@ -149,11 +149,13 @@ static void runStage2(const BoltParams &params, const Bolt &bolt,
     if (params.pgenFile.empty())
       bolt.streamComputeRetroLOCO(params.statsFile, params.bimFiles, params.bedFiles,
 				  params.geneticMapFile, params.excludeFiles,
-				  params.maxMissingPerSnp, params.verboseStats, retroData);
+				  params.maxMissingPerSnp, params.verboseStats, retroData,
+				  !params.stage2Scalar);
     else
       bolt.streamComputeRetroLOCOPgen(params.statsFile, params.pgenFile, params.pvarFile,
 				      params.geneticMapFile, params.excludeFiles,
-				      params.maxMissingPerSnp, params.verboseStats, retroData);
+				      params.maxMissingPerSnp, params.verboseStats, retroData,
+				      !params.stage2Scalar);
     cout << endl << "Time for " << (params.pgenFile.empty() ? "PLINK" : "PGEN hardcall")
 	 << " association readout = " << timer.update_time()
 	 << " sec" << endl << endl;

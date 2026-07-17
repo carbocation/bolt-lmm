@@ -70,6 +70,22 @@ namespace LMM {
       std::vector <double> fJacks, fRandsAsData; // fJacks[MCtrials+1], fRandsAsData[MCtrials]
     };
 
+    struct Stage2VariantInfo {
+      std::string ID, allele1, allele0;
+      int chrom, physpos;
+      double genpos, alleleFreq, missing, info, rawNorm2;
+      Stage2VariantInfo() : chrom(0), physpos(0), genpos(0), alleleFreq(0), missing(0),
+	info(-9), rawNorm2(0) {}
+    };
+
+    struct Stage2ScoreWorkspace {
+      std::vector<double> scoreVectors;
+      std::vector<double> products;
+      std::vector<int> chunks;
+      bool initialized;
+      Stage2ScoreWorkspace() : initialized(false) {}
+    };
+
 #ifdef MEASURE_DGEMM
     mutable unsigned long long dgemmTicks;
 #endif
@@ -98,6 +114,21 @@ namespace LMM {
 
     void init(bool useCuda);
     uchar initMarker(uint64 m, double snpVector[]);
+    void prepareStage2ScoreVectors(Stage2ScoreWorkspace &workspace, int chrom, int physpos,
+				   const std::vector<StatsDataRetroLOCO> &retroData) const;
+    std::string formatStage2Stats(const Stage2VariantInfo &variant, double rawNorm2,
+				  double covNorm2, const double dotProds[],
+				  const int chunks[], bool verboseStats,
+				  const std::vector<StatsDataRetroLOCO> &retroData) const;
+    std::string scorePackedStage2(const Stage2VariantInfo &variant, const uchar packed[],
+				  bool pgenEncoding, bool verboseStats,
+				  const std::vector<StatsDataRetroLOCO> &retroData,
+				  Stage2ScoreWorkspace &workspace) const;
+    void scoreStage2Batch(FileUtils::AutoGzOfstream &fout,
+			  const std::vector<Stage2VariantInfo> &variants,
+			  const double genotypeBatch[], bool verboseStats,
+			  const std::vector<StatsDataRetroLOCO> &retroData,
+			  Stage2ScoreWorkspace &workspace) const;
 
     inline void buildMaskedSnpNegCovCompVec(double snpCovCompVec[], uint64 m, double (*work)[4])
       const {
@@ -380,12 +411,14 @@ namespace LMM {
     (const std::string &outFile, const std::vector <std::string> &bimFiles,
      const std::vector <std::string> &bedFiles, const std::string &geneticMapFile,
      const std::vector <std::string> &excludeFiles, double maxMissingPerSnp,
-     bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData) const;
+     bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData,
+     bool optimizedStage2=true) const;
     void streamComputeRetroLOCOPgen
     (const std::string &outFile, const std::string &pgenFile,
      const std::string &pvarFile, const std::string &geneticMapFile,
      const std::vector <std::string> &excludeFiles, double maxMissingPerSnp,
-     bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData) const;
+     bool verboseStats, const std::vector <StatsDataRetroLOCO> &retroData,
+     bool optimizedStage2=true) const;
     void streamDosages
     (const std::string &outFile, const std::vector <std::string> &dosageFiles,
      const std::string &dosageFidIidFile, const std::string &geneticMapFile, bool verboseStats,

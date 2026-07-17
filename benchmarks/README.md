@@ -615,3 +615,59 @@ optimization, and therefore needs a separate scientific-output validation
 before it could become a default. Under the requirement that the current
 numerical path and real-data output remain unchanged, this audit found no
 untried single-core CPU change with a credible 10% end-to-end gain.
+
+## Single-threaded Stage 2 comparison
+
+The Stage 2 CPU audit used the 131,072-sample by 16,384-variant expanded
+real-reference fixture. Its genotypes retain short-range LD, allele-frequency
+structure, and population structure from the 1000 Genomes source. The BED and
+PGEN contain identical hardcalls. PLINK 2 exported those hardcalls to an 8-bit,
+layout-2, zlib-compressed BGEN, so this BGEN workload exercises the production
+probability decoder and compression path but not uncertain imputation dosages.
+
+Two Stage 1 model shapes cover the CPU dispatch points. The direct-packed case
+contains one covariate-basis vector and the two mixed-model statistics. The
+batched case contains 21 covariate-basis vectors and the same two statistics.
+Neither contains LINREG, and all reported files contain the two requested
+mixed-model p-values. For hardcalls, the current code selects direct packed
+scoring through six combined basis/statistic vectors and dense DGEMM batching
+above that threshold. Single-threaded BGEN retains fused scalar scoring below
+five vectors and uses dense batching from five vectors onward.
+
+The original executable is the exact first split-stage commit,
+`a58e7c3d2f3ca651ba16a39063f25b8e449087e0`. Both it and the current executable
+were built with GCC 11.4, `-O3 -march=native`, LP64 sequential oneMKL, no CUDA,
+and no OpenMP execution. Runs were pinned to one Xeon vCPU. The current build
+also had auto-detected libdeflate enabled for zlib BGEN. Current Stage 1 files
+use a faster v2 checksum; for the old loader, the same serialized payload was
+given a benchmark-only v1 header and recomputed FNV checksum. No sample,
+covariate, residual, chunk, scale-factor, or statistic bytes were changed.
+
+| Model and comparison | Original Stage 2 | Current Stage 2 | Speedup | Reduction |
+| --- | ---: | ---: | ---: | ---: |
+| 1 basis + 2 stats: a58 BED → current BED | 28.466 s | 3.448 s | 8.26x | 87.9% |
+| 1 basis + 2 stats: a58 BED → current PGEN | 28.466 s | 3.261 s | 8.73x | 88.5% |
+| 21 bases + 2 stats: a58 BED → current BED | 48.109 s | 9.841 s | 4.89x | 79.5% |
+| 21 bases + 2 stats: a58 BED → current PGEN | 48.109 s | 8.167 s | 5.89x | 83.0% |
+| 21 bases + 2 stats: a58 BGEN → current BGEN | 74.403 s | 22.107 s | 3.37x | 70.3% |
+
+These are complete Stage 2 wall times, including the roughly 0.3-0.5-second
+model load. The association-readout-only medians were 28.085→3.113 seconds
+for direct BED, 47.679→9.438 seconds for batched BED, and 73.956→21.704
+seconds for BGEN.
+
+The PGEN rows compare current PGEN with the original BED route over identical
+hardcalls because `a58e7c3` did not support PGEN. The BED and BGEN rows are
+same-format comparisons. Every complete current output was byte-identical to
+the corresponding original output; PGEN was also byte-identical to original
+BED.
+
+Within the current threaded-oneMKL build constrained to one thread, the
+high-covariate BGEN work separated as follows: scalar scoring with zlib had a
+54.659-second median; batching reduced it to 37.930 seconds; eliminating two
+redundant sample scans reduced it to 30.362 seconds; and libdeflate reduced it
+to 24.730 seconds. Switching the final controlled build to sequential oneMKL
+gave the 21.704-second headline above. libdeflate is optional and auto-detected;
+builds without it retain the zlib path and the same scientific output.
+
+Raw timings and output hashes are in `results/a100_stage2_cpu.tsv`.

@@ -34,6 +34,32 @@ int main(int argc, char **argv) {
       missingIndices != expectedMissing)
     return fail("fused packed hardcall conversion/statistics mismatch");
 
+  uchar exhaustiveInput[256], exhaustiveBed[256] = {}, expectedExhaustiveBed[256] = {};
+  uint64 exhaustiveAlleleSum = 0, exhaustiveMissingCount = 0;
+  std::vector<uint32_t> expectedExhaustiveMissing;
+  const uchar pgenToBed[4] = {3, 2, 0, 1};
+  for (uint32_t byte = 0; byte < 256; byte++) {
+    exhaustiveInput[byte] = static_cast<uchar>(byte);
+    for (uint32_t offset = 0; offset < 4; offset++) {
+      const uchar genotype = (byte >> (2*offset)) & 3;
+      expectedExhaustiveBed[byte] |= pgenToBed[genotype] << (2*offset);
+      if (genotype == 3) {
+        exhaustiveMissingCount++;
+        expectedExhaustiveMissing.push_back((byte << 2) + offset);
+      }
+      else
+        exhaustiveAlleleSum += genotype;
+    }
+  }
+  const LMM::PgenUtils::PackedHardcallStats exhaustiveStats =
+    LMM::PgenUtils::packedPgenToBedAndCollectMissing(
+      exhaustiveBed, exhaustiveInput, 1024, 1024, missingIndices);
+  if (std::memcmp(exhaustiveBed, expectedExhaustiveBed, sizeof(exhaustiveBed)) != 0 ||
+      exhaustiveStats.alleleSum != exhaustiveAlleleSum ||
+      exhaustiveStats.numMissing != exhaustiveMissingCount ||
+      missingIndices != expectedExhaustiveMissing)
+    return fail("exhaustive packed hardcall conversion/statistics mismatch");
+
   const std::string dir = argv[1];
   const std::string prefix = dir + "/example";
   const std::string persistentCache = std::string(argv[2]) + "/pgen-stage0-parity.cache";

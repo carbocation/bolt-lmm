@@ -316,6 +316,32 @@ therefore use the convergent 16,384-variant fixtures, while the full panel is
 used only for parser, hardcall-conversion, QC, and storage measurements. Raw
 measurements are in `results/a100_stage1_real_genotypes.tsv`.
 
+## Native x86 PGEN hardcall conversion
+
+A pinned-core profile at the production 500,000-sample stride attributed
+84.5% of direct-PGEN setup samples to BOLT's byte-at-a-time conversion, allele
+sum, and missing-call loop; pgenlib decompression was the much smaller part.
+Native AVX2 builds now convert 32 packed bytes (128 genotypes) at once with an
+exact bitwise PGEN-to-BED mapping. Nibble shuffles accumulate allele and
+missing counts, while the existing scalar path handles tails, missing-index
+collection, and builds without AVX2.
+
+The bounded 500,000-sample by 100,000-variant container keeps the target sample
+stride and avoids repeatedly profiling the full million-marker input. Across
+two order-reversed pairs, guard-bounded direct ingestion fell from a median of
+28.145 to 15.035 seconds, a 46.6% reduction. Durable Step 0 construction fell
+from 46.60 to 39.54 seconds (15.2%) after including the unchanged 12.5 GB write
+and flush. The complete 12,501,765,536-byte baseline and optimized Step 0
+artifacts compared byte-for-byte identical. An exhaustive unit test also
+covers every packed input byte, including missing calls. On the 131,072-sample
+real-genotype PGEN fixture, the reverse-order warm-page pair fell from 1.41 to
+0.84 seconds (40.4%).
+
+This speedup applies to direct ingestion on every run and does not assume that
+a large converted cache has been transferred to the compute machine. The
+conversion work is O(NM); the bounded target-stride result is reported instead
+of extrapolating it into an unmeasured full-scale wall time.
+
 ## Persistent CPU Step 0 PGEN cache
 
 `--stage=0 --pfile PREFIX --pgenCacheFile FILE` performs PGEN hardcall

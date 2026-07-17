@@ -17,6 +17,10 @@
 #include <fstream>
 #include <iostream>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 #include "FileUtils.hpp"
 #include "PgenUtils.hpp"
 #include "SnpData.hpp"
@@ -194,6 +198,16 @@ namespace LMM {
       }
 
       const std::array<PackedByteStats, 256> PACKED_BYTE_STATS = makePackedByteStats();
+
+#if defined(__AVX2__)
+      // Two PGEN genotypes fit in a nibble. These tables let vpshufb count
+      // nonmissing ALT alleles and missing calls while converting 128 calls
+      // (32 packed bytes) at a time.
+      alignas(16) const uchar PGEN_NIBBLE_ALLELE_SUM[16] =
+        {0, 1, 2, 0, 1, 2, 3, 1, 2, 3, 4, 2, 0, 1, 2, 0};
+      alignas(16) const uchar PGEN_NIBBLE_MISSING_COUNT[16] =
+        {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 2};
+#endif
 
     }
 
@@ -400,7 +414,71 @@ namespace LMM {
       PackedHardcallStats stats = {0, 0};
       missingIndices.clear();
       const uint64 fullBytes = N >> 2;
-      for (uint64 byte = 0; byte < fullBytes; byte++) {
+
+      uint64 byte = 0;
+#if defined(__AVX2__)
+      __m256i alleleSums = _mm256_setzero_si256();
+      __m256i missingCounts = _mm256_setzero_si256();
+      const __m256i zero = _mm256_setzero_si256();
+      const __m256i lowBits = _mm256_set1_epi8(0x55);
+      const __m256i highBits = _mm256_set1_epi8(static_cast<char>(0xaa));
+      const __m256i nibbleMask = _mm256_set1_epi8(0x0f);
+      const __m256i alleleTable = _mm256_broadcastsi128_si256(
+        _mm_load_si128(reinterpret_cast<const __m128i *>(PGEN_NIBBLE_ALLELE_SUM)));
+      const __m256i missingTable = _mm256_broadcastsi128_si256(
+        _mm_load_si128(reinterpret_cast<const __m128i *>(PGEN_NIBBLE_MISSING_COUNT)));
+
+      for (; byte+32 <= fullBytes; byte += 32) {
+	const __m256i packed =
+	  _mm256_loadu_si256(reinterpret_cast<const __m256i *>(in+byte));
+	// Per two-bit call, PGEN 00/01/10/11 maps to BED 11/10/00/01.
+	// The BED high bit is !PGEN-high and its low bit is
+	// !(PGEN-low xor PGEN-high), so the whole byte maps bitwise.
+	const __m256i packedHighBits = _mm256_and_si256(packed, highBits);
+	const __m256i packedLowBits = _mm256_and_si256(packed, lowBits);
+	const __m256i shiftedHighBits = _mm256_and_si256(
+	  _mm256_srli_epi16(packedHighBits, 1), lowBits);
+	const __m256i converted = _mm256_or_si256(
+	  _mm256_andnot_si256(packedHighBits, highBits),
+	  _mm256_andnot_si256(_mm256_xor_si256(packedLowBits, shiftedHighBits),
+				 lowBits));
+	_mm256_storeu_si256(reinterpret_cast<__m256i *>(out+byte), converted);
+
+	const __m256i lowNibbles = _mm256_and_si256(packed, nibbleMask);
+	const __m256i highNibbles = _mm256_and_si256(
+	  _mm256_srli_epi16(packed, 4), nibbleMask);
+	const __m256i byteAlleleSums = _mm256_add_epi8(
+	  _mm256_shuffle_epi8(alleleTable, lowNibbles),
+	  _mm256_shuffle_epi8(alleleTable, highNibbles));
+	const __m256i byteMissingCounts = _mm256_add_epi8(
+	  _mm256_shuffle_epi8(missingTable, lowNibbles),
+	  _mm256_shuffle_epi8(missingTable, highNibbles));
+	alleleSums = _mm256_add_epi64(alleleSums,
+				     _mm256_sad_epu8(byteAlleleSums, zero));
+	missingCounts = _mm256_add_epi64(missingCounts,
+					_mm256_sad_epu8(byteMissingCounts, zero));
+
+	if (!_mm256_testz_si256(byteMissingCounts, byteMissingCounts))
+	  for (uint64 blockByte = byte; blockByte < byte+32; blockByte++) {
+	    const uchar scalarPacked = in[blockByte];
+	    if (PACKED_BYTE_STATS[scalarPacked].numMissing)
+	      for (uint32_t offset = 0; offset < 4; offset++)
+		if (((scalarPacked >> (2*offset)) & 3) == 3)
+		  missingIndices.push_back(
+		    static_cast<uint32_t>((blockByte << 2) + offset));
+	  }
+      }
+
+      alignas(32) uint64 alleleSumParts[4], missingCountParts[4];
+      _mm256_store_si256(reinterpret_cast<__m256i *>(alleleSumParts), alleleSums);
+      _mm256_store_si256(reinterpret_cast<__m256i *>(missingCountParts), missingCounts);
+      for (int part = 0; part < 4; part++) {
+	stats.alleleSum += alleleSumParts[part];
+	stats.numMissing += missingCountParts[part];
+      }
+#endif
+
+      for (; byte < fullBytes; byte++) {
 	const uchar packed = in[byte];
 	out[byte] = PGEN_TO_BED_LOOKUP[packed];
 	stats.alleleSum += PACKED_BYTE_STATS[packed].alleleSum;

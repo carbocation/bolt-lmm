@@ -313,6 +313,13 @@ int main(int argc, char *argv[]) {
     cout << "Loaded " << model.indivIds.size() << " samples, " << model.Cindep
 	 << " covariate basis vectors, and " << model.retroData.size()
 	 << " association statistic(s)" << endl;
+    // Match upstream output: LINREG columns are emitted only with --verboseStats.
+    if (!params.verboseStats && model.retroData.size() > 1)
+      for (vector <Bolt::StatsDataRetroLOCO>::iterator it = model.retroData.begin();
+	   it != model.retroData.end(); ) {
+	if (it->statName == "LINREG") it = model.retroData.erase(it);
+	else ++it;
+      }
     const string &sampleFile = params.pgenFile.empty() ? params.famFile : params.psamFile;
     SnpData snpData(model.indivIds, model.maskIndivs, model.Nstride, sampleFile,
 		    model.Nautosomes, !params.pgenFile.empty());
@@ -600,7 +607,7 @@ int main(int argc, char *argv[]) {
   if (!params.noLinreg) {
     cout << "=== Computing linear regression (LINREG) stats ===" << endl << endl;
     linregInd = retroData.size();
-    // Store LINREG by default so split Stage 2 preserves upstream output columns.
+    // Store LINREG by default so Stage 2 can emit it when --verboseStats is requested.
     retroData.push_back(bolt.computeLINREG(pheno));
     cout << "Time for computing LINREG stats = " << timer.update_time() << " sec" << endl
 	 << endl;

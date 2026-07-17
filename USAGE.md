@@ -35,12 +35,12 @@ bolt \
   --LDscoresFile=tables/LDSCORE.1000G_EUR.GRCh38.tab.gz
 ```
 
-Stage 1 computes and stores LINREG statistics by default so split Stage 2
-preserves the upstream output columns. Analyses that only need mixed-model
-results can explicitly pass `--noLinreg`; Stage 2 will then omit `P_LINREG`
-while retaining `P_BOLT_LMM_INF` and, when the spike-and-slab model is fitted,
-`P_BOLT_LMM`. `--verboseStats` only adds the corresponding chi-square columns;
-it does not select which association statistics are emitted.
+Stage 1 computes and stores LINREG statistics by default so split Stage 2 can
+match upstream behavior: `CHISQ_LINREG` and `P_LINREG` are emitted only when
+`--verboseStats` is passed. Analyses that do not need even optional LINREG
+output can explicitly pass `--noLinreg` in Stage 1 to skip that computation.
+The default Stage 2 output retains `P_BOLT_LMM_INF` and, when the spike-and-slab
+model is fitted, `P_BOLT_LMM`.
 
 For BOLT-REML, use `--stage=1 --reml`. No Stage 2 association readout is
 required.

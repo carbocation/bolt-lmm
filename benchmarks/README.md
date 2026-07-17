@@ -221,3 +221,76 @@ solves, a 9-iteration infinitesimal solve, a 6-iteration CV fit, and a
 5-iteration final Bayesian fit. Its h2 secant search nevertheless converged in
 zero steps, so it is a regression and overhead benchmark rather than a proxy
 for the difficulty of variance fitting in real biobank data.
+
+## Real-reference benchmark ladder
+
+`generate_real_plink_benchmark.py` builds deterministic PLINK 1 performance
+fixtures from an external real-reference prefix. The source and generated
+genotypes stay outside the repository. Native-sample mode preserves the source
+sample IDs and genotypes. Expansion mode assigns samples to the source
+population groups and draws a new donor within the same group every short
+variant block. It preserves real allele frequencies, missingness, population
+structure, and local LD, but the resulting people are explicitly synthetic.
+
+For a small correctness and convergence fixture using the real samples:
+
+```sh
+python3 benchmarks/generate_real_plink_benchmark.py \
+  /data/real-reference /scratch/bolt-real-native \
+  --source-psam /data/real-reference.psam \
+  --identity-samples --variants 16384 \
+  --causal-variants 1024 --heritability 0.5
+```
+
+For a target-stride compute fixture with a diffuse polygenic phenotype:
+
+```sh
+python3 benchmarks/generate_real_plink_benchmark.py \
+  /data/real-reference /scratch/bolt-real-expanded \
+  --source-psam /data/real-reference.psam \
+  --samples 131072 --variants 16384 --ld-block-variants 32 \
+  --causal-variants 8192 --heritability 0.3
+```
+
+The reference used on the A100 was the 1KG Phase 3 DRAGEN-derived HapMap3
+panel: 2,573 samples and 1,107,021 variants. The 16,384-variant native fixture
+needed 8/12/11 variance-component CG iterations, 16 infinitesimal CG
+iterations, 21 cross-validation iterations, and 14 final spike-and-slab
+iterations. It completed Stage 1 in 2.47 seconds. This is materially harder
+than the earlier independent synthetic fixture and confirms that real
+genotypes change convergence even at small sample count. Loading its
+`--noLinreg` model in Stage 2 produced both `P_BOLT_LMM_INF` and
+`P_BOLT_LMM` for the real DRAGEN-style variant IDs.
+
+The 131,072-sample block-bootstrap fixture converged cleanly in 32.94 seconds,
+with variance CG counts of 23/41/24, 35 infinitesimal CG iterations, 90 CV
+iterations, and 72 final spike-and-slab iterations. It is a useful
+throughput/convergence stress test, not a replacement for a genuinely large
+cohort. A 256-variant bootstrap-block experiment was rejected as a benchmark:
+it made the GRM poorly conditioned and cross-validation reached its 250-
+iteration limit.
+
+The full reference panel was also used for bounded ingest/QC measurements.
+With warm filesystem pages, BOLT's setup timer was 13.652 seconds for the
+620.5 MB PGEN plus its uncompressed PVAR, versus 5.521 seconds for the
+equivalent 712.9 MB BED plus BIM. Two guard-bounded repetitions were stable at
+13.85/13.88 seconds wall time for PGEN and 5.73/5.74 seconds for BED.
+
+That comparison includes metadata parsing: the DRAGEN PVAR is 1.386 GB
+uncompressed because of its INFO field. Repeating the PGEN measurement with a
+45.7 MB PVAR containing only BIM-equivalent required columns took 4.51/4.50
+seconds. The 9.36-second penalty on this small panel is therefore attributable
+to serial metadata parsing, not hardcall conversion; with compact metadata,
+PGEN was slightly faster than BED. Metadata parsing is O(M), however, while
+hardcall conversion is O(NM). The separate exact target-shape benchmark's
+528.8-second PGEN setup still motivates a persistent reusable converted-PGEN
+cache for repeated biobank analyses. The source `.pvar.zst` was decompressed
+on the benchmark host because BOLT currently accepts `.pvar` or `.pvar.gz`,
+not `.pvar.zst`.
+
+The full 1.107-million-marker panel is intentionally not an end-to-end model
+fixture with only 2,573 samples: after raising `--maxModelSnps`, its
+variational-Bayes fit diverged in the extreme M/N regime. Full-model timings
+therefore use the convergent 16,384-variant fixtures, while the full panel is
+used only for parser, hardcall-conversion, QC, and storage measurements. Raw
+measurements are in `results/a100_stage1_real_genotypes.tsv`.

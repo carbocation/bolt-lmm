@@ -188,7 +188,7 @@ namespace LMM {
       ("lmmForceNonInf", "compute non-inf assoc stats even if BOLT-LMM expects no power gain")
       ("modelSnps", po::value< vector <string> >(&modelSnpsFileTemplates),
        "file(s) listing SNPs to use in model (i.e., GRM) (default: use all non-excluded SNPs)")
-      ("cuda", "use CUDA acceleration (default for Stage 1 in CUDA-enabled builds)")
+      ("cuda", "use CUDA acceleration (default for Stages 1 and 2 in CUDA-enabled builds)")
       ("no-cuda", "disable CUDA acceleration in a CUDA-enabled build")
 
       // calibration parameters
@@ -498,15 +498,15 @@ namespace LMM {
 	return false;
       }
 #ifdef BOLT_USE_CUDA
-      useCuda = stage == 1 && !vm.count("no-cuda");
+      useCuda = (stage == 1 || stage == 2) && !vm.count("no-cuda");
 #else
       useCuda = vm.count("cuda");
 #endif
-      if (cudaCacheGiB != -1 && !useCuda) {
+      if (cudaCacheGiB != -1 && (stage != 1 || !useCuda)) {
 	cerr << "ERROR: --cudaCacheGiB requires CUDA-enabled Stage 1 execution" << endl;
 	return false;
       }
-      if (cudaHostCacheGiB != -1 && !useCuda) {
+      if (cudaHostCacheGiB != -1 && (stage != 1 || !useCuda)) {
 	cerr << "ERROR: --cudaHostCacheGiB requires CUDA-enabled Stage 1 execution" << endl;
 	return false;
       }
@@ -555,7 +555,7 @@ namespace LMM {
 	  (vm.count("phenoFile") || vm.count("phenoCol") || phenoUseFam || vm.count("covarFile") ||
 	   vm.count("covarCol") || vm.count("qCovarCol") || vm.count("modelSnps") ||
 	   vm.count("remove") || reml || lmmInf || vm.count("predBetasFile") ||
-	   vm.count("snpInfoFile") || vm.count("cuda") || vm.count("no-cuda"))) {
+	   vm.count("snpInfoFile"))) {
 	cerr << "ERROR: Phenotype, covariate, model-fitting, and prediction options are Stage 1 options"
 	     << endl;
 	return false;

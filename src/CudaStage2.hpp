@@ -39,7 +39,8 @@ namespace LMM {
     // Scores the first variantCount packed variants in getHostPackedBuffer().
     // products is variant-major with numScoreVectors entries per variant.
     void scorePacked(double products[], double rawNorm2s[], double alleleFreqs[],
-                     double missingRates[], uint64 variantCount, bool pgenEncoding);
+                     double missingRates[], uint64 variantCount, bool pgenEncoding,
+                     uint64 packedVariantOffset=0);
   };
 
 }

@@ -287,7 +287,7 @@ int main(int argc, char *argv[]) {
   }
 
 #ifdef BOLT_USE_CUDA
-  if (params.useCuda) {
+  if (params.useCuda && params.stage == 1) {
     CudaStep1::setPackedCacheLimitGiB(params.cudaCacheGiB);
     CudaStep1::setPackedHostCacheLimitGiB(params.cudaHostCacheGiB);
   }
@@ -330,7 +330,7 @@ int main(int argc, char *argv[]) {
     SnpData snpData(model.indivIds, model.maskIndivs, model.Nstride, sampleFile,
 		    model.Nautosomes, !params.pgenFile.empty());
     Bolt bolt(snpData, model.maskIndivs, model.covBasis, model.Cindep, model.Nautosomes,
-	      params.bgenVariantsToTest);
+	      params.bgenVariantsToTest, params.useCuda);
     vector<double>().swap(model.maskIndivs);
     vector<double>().swap(model.covBasis);
     vector< pair<string, string> >().swap(model.indivIds);

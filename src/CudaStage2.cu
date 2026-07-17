@@ -326,16 +326,19 @@ namespace LMM {
     }
 
     void scorePacked(double products[], double rawNorm2s[], double alleleFreqs[],
-                     double missingRates[], uint64 variants, bool pgenEncoding) {
+                     double missingRates[], uint64 variants, bool pgenEncoding,
+                     uint64 packedVariantOffset) {
       if (!inputSamples || !hostPackedGenotypes)
         throw std::runtime_error("CUDA Stage 2 sample mapping was not configured");
       if (!numScoreVectors || !deviceScoreVectors)
         throw std::runtime_error("CUDA Stage 2 score vectors were not configured");
-      if (!variants || variants > maxVariants)
+      if (!variants || packedVariantOffset+variants > maxVariants)
         throw std::runtime_error("Invalid CUDA Stage 2 packed batch size");
       const uint64 packedBytes = variants * bytesPerVariant;
       const uint64 outputValues = variants * (numScoreVectors+1);
-      checkCuda(cudaMemcpyAsync(devicePackedGenotypes, hostPackedGenotypes, packedBytes,
+      checkCuda(cudaMemcpyAsync(devicePackedGenotypes,
+                                hostPackedGenotypes + packedVariantOffset*bytesPerVariant,
+                                packedBytes,
                                 cudaMemcpyHostToDevice, stream),
                 "copy packed Stage 2 genotypes to CUDA");
       computePackedStats<<<static_cast<unsigned int>(variants), 256, 0, stream>>>
@@ -400,9 +403,10 @@ namespace LMM {
 
   void CudaStage2::scorePacked(double products[], double rawNorm2s[],
                                double alleleFreqs[], double missingRates[],
-                               uint64 variantCount, bool pgenEncoding) {
+                               uint64 variantCount, bool pgenEncoding,
+                               uint64 packedVariantOffset) {
     impl->scorePacked(products, rawNorm2s, alleleFreqs, missingRates,
-                      variantCount, pgenEncoding);
+                      variantCount, pgenEncoding, packedVariantOffset);
   }
 
 }

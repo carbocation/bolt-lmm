@@ -36,6 +36,7 @@ namespace LMM {
 
 #ifdef BOLT_USE_CUDA
   class CudaStep1;
+  class CudaStage2;
 #endif
 
   class Bolt : boost::noncopyable {
@@ -84,8 +85,10 @@ namespace LMM {
       std::vector<double> scoreVectors;
       std::vector<double> products;
       std::vector<int> chunks;
+      std::vector<int> cudaUploadedChunks;
+      uint64 cudaUploadedScoreVectors;
       bool initialized;
-      Stage2ScoreWorkspace() : initialized(false) {}
+      Stage2ScoreWorkspace() : cudaUploadedScoreVectors(0), initialized(false) {}
     };
 
 #ifdef MEASURE_DGEMM
@@ -112,6 +115,7 @@ namespace LMM {
 
 #ifdef BOLT_USE_CUDA
     CudaStep1 *cudaStep1;
+    CudaStage2 *cudaStage2;
 #endif
 
     void init(bool useCuda);
@@ -131,6 +135,14 @@ namespace LMM {
 			  const double genotypeBatch[], bool verboseStats,
 			  const std::vector<StatsDataRetroLOCO> &retroData,
 			  Stage2ScoreWorkspace &workspace) const;
+#ifdef BOLT_USE_CUDA
+    void scorePackedStage2CudaBatch(FileUtils::AutoGzOfstream &fout,
+				    std::vector<Stage2VariantInfo> &variants,
+				    bool pgenEncoding, double maxMissingPerSnp,
+				    bool verboseStats,
+				    const std::vector<StatsDataRetroLOCO> &retroData,
+				    Stage2ScoreWorkspace &workspace) const;
+#endif
     std::string decodeSnpStatsBgen2
     (uint CompressedSNPBlocks, uchar *buf, uint bufLen, const uchar *zBuf, uint zBufLen,
      uint Nbgen, const std::vector<uint64> &bgenIndivInds, bool bgenIndivsIdentity,
@@ -263,7 +275,7 @@ namespace LMM {
     // Lightweight constructor for Stage 2. It does not initialize model genotypes.
     Bolt(const SnpData &_snpData, const std::vector <double> &_maskIndivs,
 	 const std::vector <double> &_covBasis, uint64 _Cindep, int _Nautosomes,
-	 const std::unordered_set <std::string> &_bgenVariantsToTest);
+	 const std::unordered_set <std::string> &_bgenVariantsToTest, bool useCuda=false);
 
     ~Bolt(void);
 

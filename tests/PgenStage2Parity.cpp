@@ -111,6 +111,29 @@ int main(int argc, char **argv) {
   if (bedStats != bedReferenceStats)
     return fail("optimized and scalar Stage 2 association outputs differ");
 
+#ifdef BOLT_USE_CUDA
+  {
+    LMM::Bolt cudaBedBolt(bedData, mask, covBasis, 1, 22, noBgenVariants, true);
+    LMM::Bolt cudaPgenBolt(pgenData, mask, covBasis, 1, 22, noBgenVariants, true);
+    const std::string cudaBedOut = outputDir + "/cuda_stage2_bed.stats";
+    const std::string cudaPgenOut = outputDir + "/cuda_stage2_pgen.stats";
+    cudaBedBolt.streamComputeRetroLOCO(
+      cudaBedOut, std::vector<std::string>(1, prefix + ".bim"),
+      std::vector<std::string>(1, prefix + ".bed"), "", noFiles, 1.0, true, retroData);
+    cudaPgenBolt.streamComputeRetroLOCOPgen(cudaPgenOut, prefix + ".pgen",
+                                            prefix + ".pvar", "", noFiles,
+                                            1.0, true, retroData);
+    const std::string cudaBedStats = readFile(cudaBedOut);
+    const std::string cudaPgenStats = readFile(cudaPgenOut);
+    std::remove(cudaBedOut.c_str());
+    std::remove(cudaPgenOut.c_str());
+    if (cudaBedStats != bedReferenceStats)
+      return fail("CUDA BED and CPU scalar Stage 2 outputs differ");
+    if (cudaPgenStats != bedReferenceStats)
+      return fail("CUDA PGEN and CPU scalar Stage 2 outputs differ");
+  }
+#endif
+
   // Exercise single-threaded layout-2 BGEN batching with enough covariate and
   // statistic vectors to cross the production batching threshold.
   {

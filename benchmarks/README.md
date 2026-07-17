@@ -463,11 +463,12 @@ redundant transfers and adds no alternate numerical path.
 ## Bayesian SNP-factor precomputation
 
 The spike-and-slab scalar update previously recomputed two mixture standard
-deviations, two shrinkage factors, and two posterior variances for every SNP,
-model, and variational-Bayes iteration. These values depend only on the fixed
-variance parameters and the SNP norm. They are now evaluated once per fit with
-the same expressions and stored for reuse; update order, convergence criteria,
-and all floating-point formulas are unchanged.
+deviations, two shrinkage factors, two posterior variances, and two posterior-
+variance log ratios for every SNP, model, and variational-Bayes iteration.
+These values depend only on the fixed variance parameters and the SNP norm.
+They are now evaluated once per fit with the same expressions and stored for
+reuse; update order, convergence criteria, and all floating-point formulas are
+unchanged.
 
 Across two order-reversed pairs on top of the CUDA residual-transfer change,
 median mixture fitting fell from 9.154 to 8.977 seconds (1.9%), final
@@ -477,11 +478,19 @@ were byte-for-byte identical. A bounded 8,192-sample CPU-only pair was noisier
 end to end, but its final spike-and-slab phase fell from 5.93 to 4.05 seconds
 (31.7%) and its model was also byte-identical.
 
-The factor table uses 48 bytes per SNP-model pair and exists only during a
+Precomputing the two log ratios on top of the first six factors reduced the
+same current CUDA workload's mixture phase from 8.970 to 8.656 seconds (3.5%),
+final fit from 6.003 to 5.773 seconds (3.8%), and wall time from 26.390 to
+25.915 seconds (1.8%). The four incremental comparison models were again
+byte-identical. Relative to recomputing all eight invariants, the cumulative
+reductions are 5.4% for mixture fitting, 7.3% for final Bayes, and 3.5% for
+wall time.
+
+The factor table uses 64 bytes per SNP-model pair and exists only during a
 fit. At one million Stage 1 SNPs, the default 18-pair first CV fold requires
-about 0.80 GiB; a 22-chromosome final LOCO fit requires about 0.98 GiB. This is
-host working memory, not a persistent artifact, and therefore introduces no
-cache-transfer premise.
+about 1.07 GiB; a 22-chromosome final LOCO fit requires about 1.31 GiB. This
+is host working memory, not a persistent artifact, and therefore introduces
+no cache-transfer premise.
 
 ## Native x86 AVX genotype expansion
 

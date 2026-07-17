@@ -891,6 +891,7 @@ namespace LMM {
       double s1, s2;
       double shrink1, shrink2;
       double tau1sq, tau2sq;
+      double logTauRatio1, logTauRatio2;
     };
     vector<BayesSnpFactors> bayesSnpFactors(M*B);
     for (uint64 m = 0; m < M; m++)
@@ -905,6 +906,8 @@ namespace LMM {
 	    1 / (1/sigma2beta1s[b] + 1/(sigma2es[b]/Xnorm2s[m]));
 	  factors.tau2sq =
 	    1 / (1/sigma2beta2s[b] + 1/(sigma2es[b]/Xnorm2s[m]));
+	  factors.logTauRatio1 = log(factors.tau1sq/sigma2beta1s[b]);
+	  factors.logTauRatio2 = log(factors.tau2sq/sigma2beta2s[b]);
 	}
 
     vector <bool> converged(B); uint64 Bleft = B; // number of un-converged computations in batch
@@ -1157,9 +1160,9 @@ namespace LMM {
 		  double KL = 0;
 		  if (p_m != 0) KL += p_m * log(p_m / pEsts[b]);
 		  if (1-p_m != 0) KL += (1-p_m) * log((1-p_m) / (1-pEsts[b]));
-		  KL -= p_m/2 * (1+log(factors.tau1sq/sigma2beta1s[b]) -
+		  KL -= p_m/2 * (1+factors.logTauRatio1 -
 				    (factors.tau1sq+mu1sq)/sigma2beta1s[b])
-		    + (1-p_m)/2 * (1+log(factors.tau2sq/sigma2beta2s[b]) -
+		    + (1-p_m)/2 * (1+factors.logTauRatio2 -
 					(factors.tau2sq+mu2sq)/sigma2beta2s[b]);
 	      
 		  double penalty = Xnorm2s[m] / (2*sigma2es[b]) * var_q + KL;

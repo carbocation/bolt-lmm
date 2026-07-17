@@ -229,6 +229,91 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  const uint64 remlVCs = 2, remlD = 2, remlB = 2;
+  const uchar snpVCnums[M] = {1, 2, 0, 1, 2};
+  const double vcMatrices[(remlVCs+1)*remlD*remlD] = {
+    1.1, 0.2, 0.3, 0.9,
+    0.4, 0.1, 0.2, 0.5,
+    0.7, -0.1, 0.05, 0.6
+  };
+  std::vector<double> remlInput(remlB*remlD*NCstride);
+  for (uint64 bd = 0; bd < remlB*remlD; bd++)
+    for (uint64 nc = 0; nc < NCstride; nc++)
+      remlInput[bd*NCstride+nc] = 0.007 * (1+bd) * (1+nc) - 0.11;
+  std::vector<double> expectedVmulti(remlInput.size(), 0), observedVmulti(remlInput.size());
+  for (uint64 b = 0; b < remlB; b++)
+    for (uint64 d = 0; d < remlD; d++)
+      for (uint64 nc = 0; nc < NCstride; nc++)
+        for (uint64 i = 0; i < remlD; i++)
+          expectedVmulti[(b*remlD+d)*NCstride+nc] +=
+            remlInput[(b*remlD+i)*NCstride+nc] * vcMatrices[d*remlD+i];
+  for (uint64 m = 0; m < M; m++) {
+    const uint64 vc = snpVCnums[m];
+    if (!projMaskSnps[m] || !vc)
+      continue;
+    for (uint64 b = 0; b < remlB; b++) {
+      double dots[remlD] = {};
+      for (uint64 i = 0; i < remlD; i++)
+        for (uint64 nc = 0; nc < NCstride; nc++)
+          dots[i] += remlInput[(b*remlD+i)*NCstride+nc] * xNeg[m*NCstride+nc];
+      for (uint64 d = 0; d < remlD; d++) {
+        double coefficient = 0;
+        for (uint64 i = 0; i < remlD; i++)
+          coefficient += dots[i] * vcMatrices[(vc*remlD+d)*remlD+i];
+        for (uint64 nc = 0; nc < NCstride; nc++) {
+          const double xPositive = nc < Nstride ? xNeg[m*NCstride+nc] :
+                                   -xNeg[m*NCstride+nc];
+          expectedVmulti[(b*remlD+d)*NCstride+nc] += xPositive * coefficient;
+        }
+      }
+    }
+  }
+  cuda.multVmulti(observedVmulti.data(), remlInput.data(), snpVCnums, vcMatrices,
+                  remlVCs, remlD, remlB);
+  double maxVmultiError = 0;
+  for (uint64 i = 0; i < observedVmulti.size(); i++)
+    maxVmultiError = std::max(maxVmultiError,
+                              std::fabs(observedVmulti[i] - expectedVmulti[i]));
+  if (maxVmultiError > 1e-11) {
+    std::cerr << "CUDA REML Vmulti parity failure: max absolute error = "
+              << maxVmultiError << std::endl;
+    return 1;
+  }
+
+  const double vcScales[remlVCs+1] = {0, 0.4, 0.7};
+  const double coeffI = 0.15;
+  std::vector<double> expectedTheta(remlVCs*B*NCstride), observedTheta(expectedTheta.size());
+  for (uint64 vc = 0; vc < remlVCs; vc++)
+    for (uint64 b = 0; b < B; b++)
+      for (uint64 nc = 0; nc < NCstride; nc++)
+        expectedTheta[(vc*B+b)*NCstride+nc] = -coeffI * input[b*NCstride+nc];
+  for (uint64 m = 0; m < M; m++) {
+    const uint64 vc = snpVCnums[m];
+    if (!projMaskSnps[m] || !vc)
+      continue;
+    for (uint64 b = 0; b < B; b++) {
+      double dot = 0;
+      for (uint64 nc = 0; nc < NCstride; nc++)
+        dot += input[b*NCstride+nc] * xNeg[m*NCstride+nc];
+      for (uint64 nc = 0; nc < NCstride; nc++) {
+        const double xPositive = nc < Nstride ? xNeg[m*NCstride+nc] :
+                                 -xNeg[m*NCstride+nc];
+        expectedTheta[((vc-1)*B+b)*NCstride+nc] += vcScales[vc] * xPositive * dot;
+      }
+    }
+  }
+  cuda.multThetaMinusIs(observedTheta.data(), input.data(), snpVCnums, vcScales,
+                        remlVCs, B, coeffI);
+  double maxThetaError = 0;
+  for (uint64 i = 0; i < observedTheta.size(); i++)
+    maxThetaError = std::max(maxThetaError,
+                             std::fabs(observedTheta[i] - expectedTheta[i]));
+  if (maxThetaError > 1e-11) {
+    std::cerr << "CUDA REML derivative parity failure: max absolute error = "
+              << maxThetaError << std::endl;
+    return 1;
+  }
+
   std::vector<double> coefficients(M*B), expectedMultX(B*NCstride, 0);
   std::vector<double> expectedMultXAll(B*NCstride, 0), observedMultX(B*NCstride);
   std::vector<double> xAllNeg(M*NCstride, 0);

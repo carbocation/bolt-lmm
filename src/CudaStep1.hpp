@@ -42,6 +42,12 @@ namespace LMM {
                          const uchar batchMaskSnps[], uint64 B);
     void multXXtransSnpMask(double outCovCompVecs[], const double inCovCompVecs[],
                             const uchar snpMask[], uint64 B);
+    void multVmulti(double outMultiCovCompVecs[], const double inMultiCovCompVecs[],
+                    const uchar snpVCnums[], const double vcMatrices[],
+                    uint64 VCs, uint64 D, uint64 B);
+    void multThetaMinusIs(double outCovCompVecs[], const double inCovCompVecs[],
+                          const uchar snpVCnums[], const double vcScales[],
+                          uint64 VCs, uint64 B, double coeffI);
     void multX(double outCovCompVecs[], const double coefficients[], uint64 B,
                bool applyIndivMask, bool positiveCovariateComponents);
     void multXtrans(double outSnpProducts[], const double inCovCompVecs[], uint64 B);

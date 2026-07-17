@@ -353,6 +353,73 @@ namespace LMM {
       }
     }
 
+    __global__ void transformVmultiCoefficients(double transformed[],
+                                                 const double Xtrans[],
+                                                 const uchar snpVCnums[],
+                                                 const double vcMatrices[],
+                                                 uint64 m0, uint64 blockSize,
+                                                 uint64 VCs, uint64 D, uint64 B) {
+      const uint64 BD = B * D;
+      const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (index >= blockSize * BD)
+        return;
+      const uint64 mPlus = index / BD;
+      const uint64 bd = index - mPlus * BD;
+      const uint64 d = bd % D;
+      const uint64 vc = snpVCnums[m0 + mPlus];
+      double value = 0;
+      if (vc && vc <= VCs) {
+        const uint64 b = bd / D;
+        const double *matrix = vcMatrices + vc * D * D;
+        for (uint64 i = 0; i < D; i++)
+          value += Xtrans[mPlus * BD + b * D + i] * matrix[d * D + i];
+      }
+      transformed[index] = value;
+    }
+
+    __global__ void addVmultiEnvironment(double out[], const double in[],
+                                         const double vcMatrices[], uint64 NCstride,
+                                         uint64 D, uint64 B) {
+      const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (index >= B * D * NCstride)
+        return;
+      const uint64 bd = index / NCstride;
+      const uint64 nc = index - bd * NCstride;
+      const uint64 b = bd / D;
+      const uint64 d = bd - b * D;
+      double value = 0;
+      for (uint64 i = 0; i < D; i++)
+        value += in[(b * D + i) * NCstride + nc] * vcMatrices[d * D + i];
+      out[index] += value;
+    }
+
+    __global__ void routeThetaCoefficients(double routed[], const double Xtrans[],
+                                            const uchar snpVCnums[], uint64 m0,
+                                            uint64 blockSize, uint64 VCs, uint64 B) {
+      const uint64 VB = VCs * B;
+      const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (index >= blockSize * VB)
+        return;
+      const uint64 mPlus = index / VB;
+      const uint64 vb = index - mPlus * VB;
+      const uint64 vc = vb / B + 1;
+      const uint64 b = vb % B;
+      routed[index] = snpVCnums[m0 + mPlus] == vc ? Xtrans[mPlus * B + b] : 0;
+    }
+
+    __global__ void finishThetaMinusIs(double out[], const double in[],
+                                        const double vcScales[], uint64 NCstride,
+                                        uint64 VCs, uint64 B, double coeffI) {
+      const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
+      if (index >= VCs * B * NCstride)
+        return;
+      const uint64 vb = index / NCstride;
+      const uint64 nc = index - vb * NCstride;
+      const uint64 vc = vb / B + 1;
+      const uint64 b = vb % B;
+      out[index] = vcScales[vc] * out[index] - coeffI * in[b * NCstride + nc];
+    }
+
     __global__ void flipCovariateComponents(double snpBlock[], uint64 blockSize,
                                              uint64 Nstride, uint64 Cstride) {
       const uint64 index = static_cast<uint64>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -440,6 +507,9 @@ namespace LMM {
     double *inCovCompVecs;
     double *outCovCompVecs;
     double *Xtrans;
+    double *scaledXtrans;
+    double *remlMatrices;
+    uint64 remlMatrixCapacity;
     double *bayesGram;
     uint64 gramCapacity;
     const uchar *cachedPackedGenotypes;
@@ -463,7 +533,8 @@ namespace LMM {
       lookup(nullptr),
       negCovComps(nullptr), projMaskSnps(nullptr), activeMaskSnps(nullptr),
       batchMaskSnps(nullptr), inCovCompVecs(nullptr), outCovCompVecs(nullptr),
-      Xtrans(nullptr), bayesGram(nullptr), gramCapacity(0),
+      Xtrans(nullptr), scaledXtrans(nullptr), remlMatrices(nullptr),
+      remlMatrixCapacity(0), bayesGram(nullptr), gramCapacity(0),
       cachedPackedGenotypes(nullptr), cachedSnps(0), packedCacheAttached(false),
       packedHostCacheAttached(false) {
 
@@ -522,6 +593,8 @@ namespace LMM {
         cudaStreamSynchronize(transferStream);
       cudaFree(bayesGram);
       cudaFree(Xtrans);
+      cudaFree(scaledXtrans);
+      cudaFree(remlMatrices);
       cudaFree(outCovCompVecs);
       cudaFree(inCovCompVecs);
       cudaFree(batchMaskSnps);
@@ -725,10 +798,11 @@ namespace LMM {
       if (B <= batchCapacity)
         return;
       cudaFree(Xtrans);
+      cudaFree(scaledXtrans);
       cudaFree(outCovCompVecs);
       cudaFree(inCovCompVecs);
       cudaFree(batchMaskSnps);
-      Xtrans = outCovCompVecs = inCovCompVecs = nullptr;
+      Xtrans = scaledXtrans = outCovCompVecs = inCovCompVecs = nullptr;
       batchMaskSnps = nullptr;
 
       checkCuda(cudaMalloc(reinterpret_cast<void **>(&batchMaskSnps),
@@ -742,7 +816,21 @@ namespace LMM {
       checkCuda(cudaMalloc(reinterpret_cast<void **>(&Xtrans),
                            snpsPerBlock * B * sizeof(*Xtrans)),
                 "cudaMalloc transposed SNP product");
+      checkCuda(cudaMalloc(reinterpret_cast<void **>(&scaledXtrans),
+                           snpsPerBlock * B * sizeof(*scaledXtrans)),
+                "cudaMalloc transformed SNP product");
       batchCapacity = B;
+    }
+
+    void ensureRemlMatrixCapacity(uint64 elements) {
+      if (elements <= remlMatrixCapacity)
+        return;
+      cudaFree(remlMatrices);
+      remlMatrices = nullptr;
+      checkCuda(cudaMalloc(reinterpret_cast<void **>(&remlMatrices),
+                           elements * sizeof(*remlMatrices)),
+                "cudaMalloc REML variance-component matrices");
+      remlMatrixCapacity = elements;
     }
 
     void multiply(double out[], const double in[], const uchar mask[], uint64 B,
@@ -805,6 +893,148 @@ namespace LMM {
                                 computeStream),
                 "copy CUDA output vectors to host");
       checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA matrix multiply");
+    }
+
+    void multiplyVmulti(double out[], const double in[], const uchar snpVCnums[],
+                        const double vcMatrices[], uint64 VCs, uint64 D, uint64 B) {
+      const uint64 BD = B * D;
+      const uint64 matrixElements = (VCs + 1) * D * D;
+      ensureBatchCapacity(BD);
+      ensureRemlMatrixCapacity(matrixElements);
+      const size_t covCompBytes = BD * NCstride * sizeof(*inCovCompVecs);
+      checkCuda(cudaMemcpyAsync(inCovCompVecs, in, covCompBytes, cudaMemcpyHostToDevice,
+                                computeStream),
+                "copy REML input vectors to CUDA");
+      checkCuda(cudaMemsetAsync(outCovCompVecs, 0, covCompBytes, computeStream),
+                "clear CUDA REML output vectors");
+      checkCuda(cudaMemcpyAsync(batchMaskSnps, snpVCnums, M * sizeof(*batchMaskSnps),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy REML SNP variance components to CUDA");
+      checkCuda(cudaMemcpyAsync(remlMatrices, vcMatrices,
+                                matrixElements * sizeof(*remlMatrices),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy REML variance-component matrices to CUDA");
+
+      const unsigned int threads = 256;
+      const double one = 1.0, zero = 0.0;
+      for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
+        const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
+        const uchar *packedInput = preparePackedBlock(m0, blockSize);
+
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                         computeStream>>>
+          (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
+           nullptr, m0, blockSize, Nstride, Cstride);
+        checkCuda(cudaGetLastError(), "launch CUDA REML genotype decoder");
+        recordPackedBlockConsumed();
+
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                static_cast<int>(BD), static_cast<int>(blockSize),
+                                static_cast<int>(NCstride), &one, inCovCompVecs,
+                                static_cast<int>(NCstride), snpBlock,
+                                static_cast<int>(NCstride), &zero, Xtrans,
+                                static_cast<int>(BD)), "cuBLAS REML X transpose multiply");
+
+        transformVmultiCoefficients<<<numBlocks(blockSize * BD, threads), threads, 0,
+                                      computeStream>>>
+          (scaledXtrans, Xtrans, batchMaskSnps, remlMatrices, m0, blockSize, VCs, D, B);
+        checkCuda(cudaGetLastError(), "launch CUDA REML coefficient transform");
+        if (Cstride) {
+          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads, 0,
+                                    computeStream>>>
+            (snpBlock, blockSize, Nstride, Cstride);
+          checkCuda(cudaGetLastError(), "launch CUDA REML covariate sign flip");
+        }
+
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_T,
+                                static_cast<int>(NCstride), static_cast<int>(BD),
+                                static_cast<int>(blockSize), &one, snpBlock,
+                                static_cast<int>(NCstride), scaledXtrans,
+                                static_cast<int>(BD), &one, outCovCompVecs,
+                                static_cast<int>(NCstride)), "cuBLAS REML X multiply");
+      }
+
+      addVmultiEnvironment<<<numBlocks(BD * NCstride, threads), threads, 0,
+                             computeStream>>>
+        (outCovCompVecs, inCovCompVecs, remlMatrices, NCstride, D, B);
+      checkCuda(cudaGetLastError(), "launch CUDA REML environment transform");
+      checkCuda(cudaMemcpyAsync(out, outCovCompVecs, covCompBytes, cudaMemcpyDeviceToHost,
+                                computeStream),
+                "copy CUDA REML output vectors to host");
+      checkCuda(cudaStreamSynchronize(computeStream), "finish CUDA REML matrix multiply");
+    }
+
+    void multiplyThetaMinusIs(double out[], const double in[], const uchar snpVCnums[],
+                              const double vcScales[], uint64 VCs, uint64 B,
+                              double coeffI) {
+      const uint64 VB = VCs * B;
+      ensureBatchCapacity(VB);
+      ensureRemlMatrixCapacity(VCs + 1);
+      const size_t inputBytes = B * NCstride * sizeof(*inCovCompVecs);
+      const size_t outputBytes = VB * NCstride * sizeof(*outCovCompVecs);
+      checkCuda(cudaMemcpyAsync(inCovCompVecs, in, inputBytes, cudaMemcpyHostToDevice,
+                                computeStream),
+                "copy REML derivative input vectors to CUDA");
+      checkCuda(cudaMemsetAsync(outCovCompVecs, 0, outputBytes, computeStream),
+                "clear CUDA REML derivative vectors");
+      checkCuda(cudaMemcpyAsync(batchMaskSnps, snpVCnums, M * sizeof(*batchMaskSnps),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy REML derivative SNP components to CUDA");
+      checkCuda(cudaMemcpyAsync(remlMatrices, vcScales,
+                                (VCs + 1) * sizeof(*remlMatrices),
+                                cudaMemcpyHostToDevice, computeStream),
+                "copy REML derivative scales to CUDA");
+
+      const unsigned int threads = 256;
+      const double one = 1.0, zero = 0.0;
+      for (uint64 m0 = 0; m0 < M; m0 += snpsPerBlock) {
+        const uint64 blockSize = std::min<uint64>(snpsPerBlock, M - m0);
+        const uchar *packedInput = preparePackedBlock(m0, blockSize);
+
+        decodeSnpBlock<<<numBlocks(blockSize * NCstride, threads), threads, 0,
+                         computeStream>>>
+          (snpBlock, packedInput, maskIndivs, lookup, negCovComps, projMaskSnps,
+           nullptr, m0, blockSize, Nstride, Cstride);
+        checkCuda(cudaGetLastError(), "launch CUDA REML derivative genotype decoder");
+        recordPackedBlockConsumed();
+
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                static_cast<int>(B), static_cast<int>(blockSize),
+                                static_cast<int>(NCstride), &one, inCovCompVecs,
+                                static_cast<int>(NCstride), snpBlock,
+                                static_cast<int>(NCstride), &zero, Xtrans,
+                                static_cast<int>(B)),
+                    "cuBLAS REML derivative X transpose multiply");
+
+        routeThetaCoefficients<<<numBlocks(blockSize * VB, threads), threads, 0,
+                                 computeStream>>>
+          (scaledXtrans, Xtrans, batchMaskSnps, m0, blockSize, VCs, B);
+        checkCuda(cudaGetLastError(), "launch CUDA REML derivative routing");
+        if (Cstride) {
+          flipCovariateComponents<<<numBlocks(blockSize * Cstride, threads), threads, 0,
+                                    computeStream>>>
+            (snpBlock, blockSize, Nstride, Cstride);
+          checkCuda(cudaGetLastError(), "launch CUDA REML derivative covariate sign flip");
+        }
+
+        checkCublas(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_T,
+                                static_cast<int>(NCstride), static_cast<int>(VB),
+                                static_cast<int>(blockSize), &one, snpBlock,
+                                static_cast<int>(NCstride), scaledXtrans,
+                                static_cast<int>(VB), &one, outCovCompVecs,
+                                static_cast<int>(NCstride)),
+                    "cuBLAS REML derivative X multiply");
+      }
+
+      finishThetaMinusIs<<<numBlocks(VB * NCstride, threads), threads, 0,
+                           computeStream>>>
+        (outCovCompVecs, inCovCompVecs, remlMatrices, NCstride, VCs, B, coeffI);
+      checkCuda(cudaGetLastError(), "launch CUDA REML derivative finalizer");
+      checkCuda(cudaMemcpyAsync(out, outCovCompVecs, outputBytes, cudaMemcpyDeviceToHost,
+                                computeStream),
+                "copy CUDA REML derivative vectors to host");
+      checkCuda(cudaStreamSynchronize(computeStream),
+                "finish CUDA REML derivative multiply");
     }
 
     void multiplyX(double out[], const double hostCoefficients[], uint64 B,
@@ -1278,6 +1508,22 @@ namespace LMM {
                                      const double inCovCompVecs[],
                                      const uchar snpMask[], uint64 B) {
     impl->multiply(outCovCompVecs, inCovCompVecs, snpMask, B, true);
+  }
+
+  void CudaStep1::multVmulti(double outMultiCovCompVecs[],
+                             const double inMultiCovCompVecs[],
+                             const uchar snpVCnums[], const double vcMatrices[],
+                             uint64 VCs, uint64 D, uint64 B) {
+    impl->multiplyVmulti(outMultiCovCompVecs, inMultiCovCompVecs, snpVCnums,
+                         vcMatrices, VCs, D, B);
+  }
+
+  void CudaStep1::multThetaMinusIs(double outCovCompVecs[],
+                                   const double inCovCompVecs[],
+                                   const uchar snpVCnums[], const double vcScales[],
+                                   uint64 VCs, uint64 B, double coeffI) {
+    impl->multiplyThetaMinusIs(outCovCompVecs, inCovCompVecs, snpVCnums, vcScales,
+                               VCs, B, coeffI);
   }
 
   void CudaStep1::multX(double outCovCompVecs[], const double coefficients[], uint64 B,

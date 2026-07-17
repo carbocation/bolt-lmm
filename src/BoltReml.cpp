@@ -88,11 +88,9 @@ namespace LMM {
     const uint64 BxNC = B*(Nstride+Cstride);
 
 #ifdef BOLT_USE_CUDA
-    if (cudaStep1 != NULL && VCs == 1) {
-      cudaStep1->multXXtransSnpMask(multCovCompVecs, xCovCompVecs, snpVCnums, B);
-      for (uint64 bnc = 0; bnc < BxNC; bnc++)
-	multCovCompVecs[bnc] = vcXscale2s[1] * multCovCompVecs[bnc]
-	  - coeffI * xCovCompVecs[bnc];
+    if (cudaStep1 != NULL) {
+      cudaStep1->multThetaMinusIs(multCovCompVecs, xCovCompVecs, snpVCnums,
+				  &vcXscale2s[0], VCs, B, coeffI);
 #ifdef VERBOSE
       printf("time=%.2f\n", timer.update_time());
       fflush(stdout);
@@ -455,16 +453,15 @@ namespace LMM {
     uint64 DxNC = D * (Nstride+Cstride);
 
 #ifdef BOLT_USE_CUDA
-    // The common univariate, single-GRM REML case is exactly the same
-    // X*X' operation accelerated by the Stage 1 CUDA backend.  Keep the
-    // general multivariate/multi-VC implementation below as the fallback.
-    if (cudaStep1 != NULL && D == 1 && VegXscale2s.size() == 2) {
-      cudaStep1->multXXtransSnpMask(VmultiCovCompVecs, xMultiCovCompVecs, snpVCnums, B);
-      const double envScale = VegXscale2s[0](0, 0);
-      const double genScale = VegXscale2s[1](0, 0);
-      for (uint64 bnc = 0; bnc < B * DxNC; bnc++)
-	VmultiCovCompVecs[bnc] = genScale * VmultiCovCompVecs[bnc]
-	  + envScale * xMultiCovCompVecs[bnc];
+    if (cudaStep1 != NULL) {
+      const uint64 VCs = VegXscale2s.size()-1;
+      vector <double> vcMatrices((VCs+1) * D * D);
+      for (uint64 vc = 0; vc <= VCs; vc++)
+	for (uint64 d = 0; d < D; d++)
+	  for (uint64 i = 0; i < D; i++)
+	    vcMatrices[(vc*D+d)*D+i] = VegXscale2s[vc](d, i);
+      cudaStep1->multVmulti(VmultiCovCompVecs, xMultiCovCompVecs, snpVCnums,
+			    &vcMatrices[0], VCs, D, B);
       return;
     }
 #endif

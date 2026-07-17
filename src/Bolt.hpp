@@ -233,6 +233,7 @@ namespace LMM {
     int getNumChromsProjMask(void) const;
     uint64 getNused(void) const;
     uint64 getNCstride(void) const;
+    double getSnpAlleleScale(uint64 m) const;
 
     void maskFillCovCompVecs(double covCompVecs[], const double vec[], uint64 B) const;
     // covComps: B x Cstride
@@ -241,7 +242,8 @@ namespace LMM {
     int batchComputeBayesIter
     (double yResidCovCompVecs[], double betasTrans[], const uchar batchMaskSnps[],
      const uint64 Ms[], const double logDeltas[], const double sigma2Ks[], double varFrac2Ests[],
-     double pEsts[], uint64 B, bool MCMC, int maxIters, double approxLLtol) const;
+     double pEsts[], uint64 B, bool MCMC, int maxIters, double approxLLtol,
+     bool useInitialBetas=false) const;
 
     /**
      * pheno: needs to be copied (as it'll be extended to Nstride and projected)
@@ -258,7 +260,8 @@ namespace LMM {
      const std::vector <double> &sigma2Ks, double varFrac2Est, double pEst, bool MCMC,
      double genWindow, int physWindow, int maxIters, double approxLLtol,
      const std::vector <double> &statsLmmInf, const std::vector <double> &LDscores,
-     const std::vector <double> &LDscoresChip) const;
+     const std::vector <double> &LDscoresChip,
+     const std::vector <double> *warmRawEffects=NULL) const;
 
     /**
      * computes MLMe LOCO retrospective stat calibrated to prospective stat (like GRAMMAR-Gamma)

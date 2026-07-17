@@ -45,8 +45,9 @@ namespace LMM {
     struct ParamData {
       double f2;
       double p;
+      uint warmIndex;
       std::vector <double> PVEs, MSEs;
-      ParamData(double _f2, double _p);
+      ParamData(double _f2, double _p, uint _warmIndex);
       bool operator < (const ParamData &paramData2) const;
     };
 
@@ -70,7 +71,8 @@ namespace LMM {
     (double *f2Est, double *pEst, double *predBoost, const std::vector <double> &pheno, 
      double logDeltaEst, double sigma2Kest, int CVfoldsSplit, int CVfoldsCompute,
      bool CVnoEarlyExit, double predBoostMin, bool MCMC, int maxIters, double approxLLtol,
-     int mBlockMultX, int Nautosomes) const;
+     int mBlockMultX, int Nautosomes,
+     std::vector <double> *warmRawEffects=NULL) const;
 
     // for use in PhenoBuilder to generate random phenotypes
     const Bolt &getBoltRef(void) const;

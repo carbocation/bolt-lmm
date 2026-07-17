@@ -844,7 +844,7 @@ namespace LMM {
 				  const uchar batchMaskSnps[], const uint64 Ms[],
 				  const double logDeltas[], const double sigma2Ks[],
 				  double varFrac2Ests[], double pEsts[], uint64 B, bool MCMC,
-				  int maxIters, double approxLLtol) const {
+				  int maxIters, double approxLLtol, bool useInitialBetas) const {
 #ifdef VERBOSE
     Timer timer;
     cout << "  Beginning " << (MCMC ? "Gibbs sampling" : "variational Bayes") << endl;
@@ -863,8 +863,9 @@ namespace LMM {
 	varFrac2Ests[b] = 0.5;
       }
 
-    // initialize betas
-    memset(betasTrans, 0, M*B*sizeof(betasTrans[0]));
+    // initialize betas unless the caller supplied coefficients and a matching residual
+    if (!useInitialBetas)
+      memset(betasTrans, 0, M*B*sizeof(betasTrans[0]));
     
     double *betaBarsTrans = NULL;
     if (MCMC) { // initialize aggregate betas for MCMC
@@ -1522,6 +1523,9 @@ namespace LMM {
   int Bolt::getNumChromsProjMask(void) const { return numChromsProjMask; }
   uint64 Bolt::getNused(void) const { return Nused; }
   uint64 Bolt::getNCstride(void) const { return Nstride+Cstride; }
+  double Bolt::getSnpAlleleScale(uint64 m) const {
+    return snpValueLookup[m][1] - snpValueLookup[m][0];
+  }
 
   /**
    * pheno: needs to be copied (as it'll be extended to Nstride and projected)
@@ -1583,7 +1587,7 @@ namespace LMM {
   (vector <double> pheno, const vector <double> &logDeltas, const vector <double> &sigma2Ks,
    double varFrac2Est, double pEst, bool MCMC, double genWindow, int physWindow, int maxIters,
    double approxLLtol, const vector <double> &statsLmmInf, const vector <double> &LDscores,
-   const vector <double> &LDscoresChip) const {
+   const vector <double> &LDscoresChip, const vector <double> *warmRawEffects) const {
 
     while (pheno.size() < Nstride) pheno.push_back(0); // zero-fill to Nstride
     int numLeaveOutChunks = logDeltas.size();
@@ -1603,9 +1607,26 @@ namespace LMM {
     double *betas = ALIGNED_MALLOC_DOUBLES(numLeaveOutChunks*M);
     vector <double> varFrac2Ests(numLeaveOutChunks, varFrac2Est);
     vector <double> pEsts(numLeaveOutChunks, pEst);
+    const bool useWarmStart = !MCMC && warmRawEffects != NULL && warmRawEffects->size() == M;
+    if (useWarmStart) {
+      cout << "Warm-starting final variational Bayes fit from cross-validation effects" << endl;
+      for (uint64 m = 0; m < M; m++) {
+	const double mainScale = getSnpAlleleScale(m);
+	for (int b = 0; b < numLeaveOutChunks; b++)
+	  betas[m*numLeaveOutChunks+b] = batchMaskSnps[m*numLeaveOutChunks+b]
+	    ? (*warmRawEffects)[m] / mainScale : 0.0;
+      }
+
+      double *warmPredCovCompVecs =
+	ALIGNED_MALLOC_DOUBLES(numLeaveOutChunks*(Nstride+Cstride));
+      multX(warmPredCovCompVecs, betas, numLeaveOutChunks);
+      for (uint64 i = 0; i < (uint64) numLeaveOutChunks*(Nstride+Cstride); i++)
+	phenoResidCovCompVecs[i] -= warmPredCovCompVecs[i];
+      ALIGNED_FREE(warmPredCovCompVecs);
+    }
     batchComputeBayesIter(phenoResidCovCompVecs, betas, batchMaskSnps, &Mused[0], &logDeltas[0],
 			  &sigma2Ks[0], &varFrac2Ests[0], &pEsts[0], numLeaveOutChunks, MCMC,
-			  maxIters, approxLLtol);
+			  maxIters, approxLLtol, useWarmStart);
     ALIGNED_FREE(betas);
 
     vector <double> resNorm2s(numLeaveOutChunks);

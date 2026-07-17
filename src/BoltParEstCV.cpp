@@ -39,7 +39,8 @@ namespace LMM {
   using std::cerr;
   using std::endl;
 
-  BoltParEstCV::ParamData::ParamData(double _f2, double _p) : f2(_f2), p(_p) {}
+  BoltParEstCV::ParamData::ParamData(double _f2, double _p, uint _warmIndex) :
+    f2(_f2), p(_p), warmIndex(_warmIndex) {}
 
   bool BoltParEstCV::ParamData::operator < (const BoltParEstCV::ParamData &paramData2) const {
     return StatsUtils::zScoreDiff(PVEs, paramData2.PVEs) < -2;
@@ -69,7 +70,7 @@ namespace LMM {
   (double *f2Est, double *pEst, double *predBoost, const vector <double> &pheno, 
    double logDeltaEst, double sigma2Kest, int CVfoldsSplit, int CVfoldsCompute, bool CVnoEarlyExit,
    double predBoostMin, bool MCMC, int maxIters, double approxLLtol, int mBlockMultX,
-   int Nautosomes) const {
+   int Nautosomes, vector <double> *warmRawEffects) const {
 
     if (CVfoldsCompute <= 0) {
       const int Nwant = 10000, Nrep = bolt.getNused() / CVfoldsSplit + 1;
@@ -95,11 +96,20 @@ namespace LMM {
     vector <ParamData> paramDataAll;
     for (int f2i = 0; f2i < NUM_F2S; f2i++)
       for (int pi = 0; pi < NUM_PS; pi++)
-	paramDataAll.push_back(ParamData(f2s[f2i], ps[pi]));
+	paramDataAll.push_back(ParamData(f2s[f2i], ps[pi], paramDataAll.size()));
+    const uint numInitialParams = paramDataAll.size();
       
     const double *maskIndivs = bolt.getMaskIndivs(); // possibly a subset of snpData.maskIndivs
     uint64 Nstride = snpData.getNstride();
     uint64 M = snpData.getM();
+
+    vector <double> warmRawEffectSums;
+    vector <uint> warmFitCounts;
+    if (warmRawEffects != NULL && !MCMC) {
+      warmRawEffectSums.assign(M*numInitialParams, 0.0);
+      warmFitCounts.assign(numInitialParams, 0);
+      warmRawEffects->clear();
+    }
 
     // divide indivs into CVfoldsSplit folds
     vector <int> foldAssignments(Nstride, -1); // -1 for masked indivs
@@ -157,6 +167,19 @@ namespace LMM {
 	  boltFold.batchComputeBayesIter(phenoResidCovCompVecs, betasTrans, batchMaskSnps,
 					 &Ms[0], &logDeltas[0], &sigma2Ks[0], &varFrac2Ests[0],
 					 &pEsts[0], B, MCMC, maxIters, approxLLtol);
+
+	// Preserve effects in raw per-allele units so fold-specific centering and scaling do
+	// not leak into a possible warm start of the full-cohort fit.
+	if (!warmRawEffectSums.empty()) {
+	  for (uint64 b = 0; b < B; b++)
+	    warmFitCounts[paramDataAll[b].warmIndex]++;
+	  for (uint64 m = 0; m < M; m++) {
+	    const double foldScale = boltFold.getSnpAlleleScale(m);
+	    for (uint64 b = 0; b < B; b++)
+	      warmRawEffectSums[m*numInitialParams + paramDataAll[b].warmIndex] +=
+		betasTrans[m*B+b] * foldScale;
+	  }
+	}
 
 	// reset fold assignment mask to prediction indivs
 	for (uint64 n = 0; n < Nstride; n++)
@@ -274,13 +297,24 @@ namespace LMM {
 
     // find best PVE; store corresponding f2, p in output params
     double bestMeanPVE = -1e100;
+    uint bestWarmIndex = numInitialParams;
     for (uint64 b = 0; b < paramDataAll.size(); b++) {
       double meanPVE = NumericUtils::mean(paramDataAll[b].PVEs);
       if (meanPVE > bestMeanPVE) {
 	bestMeanPVE = meanPVE;
 	*f2Est = paramDataAll[b].f2;
 	*pEst = paramDataAll[b].p;
+	bestWarmIndex = paramDataAll[b].warmIndex;
       }
+    }
+
+    if (!warmRawEffectSums.empty() && bestWarmIndex < numInitialParams &&
+	warmFitCounts[bestWarmIndex] != 0) {
+      warmRawEffects->resize(M);
+      const double invFitCount = 1.0 / warmFitCounts[bestWarmIndex];
+      for (uint64 m = 0; m < M; m++)
+	(*warmRawEffects)[m] = warmRawEffectSums[m*numInitialParams + bestWarmIndex]
+	  * invFitCount;
     }
       
     cout << "Optimal mixture parameters according to CV: f2 = " << *f2Est

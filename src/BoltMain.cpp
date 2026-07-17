@@ -816,6 +816,7 @@ int main(int argc, char *argv[]) {
   
     double pEst = params.pEst, f2Est = params.varFrac2Est;
     int VBiters = 0; // save the number of iters used by VB to set number of MCMC iters
+    vector <double> warmRawEffects;
   
     if (params.lmmBayes || params.lmmBayesMCMC) { // estimate (f2, p): CV using VB algorithm
       if (pEst == BoltParams::MIX_PARAM_ESTIMATE_FLAG ||
@@ -829,7 +830,8 @@ int main(int argc, char *argv[]) {
 	VBiters = boltCV.estMixtureParams
 	  (&f2Est, &pEst, &predBoost, pheno, logDeltaEst, sigma2Kest, params.CVfoldsSplit,
 	   params.CVfoldsCompute, params.CVnoEarlyExit, predBoostMin, useMCMCinCV,
-	   maxItersCV, params.approxLLtol, params.mBlockMultX, params.Nautosomes); // TODO: change MCMC param back to VB?
+	   maxItersCV, params.approxLLtol, params.mBlockMultX, params.Nautosomes,
+	   params.lmmBayes ? &warmRawEffects : NULL); // TODO: change MCMC param back to VB?
 	if (predBoost < predBoostMin && !params.lmmForceNonInf) {
 	  cout << "Bayesian non-infinitesimal model does not fit substantially better" << endl;
 	  cout << "=> Not computing non-inf assoc stats (to override, use --lmmForceNonInf)"
@@ -853,7 +855,8 @@ int main(int argc, char *argv[]) {
       retroData.push_back
 	(bolt.computeLmmBayes(pheno, logDeltas, sigma2Ks, f2Est, pEst, false, params.genWindow,
 			      params.physWindow, params.maxIters, params.approxLLtol,
-			      retroData[lmmInfInd].stats, LDscores, LDscoresChip));
+			      retroData[lmmInfInd].stats, LDscores, LDscoresChip,
+			      warmRawEffects.empty() ? NULL : &warmRawEffects));
       cout << endl << "Time for computing Bayesian mixed model assoc stats = "
 	   << timer.update_time() << " sec" << endl << endl;
     }

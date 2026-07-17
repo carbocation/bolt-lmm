@@ -361,3 +361,34 @@ changed. Beta changes were at most 1e-6 and standard-error changes at most
 1e-7. These are the numerical effects of reaching the existing CG residual
 criterion through a different Krylov path; the model and output schema are
 otherwise unchanged.
+
+## Final variational-Bayes warm start
+
+When mixture parameters are selected by cross-validation, the fitted effects
+from the winning model are now reused to initialize the final LOCO
+spike-and-slab fit. Effects are retained in raw per-allele units, averaged
+across every computed fold, and converted to the full-cohort normalization.
+Each LOCO model applies its own SNP mask, and BOLT explicitly constructs the
+matching initial `y-X*beta` residual. This initialization costs one genotype
+pass and is used only for variational Bayes, not MCMC. Fits with user-supplied
+mixture parameters retain the cold start because no cross-validation effects
+exist to reuse.
+
+On the warmed 131,072-sample CUDA fixture, the final fit converged in 50 rather
+than 72 iterations and took 6.49 rather than 9.37 seconds, a 30.7% phase
+reduction including initialization. Paired wall time fell from 30.38 to 27.65
+seconds (9.0%). With `--approxLLtol=0.001`, the final fit similarly fell from
+130 to 95 iterations and from 16.64 to 11.45 seconds (31.2%).
+
+The CPU-only fixture on one pinned Xeon core converged in 17 rather than 33
+final iterations. Its final-fit time fell from 60.97 to 33.59 seconds (44.9%),
+and end-to-end Stage 1 wall time fell from 241.63 to 214.06 seconds (11.4%).
+Cross-validation time was unchanged within noise (61.59 versus 61.83 seconds).
+
+At the default tolerance, both CUDA and CPU comparisons produced identical
+printed beta, standard error, and `P_BOLT_LMM_INF` columns across all 16,384
+Stage 2 variants. Printed `P_BOLT_LMM` values changed for 2,146 CUDA variants
+and 1,163 CPU variants; the maximum absolute difference was 0.01, the largest
+relative CUDA change was 10%, from 1.0e-7 to 1.1e-7, and no value crossed 5e-8.
+These small differences reflect the existing approximate-likelihood stopping
+criterion being reached from a different, much closer starting point.

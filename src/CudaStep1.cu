@@ -50,11 +50,11 @@ namespace LMM {
       const uchar *sourceGenotypes;
       uchar *cachedGenotypes;
       uint64 M, bytesPerSnp, firstSnp, cachedSnps, references;
-      bool populated;
+      bool populated, registered;
 
       SharedPackedHostCache() : sourceGenotypes(nullptr), cachedGenotypes(nullptr),
         M(0), bytesPerSnp(0), firstSnp(0), cachedSnps(0), references(0),
-        populated(false) {}
+        populated(false), registered(false) {}
     };
 
     SharedPackedHostCache sharedPackedHostCache;
@@ -97,6 +97,30 @@ namespace LMM {
       return hostGenotypes + m0 * bytesPerSnp;
     }
 
+    bool packedHostSourceRegistered(const uchar *hostGenotypes, uint64 M,
+                                    uint64 bytesPerSnp, uint64 m0,
+                                    uint64 blockSize) {
+      return sharedHostCacheContains(hostGenotypes, M, bytesPerSnp, m0,
+                                     blockSize) &&
+             sharedPackedHostCache.registered;
+    }
+
+    bool registerSharedPackedHostCache() {
+      if (!sharedPackedHostCache.populated || sharedPackedHostCache.registered)
+        return false;
+      const uint64 cacheBytes = sharedPackedHostCache.cachedSnps *
+                                sharedPackedHostCache.bytesPerSnp;
+      const cudaError_t status =
+        cudaHostRegister(sharedPackedHostCache.cachedGenotypes, cacheBytes,
+                         cudaHostRegisterPortable);
+      if (status != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+      }
+      sharedPackedHostCache.registered = true;
+      return true;
+    }
+
     uint64 automaticPackedHostCacheBytes() {
       const long pages = sysconf(_SC_PHYS_PAGES);
       const long pageBytes = sysconf(_SC_PAGESIZE);
@@ -121,6 +145,8 @@ namespace LMM {
       if (sharedPackedHostCache.cachedGenotypes != nullptr) {
         if (sharedPackedHostCache.references)
           return false;
+        if (sharedPackedHostCache.registered)
+          cudaHostUnregister(sharedPackedHostCache.cachedGenotypes);
         std::free(sharedPackedHostCache.cachedGenotypes);
         sharedPackedHostCache = SharedPackedHostCache();
       }
@@ -136,9 +162,11 @@ namespace LMM {
       if (!candidateSnps)
         return false;
       const uint64 cacheBytes = candidateSnps * bytesPerSnp;
-      uchar *cache = static_cast<uchar *>(std::malloc(cacheBytes));
-      if (!cache)
+      void *allocation = nullptr;
+      const long pageBytes = sysconf(_SC_PAGESIZE);
+      if (pageBytes <= 0 || posix_memalign(&allocation, pageBytes, cacheBytes))
         return false;
+      uchar *cache = static_cast<uchar *>(allocation);
 
       sharedPackedHostCache.sourceGenotypes = hostGenotypes;
       sharedPackedHostCache.cachedGenotypes = cache;
@@ -713,6 +741,9 @@ namespace LMM {
       if (!sharedHostCacheMatches(hostGenotypes, M, bytesPerSnp) ||
           !sharedPackedHostCache.populated)
         return;
+      if (registerSharedPackedHostCache())
+        std::cout << "CUDA host genotype cache registered for direct transfers"
+                  << std::endl;
       sharedPackedHostCache.references++;
       packedHostCacheAttached = true;
       std::cout << "Reusing CUDA host genotype cache ("
@@ -724,6 +755,8 @@ namespace LMM {
       if (!packedHostCacheAttached)
         return;
       if (--sharedPackedHostCache.references == 0) {
+        if (sharedPackedHostCache.registered)
+          cudaHostUnregister(sharedPackedHostCache.cachedGenotypes);
         std::free(sharedPackedHostCache.cachedGenotypes);
         sharedPackedHostCache = SharedPackedHostCache();
       }
@@ -760,15 +793,19 @@ namespace LMM {
         checkCuda(cudaEventSynchronize(transferDone[slot]),
                   "wait for pinned packed staging buffer");
       const uint64 blockBytes = blockSize * bytesPerSnp;
-      // This pageable-to-pinned copy is 61 MiB at the production sample stride.
-      // Use the requested CPU thread team so it does not starve a fast GPU.
-      parallelMemcpy(hostPackedBlocks[slot],
-                     packedHostSource(hostGenotypes, M, bytesPerSnp, m0, blockSize),
-                     blockBytes);
+      const uchar *source =
+        packedHostSource(hostGenotypes, M, bytesPerSnp, m0, blockSize);
       if (consumedRecorded[slot])
         checkCuda(cudaStreamWaitEvent(transferStream, packedConsumed[slot], 0),
                   "wait before reusing streamed packed device block");
-      checkCuda(cudaMemcpyAsync(packedBlocks[slot], hostPackedBlocks[slot], blockBytes,
+      if (!packedHostSourceRegistered(hostGenotypes, M, bytesPerSnp, m0,
+                                      blockSize)) {
+        // This pageable-to-pinned copy is 61 MiB at the production sample stride.
+        // Use the requested CPU thread team so it does not starve a fast GPU.
+        parallelMemcpy(hostPackedBlocks[slot], source, blockBytes);
+        source = hostPackedBlocks[slot];
+      }
+      checkCuda(cudaMemcpyAsync(packedBlocks[slot], source, blockBytes,
                                 cudaMemcpyHostToDevice, transferStream),
                 "stream packed genotype block to CUDA");
       checkCuda(cudaEventRecord(transferDone[slot], transferStream),

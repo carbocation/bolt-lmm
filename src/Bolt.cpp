@@ -3074,7 +3074,7 @@ namespace LMM {
   (const string &outFile, const vector <string> &bimFiles, const vector <string> &bedFiles,
    const string &geneticMapFile, const vector <string> &excludeFiles, double maxMissingPerSnp,
    bool verboseStats,
-   const vector <StatsDataRetroLOCO> &retroData, bool optimizedStage2) const {
+   const vector <StatsDataRetroLOCO> &retroData, bool optimizedStage2, int threads) const {
 
     FileUtils::AutoGzOfstream fout; fout.openOrExit(outFile);
     
@@ -3107,6 +3107,9 @@ namespace LMM {
 #endif
     const bool useDirectPacked = optimizedStage2 && !useCudaPacked && usePackedIdentity &&
       numScoreVectors <= BOLT_STAGE2_DIRECT_MAX_SCORE_VECTORS;
+    const int workerThreads = std::max(1, threads);
+    const bool useParallelPackedDecode = optimizedStage2 && !useCudaPacked &&
+      !useDirectPacked && usePackedIdentity && workerThreads > 1;
     const uint64 targetBatchBytes = 256ULL << 20;
     uint64 maxBatchSize = optimizedStage2 ? std::max<uint64>(
       1, std::min<uint64>(128, targetBatchBytes/(Nstride*sizeof(double)))) : 1;
@@ -3117,14 +3120,21 @@ namespace LMM {
     uchar *genoLine = useCudaPacked || usePackedIdentity ? NULL :
       ALIGNED_MALLOC_UCHARS(Nstride);
     const uint64 packedBytes = (snpData.getNbed()+3)>>2;
-    uchar *bedLineIn = useCudaPacked ? NULL : ALIGNED_MALLOC_UCHARS(packedBytes);
+    uchar *bedLineIn = useCudaPacked ? NULL :
+      ALIGNED_MALLOC_UCHARS(
+	packedBytes*(useDirectPacked || useParallelPackedDecode ? maxBatchSize : 1));
     double *genotypeBatch = useDirectPacked || useCudaPacked ? NULL :
       ALIGNED_MALLOC_DOUBLES(genotypeColumnStride*maxBatchSize);
-    double (*work)[4] = usePackedIdentity && !useDirectPacked && !useCudaPacked ?
+    double (*work)[4] = usePackedIdentity && !useDirectPacked && !useCudaPacked &&
+      !useParallelPackedDecode ?
       (double (*)[4]) ALIGNED_MALLOC(256*sizeof(*work)) : NULL;
+    double (*parallelWork)[4] = useParallelPackedDecode ?
+      (double (*)[4]) ALIGNED_MALLOC(workerThreads*256*sizeof(*parallelWork)) : NULL;
     vector<Stage2VariantInfo> batch;
     batch.reserve(maxBatchSize);
     Stage2ScoreWorkspace scoreWorkspace;
+    vector<Stage2ScoreWorkspace> directWorkspaces(
+      useDirectPacked ? workerThreads : 0);
     const auto flushBatch = [&]() {
       if (!batch.empty()) {
 	if (useCudaPacked) {
@@ -3132,6 +3142,60 @@ namespace LMM {
 	  scorePackedStage2CudaBatch(fout, batch, false, maxMissingPerSnp, verboseStats,
 				     retroData, scoreWorkspace);
 #endif
+	}
+	else if (useDirectPacked) {
+	  vector<string> output(batch.size());
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static) num_threads(workerThreads)
+#endif
+	  for (uint64 b = 0; b < batch.size(); b++) {
+	    Stage2VariantInfo &variant = batch[b];
+	    double missing;
+	    variant.alleleFreq = snpData.computeIdentityBedAlleleFreqAndMissing(
+	      bedLineIn+b*packedBytes, &missing);
+	    variant.missing = missing;
+	    if (missing <= maxMissingPerSnp)
+	      output[b] = scorePackedStage2(
+		variant, bedLineIn+b*packedBytes, false, verboseStats, retroData,
+		directWorkspaces[omp_get_thread_num()]);
+	  }
+	  for (uint64 b = 0; b < output.size(); b++) fout << output[b];
+	}
+	else if (useParallelPackedDecode) {
+	  vector<uchar> keep(batch.size());
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static) num_threads(workerThreads)
+#endif
+	  for (uint64 b = 0; b < batch.size(); b++) {
+	    Stage2VariantInfo &variant = batch[b];
+	    const uchar *packed = bedLineIn+b*packedBytes;
+	    double missing;
+	    variant.alleleFreq =
+	      snpData.computeIdentityBedAlleleFreqAndMissing(packed, &missing);
+	    variant.missing = missing;
+	    if (missing <= maxMissingPerSnp) {
+	      double *snpVector = genotypeBatch+b*Nstride;
+	      snpData.identityBedLineToSnpVector(
+		snpVector, packed, variant.alleleFreq,
+		parallelWork+omp_get_thread_num()*256);
+	      variant.rawNorm2 = NumericUtils::norm2(snpVector, Nstride);
+	      keep[b] = 1;
+	    }
+	  }
+	  uint64 kept = 0;
+	  for (uint64 b = 0; b < batch.size(); b++)
+	    if (keep[b]) {
+	      if (kept != b) {
+		batch[kept] = batch[b];
+		memcpy(genotypeBatch+kept*Nstride, genotypeBatch+b*Nstride,
+		       Nstride*sizeof(genotypeBatch[0]));
+	      }
+	      kept++;
+	    }
+	  batch.resize(kept);
+	  if (!batch.empty())
+	    scoreStage2Batch(fout, batch, genotypeBatch, verboseStats, retroData,
+			     scoreWorkspace);
 	}
 	else if (optimizedStage2)
 	  scoreStage2Batch(fout, batch, genotypeBatch, verboseStats, retroData, scoreWorkspace);
@@ -3183,6 +3247,8 @@ namespace LMM {
 	// CUDA consumes packed genotypes directly and applies the input-to-model mapping
 	// on device. The CPU direct path likewise avoids byte expansion in identity order.
 	uchar *packedLine = bedLineIn;
+	if (useDirectPacked || useParallelPackedDecode)
+	  packedLine += batch.size()*packedBytes;
 #ifdef BOLT_USE_CUDA
 	if (useCudaPacked)
 	  packedLine = cudaStage2->getHostPackedBuffer() + batch.size()*packedBytes;
@@ -3200,6 +3266,10 @@ namespace LMM {
 	    batch.push_back(variant);
 	    if (batch.size() == maxBatchSize) flushBatch();
 	  }
+	  else if (useDirectPacked || useParallelPackedDecode) {
+	    batch.push_back(variant);
+	    if (batch.size() == maxBatchSize) flushBatch();
+	  }
 	  else {
 	    double missing;
 	    const double alleleFreq = usePackedIdentity ?
@@ -3208,10 +3278,6 @@ namespace LMM {
 					    allIndivsIncluded);
 	    if (missing <= maxMissingPerSnp) {
 	      variant.alleleFreq = alleleFreq; variant.missing = missing;
-	      if (useDirectPacked)
-		fout << scorePackedStage2(variant, packedLine, false, verboseStats, retroData,
-					   scoreWorkspace);
-	      else {
 	      double *snpVector = genotypeBatch + batch.size()*genotypeColumnStride;
 	      if (usePackedIdentity)
 		snpData.identityBedLineToSnpVector(snpVector, packedLine, alleleFreq, work);
@@ -3223,7 +3289,6 @@ namespace LMM {
 	      variant.rawNorm2 = NumericUtils::norm2(snpVector, Nstride);
 	      batch.push_back(variant);
 	      if (batch.size() == maxBatchSize) flushBatch();
-	      }
 	    }
 	  }
 	}
@@ -3237,6 +3302,7 @@ namespace LMM {
       finBim.close();
     }
 
+    if (parallelWork != NULL) ALIGNED_FREE(parallelWork);
     if (work != NULL) ALIGNED_FREE(work);
     if (genotypeBatch != NULL) ALIGNED_FREE(genotypeBatch);
     if (bedLineIn != NULL) ALIGNED_FREE(bedLineIn);
@@ -3248,7 +3314,7 @@ namespace LMM {
   (const string &outFile, const string &pgenFile, const string &pvarFile,
    const string &geneticMapFile, const vector <string> &excludeFiles,
    double maxMissingPerSnp, bool verboseStats,
-   const vector <StatsDataRetroLOCO> &retroData, bool optimizedStage2) const {
+   const vector <StatsDataRetroLOCO> &retroData, bool optimizedStage2, int threads) const {
 
     FileUtils::AutoGzOfstream fout; fout.openOrExit(outFile);
     printStatsHeader(fout, verboseStats, false, retroData);
@@ -3330,6 +3396,9 @@ namespace LMM {
 #endif
     const bool useDirectPacked = optimizedStage2 && !useCudaPacked && usePackedIdentity &&
       numScoreVectors <= BOLT_STAGE2_DIRECT_MAX_SCORE_VECTORS;
+    const int workerThreads = std::max(1, threads);
+    const bool useParallelPackedDecode = optimizedStage2 && !useCudaPacked &&
+      !useDirectPacked && usePackedIdentity && workerThreads > 1;
     const uint64 targetBatchBytes = 256ULL << 20;
     uint64 maxBatchSize = optimizedStage2 ? std::max<uint64>(
       1, std::min<uint64>(128, targetBatchBytes/(Nstride*sizeof(double)))) : 1;
@@ -3338,7 +3407,8 @@ namespace LMM {
 #endif
     const uint64 genotypeColumnStride = optimizedStage2 ? Nstride : Nstride+Cstride;
     const uint64 packedBytes = (modelSampleCount+3)>>2;
-    vector <uchar> pgenLine(useCudaPacked ? 0 : packedBytes);
+    vector <uchar> pgenLine(useCudaPacked ? 0 :
+      packedBytes*(useDirectPacked || useParallelPackedDecode ? maxBatchSize : 1));
     uchar *genoLine = useCudaPacked || usePackedIdentity ? NULL :
       ALIGNED_MALLOC_UCHARS(Nstride);
     double *genotypeBatch = useDirectPacked || useCudaPacked ? NULL :
@@ -3346,6 +3416,8 @@ namespace LMM {
     vector<Stage2VariantInfo> batch;
     batch.reserve(maxBatchSize);
     Stage2ScoreWorkspace scoreWorkspace;
+    vector<Stage2ScoreWorkspace> directWorkspaces(
+      useDirectPacked ? workerThreads : 0);
     const auto flushBatch = [&]() {
       if (!batch.empty()) {
 	if (useCudaPacked) {
@@ -3353,6 +3425,62 @@ namespace LMM {
 	  scorePackedStage2CudaBatch(fout, batch, true, maxMissingPerSnp, verboseStats,
 				     retroData, scoreWorkspace);
 #endif
+	}
+	else if (useDirectPacked) {
+	  vector<string> output(batch.size());
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static) num_threads(workerThreads)
+#endif
+	  for (uint64 b = 0; b < batch.size(); b++) {
+	    Stage2VariantInfo &variant = batch[b];
+	    const uchar *packed = &pgenLine[b*packedBytes];
+	    const PgenUtils::PackedHardcallStats stats =
+	      PgenUtils::packedPgenStats(packed, modelSampleCount);
+	    variant.missing = static_cast<double>(stats.numMissing)/modelSampleCount;
+	    if (variant.missing <= maxMissingPerSnp) {
+	      variant.alleleFreq = 0.5*stats.alleleSum/
+		(modelSampleCount-stats.numMissing);
+	      output[b] = scorePackedStage2(
+		variant, packed, true, verboseStats, retroData,
+		directWorkspaces[omp_get_thread_num()]);
+	    }
+	  }
+	  for (uint64 b = 0; b < output.size(); b++) fout << output[b];
+	}
+	else if (useParallelPackedDecode) {
+	  vector<uchar> keep(batch.size());
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static) num_threads(workerThreads)
+#endif
+	  for (uint64 b = 0; b < batch.size(); b++) {
+	    Stage2VariantInfo &variant = batch[b];
+	    const uchar *packed = &pgenLine[b*packedBytes];
+	    const PgenUtils::PackedHardcallStats stats =
+	      PgenUtils::packedPgenStats(packed, modelSampleCount);
+	    variant.missing = static_cast<double>(stats.numMissing)/modelSampleCount;
+	    if (variant.missing <= maxMissingPerSnp) {
+	      variant.alleleFreq = 0.5*stats.alleleSum/
+		(modelSampleCount-stats.numMissing);
+	      double *snpVector = genotypeBatch+b*Nstride;
+	      variant.rawNorm2 = PgenUtils::packedPgenToCenteredVector(
+		snpVector, packed, modelSampleCount, Nstride, variant.alleleFreq);
+	      keep[b] = 1;
+	    }
+	  }
+	  uint64 kept = 0;
+	  for (uint64 b = 0; b < batch.size(); b++)
+	    if (keep[b]) {
+	      if (kept != b) {
+		batch[kept] = batch[b];
+		memcpy(genotypeBatch+kept*Nstride, genotypeBatch+b*Nstride,
+		       Nstride*sizeof(genotypeBatch[0]));
+	      }
+	      kept++;
+	    }
+	  batch.resize(kept);
+	  if (!batch.empty())
+	    scoreStage2Batch(fout, batch, genotypeBatch, verboseStats, retroData,
+			     scoreWorkspace);
 	}
 	else if (optimizedStage2)
 	  scoreStage2Batch(fout, batch, genotypeBatch, verboseStats, retroData, scoreWorkspace);
@@ -3379,6 +3507,9 @@ namespace LMM {
 
 
       uchar *packedLine = pgenLine.data();
+
+      if (useDirectPacked || useParallelPackedDecode)
+	packedLine += batch.size()*packedBytes;
 #ifdef BOLT_USE_CUDA
       if (useCudaPacked)
 	packedLine = cudaStage2->getHostPackedBuffer() + batch.size()*packedBytes;
@@ -3393,7 +3524,11 @@ namespace LMM {
 	batch.push_back(variant);
 	if (batch.size() == maxBatchSize) flushBatch();
       }
-      else {
+	else if (useDirectPacked || useParallelPackedDecode) {
+	  batch.push_back(variant);
+	  if (batch.size() == maxBatchSize) flushBatch();
+	}
+	else {
 	double missing, alleleFreq;
 	if (usePackedIdentity) {
 	  const PgenUtils::PackedHardcallStats stats =
@@ -3408,10 +3543,6 @@ namespace LMM {
 	}
 	if (missing <= maxMissingPerSnp) {
 	  variant.alleleFreq = alleleFreq; variant.missing = missing;
-	  if (useDirectPacked)
-	    fout << scorePackedStage2(variant, packedLine, true, verboseStats, retroData,
-					 scoreWorkspace);
-	  else {
 	    double *snpVector = genotypeBatch + batch.size()*genotypeColumnStride;
 	    if (usePackedIdentity)
 	      variant.rawNorm2 = PgenUtils::packedPgenToCenteredVector(
@@ -3425,7 +3556,6 @@ namespace LMM {
 	      memset(snpVector+Nstride, 0, Cstride*sizeof(snpVector[0]));
 	    batch.push_back(variant);
 	    if (batch.size() == maxBatchSize) flushBatch();
-	  }
 	}
       }
     }

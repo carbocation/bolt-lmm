@@ -1,0 +1,27 @@
+workload	input	N	M	threads	variance_seconds	infinitesimal_seconds	mixture_seconds	bayes_seconds	readout_seconds	total_seconds	compatibility
+stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	1	8.94997	9.82100	11.88550	5.14831		36.9366	stage2_sha256_prefix_5874b78e
+stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	2	4.92694	4.55191	7.95512	3.18859		21.7957	stage2_sha256_prefix_5874b78e
+stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	4	2.94746	2.56816	5.45320	1.99674		14.0101	stage2_sha256_prefix_5874b78e
+stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	6	2.31354	1.99138	4.85395	1.69789		11.9440	stage2_sha256_prefix_5874b78e
+stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	12	3.62164	3.36066	6.15715	2.13831		16.3843	stage2_sha256_prefix_5874b78e
+reml_default_refinement	real_ld_hardcalls	8192	16384	1						54.3333	h2g_0.512_sigma2_1.003198_se_0.016559_same_cg
+reml_default_refinement	real_ld_hardcalls	8192	16384	2						32.6896	h2g_0.512_sigma2_1.003198_se_0.016559_same_cg
+reml_default_refinement	real_ld_hardcalls	8192	16384	4						22.1642	h2g_0.512_sigma2_1.003198_se_0.016559_same_cg
+reml_default_refinement	real_ld_hardcalls	8192	16384	6						18.7697	h2g_0.512_sigma2_1.003198_se_0.016559_same_cg
+reml_default_refinement	real_ld_hardcalls	8192	16384	12						25.9453	h2g_0.512_sigma2_1.003198_se_0.016559_same_cg
+reml_target_stride_three_trials	bounded_low_rank_hardcalls	500000	1024	1						74.0919	same_printed_h2g_sigma2
+reml_target_stride_three_trials	bounded_low_rank_hardcalls	500000	1024	6						22.5072	same_printed_h2g_sigma2
+stage2_direct_bed	real_ld_bed	131072	16384	1					4.83054	5.17461	sha256_c08bd1ec768b80a49af56eb95e1c1cd7484f5e2ceed02638a1a4d9c10d1952bd
+stage2_direct_bed	real_ld_bed	131072	16384	2					2.51549	2.86195	sha256_c08bd1ec768b80a49af56eb95e1c1cd7484f5e2ceed02638a1a4d9c10d1952bd
+stage2_direct_bed	real_ld_bed	131072	16384	4					1.40453	1.75507	sha256_c08bd1ec768b80a49af56eb95e1c1cd7484f5e2ceed02638a1a4d9c10d1952bd
+stage2_direct_bed	real_ld_bed	131072	16384	6					1.23272	1.57173	sha256_c08bd1ec768b80a49af56eb95e1c1cd7484f5e2ceed02638a1a4d9c10d1952bd
+stage2_direct_pgen	real_ld_pgen	131072	16384	1					4.46648	4.83618	sha256_c08bd1ec768b80a49af56eb95e1c1cd7484f5e2ceed02638a1a4d9c10d1952bd
+stage2_direct_pgen	real_ld_pgen	131072	16384	6					1.24968	1.62039	sha256_c08bd1ec768b80a49af56eb95e1c1cd7484f5e2ceed02638a1a4d9c10d1952bd
+stage2_dense_bed	real_ld_bed	131072	16384	1					9.37548	9.77963	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196
+stage2_dense_bed	real_ld_bed	131072	16384	2					6.07421	6.47967	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196
+stage2_dense_bed	real_ld_bed	131072	16384	4					3.29467	3.70184	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196
+stage2_dense_bed	real_ld_bed	131072	16384	6					2.47786	2.88652	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196
+stage2_dense_pgen	real_ld_pgen	131072	16384	1					7.64849	8.07716	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196
+stage2_dense_pgen	real_ld_pgen	131072	16384	2					5.28313	6.02246	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196
+stage2_dense_pgen	real_ld_pgen	131072	16384	4					2.95299	3.38839	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196
+stage2_dense_pgen	real_ld_pgen	131072	16384	6					2.24148	2.66878	sha256_b3bc464f4cd83d7476fabc74a772621f541e609bc9107b6742aefa0c8b43a196

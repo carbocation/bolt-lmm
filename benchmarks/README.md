@@ -753,3 +753,54 @@ cores were 18% faster than all 12 SMT threads on this VM. Compared with the
 original split-stage BGEN readout of 73.956 seconds, the six-core path is about
 14.9x faster. Raw measurements are in
 `results/a100_stage2_threads.tsv`.
+
+## Production CPU thread scaling
+
+The single-threaded audits above established the algorithmic improvements
+before production parallelism. Stage 1 and REML already divide packed-genotype
+blocks with OpenMP and use threaded BLAS. A real-LD 8,192-sample by
+16,384-variant cold-start spike-and-slab Stage 1 run scaled from 36.937 seconds
+on one thread to 11.944 seconds on the VM's six physical cores (3.09x). Its
+variance, infinitesimal, mixture-estimation, and final Bayesian phases all
+improved. Runs used `--noLinreg` only to exclude that independent traversal
+from the scaling measurement. Thread-count-dependent BLAS reductions changed
+some low-order model-artifact bits, but Stage 2 output generated from every
+model was byte-identical. The scientific summaries and iteration counts also
+matched.
+
+Default-refinement BOLT-REML on the same real-LD shape scaled from 54.333 to
+18.770 seconds (2.89x) on six cores. Every thread count produced the same CG
+convergence sequence and the same printed estimates: h2g 0.512 and sigma2
+1.003198 (SE 0.016559). A bounded target-stride N=500,000 by M=1,024,
+three-trial rung improved from 74.092 to 22.507 seconds (3.29x); this is a
+low-rank throughput check, not a substitute for a full-rank real analysis.
+
+BED and hardcall-PGEN Stage 2 now also use CPU threads outside BLAS. For models
+through six combined basis/statistic vectors, bounded packed batches are scored
+concurrently with thread-local workspaces and emitted in input order. Larger
+models convert independent packed variants to centered dense columns in
+parallel before threaded batched DGEMM. QC survivors are compacted in original
+order. CUDA dispatch and scalar validation paths are unchanged.
+
+The Stage 2 scaling ladder reused the real-LD 131,072-sample by 16,384-variant
+fixture. The low-dimensional model had one basis and two statistics; the dense
+model had 21 bases and two statistics.
+
+| Model and input | 1-thread readout | 6-core readout | Readout speedup | 1-thread total | 6-core total | Total speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 basis + 2 stats, BED direct-packed | 4.831 s | 1.233 s | 3.92x | 5.175 s | 1.572 s | 3.29x |
+| 1 basis + 2 stats, hardcall PGEN direct-packed | 4.466 s | 1.250 s | 3.57x | 4.836 s | 1.620 s | 2.98x |
+| 21 bases + 2 stats, BED dense batch | 9.375 s | 2.478 s | 3.78x | 9.780 s | 2.887 s | 3.39x |
+| 21 bases + 2 stats, hardcall PGEN dense batch | 7.648 s | 2.241 s | 3.41x | 8.077 s | 2.669 s | 3.03x |
+
+The dense BED six-core readout was 2.75x faster than leaving conversion serial
+and threading DGEMM alone (6.803 seconds). All BED/PGEN results were
+byte-identical across thread counts and between the two formats. Relative to
+the first split-stage commit's readout, the current six-core BED path is about
+22.8x faster for the direct model and 19.2x faster for the dense model.
+
+Across Stage 1, REML, BED/PGEN Stage 2, and BGEN Stage 2, all 12 logical CPUs
+were slower than six physical cores on this six-core Xeon VM. Production
+defaults should therefore start with the physical-core count and establish a
+machine-specific scaling ladder before enabling SMT. Raw measurements and
+compatibility checks are in `results/a100_cpu_threads.tsv`.

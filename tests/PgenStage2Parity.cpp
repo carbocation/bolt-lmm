@@ -230,6 +230,10 @@ int main(int argc, char **argv) {
 
     const std::string directBedOut = outputDir + "/pgen_stage2_direct_bed.stats";
     const std::string directPgenOut = outputDir + "/pgen_stage2_direct_pgen.stats";
+    const std::string directBedParallelOut =
+      outputDir + "/pgen_stage2_direct_bed_parallel.stats";
+    const std::string directPgenParallelOut =
+      outputDir + "/pgen_stage2_direct_pgen_parallel.stats";
     const std::string directReferenceOut = outputDir + "/pgen_stage2_direct_reference.stats";
     identityBedBolt.streamComputeRetroLOCO(
       directBedOut, std::vector<std::string>(1, prefix + ".bim"),
@@ -239,19 +243,68 @@ int main(int argc, char **argv) {
       directPgenOut, prefix + ".pgen", prefix + ".pvar", "", noFiles, 1.0,
       true, identityRetroData);
     identityBedBolt.streamComputeRetroLOCO(
+      directBedParallelOut, std::vector<std::string>(1, prefix + ".bim"),
+      std::vector<std::string>(1, prefix + ".bed"), "", noFiles, 1.0, true,
+      identityRetroData, true, 2);
+    identityPgenBolt.streamComputeRetroLOCOPgen(
+      directPgenParallelOut, prefix + ".pgen", prefix + ".pvar", "", noFiles,
+      1.0, true, identityRetroData, true, 2);
+    identityBedBolt.streamComputeRetroLOCO(
       directReferenceOut, std::vector<std::string>(1, prefix + ".bim"),
       std::vector<std::string>(1, prefix + ".bed"), "", noFiles, 1.0, true,
       identityRetroData, false);
     const std::string directBedStats = readFile(directBedOut);
     const std::string directPgenStats = readFile(directPgenOut);
+    const std::string directBedParallelStats = readFile(directBedParallelOut);
+    const std::string directPgenParallelStats = readFile(directPgenParallelOut);
     const std::string directReferenceStats = readFile(directReferenceOut);
     std::remove(directBedOut.c_str());
     std::remove(directPgenOut.c_str());
+    std::remove(directBedParallelOut.c_str());
+    std::remove(directPgenParallelOut.c_str());
     std::remove(directReferenceOut.c_str());
     if (directBedStats != directPgenStats)
       return fail("direct-packed BED and PGEN association outputs differ");
     if (directBedStats != directReferenceStats)
       return fail("direct-packed and scalar association outputs differ");
+    if (directBedParallelStats != directReferenceStats)
+      return fail("parallel direct-packed BED and scalar outputs differ");
+    if (directPgenParallelStats != directReferenceStats)
+      return fail("parallel direct-packed PGEN and scalar outputs differ");
+
+    // Cross the AVX direct-packed threshold so BED and PGEN both exercise
+    // parallel packed-to-dense conversion before batched DGEMM.
+    std::vector<LMM::Bolt::StatsDataRetroLOCO> denseRetroData;
+    for (int s = 0; s < 6; s++)
+      denseRetroData.push_back(LMM::Bolt::StatsDataRetroLOCO(
+        "DENSE" + std::to_string(s+1), noStats, identityResids, boundaries, scales));
+    const std::string denseBedParallelOut =
+      outputDir + "/pgen_stage2_dense_bed_parallel.stats";
+    const std::string densePgenParallelOut =
+      outputDir + "/pgen_stage2_dense_pgen_parallel.stats";
+    const std::string denseReferenceOut =
+      outputDir + "/pgen_stage2_dense_reference.stats";
+    identityBedBolt.streamComputeRetroLOCO(
+      denseBedParallelOut, std::vector<std::string>(1, prefix + ".bim"),
+      std::vector<std::string>(1, prefix + ".bed"), "", noFiles, 1.0, true,
+      denseRetroData, true, 2);
+    identityPgenBolt.streamComputeRetroLOCOPgen(
+      densePgenParallelOut, prefix + ".pgen", prefix + ".pvar", "", noFiles,
+      1.0, true, denseRetroData, true, 2);
+    identityBedBolt.streamComputeRetroLOCO(
+      denseReferenceOut, std::vector<std::string>(1, prefix + ".bim"),
+      std::vector<std::string>(1, prefix + ".bed"), "", noFiles, 1.0, true,
+      denseRetroData, false);
+    const std::string denseBedParallelStats = readFile(denseBedParallelOut);
+    const std::string densePgenParallelStats = readFile(densePgenParallelOut);
+    const std::string denseReferenceStats = readFile(denseReferenceOut);
+    std::remove(denseBedParallelOut.c_str());
+    std::remove(densePgenParallelOut.c_str());
+    std::remove(denseReferenceOut.c_str());
+    if (denseBedParallelStats != denseReferenceStats)
+      return fail("parallel dense BED and scalar outputs differ");
+    if (densePgenParallelStats != denseReferenceStats)
+      return fail("parallel dense PGEN and scalar outputs differ");
 
     // Cover the identity-order BGEN fast path, including reuse of the dosage
     // sum when a variant has no missing probabilities.

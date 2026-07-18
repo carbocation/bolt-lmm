@@ -14,31 +14,50 @@ itself at `fa732f8`.
 
 The headline is deliberately production-oriented. Each CPU executable uses
 all six physical Xeon cores, threaded oneMKL, `--numThreads=6`, and no SMT. The
-A100 executable uses one pinned host core. Values are medians of three external
-end-to-end wall measurements in seconds; lower is better. The two speedup
-columns use the upstream-equivalent six-core time as their denominator.
+A100 executable also uses all six physical host cores. Values are medians of
+three external end-to-end wall measurements in seconds; lower is better. The
+two speedup columns use the upstream-equivalent six-core time as their
+denominator.
 
 | Analysis and representative workload | Upstream-equivalent CPU, 6 cores | Fork CPU, 6 cores | Fork CUDA, A100 | Fork CPU speedup | A100 speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Stage 1, synthetic N=32,768, M=16,384, default LINREG | 38.47 | 28.59 | 3.49 | 1.35x | 11.02x |
-| Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.05 | 1.13 | 1.20 | 24.82x | 23.38x |
-| Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 33.08 | 2.94 | 1.79 | 11.25x | 18.48x |
-| REML, real-LD N=8,192, M=16,384, default refinement | 20.38 | 18.67 | 4.23 | 1.09x | 4.82x |
+| Stage 1, synthetic N=32,768, M=16,384, default LINREG | 38.47 | 28.59 | 3.47 | 1.35x | 11.09x |
+| Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.05 | 1.13 | 1.18 | 24.82x | 23.77x |
+| Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 33.08 | 2.94 | 1.78 | 11.25x | 18.58x |
+| REML, real-LD N=8,192, M=16,384, default refinement | 20.38 | 18.67 | 2.33 | 1.09x | 8.75x |
 
-On the small direct Stage 2 workload, the fork's six-core CPU path is 1.06x
+On the small direct Stage 2 workload, the fork's six-core CPU path is 1.04x
 faster end-to-end than A100 because CUDA context startup dominates; A100 is
-1.64x faster than six-core CPU on the denser 21-basis workload. A100 is 8.19x
-faster than fork CPU for Stage 1 and 4.41x faster for REML on these fixtures.
+1.65x faster than six-core CPU on the denser 21-basis workload. A100 is 8.24x
+faster than fork CPU for Stage 1 and 8.01x faster for REML on these fixtures.
 These ratios are workload-specific and must not be extrapolated to the target
 N=500,000 by M=1,000,000 analysis.
+
+A CUDA host-thread ladder tested one, two, four, and six physical cores plus
+all 12 logical CPUs. Physical-core scaling never materially degraded a
+headline workload. It was most important for REML, where six host cores cut
+wall time from 4.17 to 2.33 seconds. Stage 1 improved slightly, and Stage 2 was
+largely insensitive. Twelve SMT threads were slower than six physical cores
+for Stage 1 and REML, so there is no reason to special-case CUDA at one host
+thread; production runs should start with the physical-core count.
+
+| CUDA workload | 1 host thread | 2 host threads | 4 host threads | 6 host threads | 12 logical threads |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Stage 1 | 3.52 | 3.44 | 3.42 | 3.47 | 3.58 |
+| Stage 2, 1 basis + 2 statistics | 1.22 | 1.21 | 1.19 | 1.18 | 1.26 |
+| Stage 2, 21 bases + 2 statistics | 1.76 | 1.75 | 1.77 | 1.78 | 1.75 |
+| REML, default refinement | 4.17 | 2.87 | 2.44 | 2.33 | 2.52 |
 
 All Stage 1 models produced the same byte-identical final Stage 2 statistics.
 All direct and dense Stage 2 output files were also byte-identical. REML used
 the same CG convergence sequence and printed identical variance estimates and
-standard errors in all three configurations. The matched raw repetitions are
-in [`a100_production_headline.tsv`](results/a100_production_headline.tsv).
-Single-thread diagnostics, scaling ladders, additional formats, target-stride
-probes, and historical comparison points remain below.
+standard errors in all three configurations and at every CUDA host-thread
+count. The matched raw repetitions are in
+[`a100_production_headline.tsv`](results/a100_production_headline.tsv).
+The complete CUDA host-thread ladder is in
+[`a100_cuda_host_threads.tsv`](results/a100_cuda_host_threads.tsv).
+Single-thread diagnostics, additional formats, target-stride probes, and
+historical comparison points remain below.
 
 ## Benchmark setup and historical log
 

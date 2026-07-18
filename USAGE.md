@@ -42,6 +42,10 @@ output can explicitly pass `--noLinreg` in Stage 1 to skip that computation.
 The default Stage 2 output retains `P_BOLT_LMM_INF` and, when the spike-and-slab
 model is fitted, `P_BOLT_LMM`.
 
+In CPU OpenMP builds, `--numThreads` applies both to the main Stage 1 matrix
+operations and to the marker-wise LINREG, infinitesimal, and spike-and-slab
+association passes. The per-marker arithmetic and output order are unchanged.
+
 For BOLT-REML, use `--stage=1 --reml`. No Stage 2 association readout is
 required.
 

@@ -1,4 +1,9 @@
 workload	input	N	M	threads	variance_seconds	infinitesimal_seconds	mixture_seconds	bayes_seconds	readout_seconds	total_seconds	compatibility
+stage1_linreg_prechange	target_stride_bed	500000	4096	6					3.63268		controlled_pass
+stage1_linreg_parallel	target_stride_bed	500000	4096	1					3.63634		per_marker_arithmetic_unchanged
+stage1_linreg_parallel	target_stride_bed	500000	4096	6					0.636899		per_marker_arithmetic_unchanged
+stage1_fixed_mixture_prechange	real_ld_bed	8192	16384	6	3.69283	2.88117		35.9753	0.223228	43.6908	model_sha256_prefix_3bafefbc_verbose_stats_sha256_prefix_9fe5bb9d
+stage1_fixed_mixture_parallel	real_ld_bed	8192	16384	6	3.50384	2.70864		36.0572	0.0441909	43.3753	model_sha256_prefix_3bafefbc_verbose_stats_sha256_prefix_9fe5bb9d
 stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	1	8.94997	9.82100	11.88550	5.14831		36.9366	stage2_sha256_prefix_5874b78e
 stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	2	4.92694	4.55191	7.95512	3.18859		21.7957	stage2_sha256_prefix_5874b78e
 stage1_cold_spike_slab_no_linreg	real_ld_hardcalls	8192	16384	4	2.94746	2.56816	5.45320	1.99674		14.0101	stage2_sha256_prefix_5874b78e

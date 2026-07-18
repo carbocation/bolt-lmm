@@ -1605,12 +1605,19 @@ namespace LMM {
     else
 #endif
     {
-      double *snpVec = ALIGNED_MALLOC_DOUBLES(Nstride);
-      double (*work)[4] = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
+      const int maxThreads = omp_get_max_threads();
+      double *snpVecs = ALIGNED_MALLOC_DOUBLES(maxThreads*Nstride);
+      double (*work)[4] =
+	(double (*)[4]) ALIGNED_MALLOC(maxThreads*256*sizeof(*work));
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
       for (uint64 m = 0; m < M; m++)
 	if (projMaskSnps[m]) {
-	  snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m], work,
-				       maskCoversAllIndivs);
+	  const int thread = omp_get_thread_num();
+	  double *snpVec = snpVecs+thread*Nstride;
+	  snpData.buildMaskedSnpVector(snpVec, maskIndivs, m, snpValueLookup[m],
+				       work+(thread<<8), maskCoversAllIndivs);
 	  // pheno has vector norm 1 and is orthogonal to covariates
 	  // ||snpVec||^2 = Xnorm2s[m]
 	  // dot product is in Nused-Cindep free dimensions: scale to get chisq
@@ -1618,7 +1625,7 @@ namespace LMM {
 	    Xnorm2s[m] * (Nused-Cindep);
 	}
       ALIGNED_FREE(work);
-      ALIGNED_FREE(snpVec);
+      ALIGNED_FREE(snpVecs);
     }
 
     // save calibrated "residual" (i.e., pheno)
@@ -1706,18 +1713,25 @@ namespace LMM {
     else
 #endif
     {
-      snpCovCompVec = ALIGNED_MALLOC_DOUBLES(Nstride+Cstride);
-      work = (double (*)[4]) ALIGNED_MALLOC(256 * sizeof(*work));
+      const int maxThreads = omp_get_max_threads();
+      snpCovCompVec = ALIGNED_MALLOC_DOUBLES(maxThreads*(Nstride+Cstride));
+      work = (double (*)[4]) ALIGNED_MALLOC(maxThreads*256*sizeof(*work));
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static)
+#endif
       for (uint64 m = 0; m < M; m++)
 	if (projMaskSnps[m]) {
+	  const int thread = omp_get_thread_num();
+	  double *threadSnpCovCompVec =
+	    snpCovCompVec+thread*(Nstride+Cstride);
 	  const double *phenoResidCovCompVec =
 	    phenoResidCovCompVecs + chunkAssignments[m]*(Nstride+Cstride);
 
 	  // build snp vector + sign-flipped covar comps
-	  buildMaskedSnpNegCovCompVec(snpCovCompVec, m, work);
+	  buildMaskedSnpNegCovCompVec(threadSnpCovCompVec, m, work+(thread<<8));
 
 	  // compute LINREG on Bayes residual
-	  double dotProd = NumericUtils::dot(snpCovCompVec, phenoResidCovCompVec,
+	  double dotProd = NumericUtils::dot(threadSnpCovCompVec, phenoResidCovCompVec,
 				       Nstride+Cstride);
 	  stats[m] = NumericUtils::sq(dotProd) / resNorm2s[chunkAssignments[m]] /
 	    Xnorm2s[m] * (Nused-Cindep);
@@ -1842,15 +1856,34 @@ namespace LMM {
     else
 #endif
     {
+#ifdef BOLT_USE_OPENMP
+      const int maxThreads = omp_get_max_threads();
+      double *statCovCompVecs =
+	ALIGNED_MALLOC_DOUBLES(maxThreads*(Nstride+Cstride));
+      double (*statWork)[4] =
+	(double (*)[4]) ALIGNED_MALLOC(maxThreads*256*sizeof(*statWork));
+#pragma omp parallel for schedule(static)
+#endif
       for (uint64 m = 0; m < M; m++)
 	if (projMaskSnps[m]) {
-	  buildMaskedSnpNegCovCompVec(covCompVec, m, work);
+	  double *statCovCompVec = covCompVec;
+	  double (*threadWork)[4] = work;
+#ifdef BOLT_USE_OPENMP
+	  const int thread = omp_get_thread_num();
+	  statCovCompVec = statCovCompVecs+thread*(Nstride+Cstride);
+	  threadWork = statWork+(thread<<8);
+#endif
+	  buildMaskedSnpNegCovCompVec(statCovCompVec, m, threadWork);
 	  int i = chunkAssignments[m];
 	  stats[m] =
 	    NumericUtils::sq(NumericUtils::dot(HinvPhiCovCompVecs + i*(Nstride+Cstride),
-					       covCompVec, Nstride+Cstride))
+					       statCovCompVec, Nstride+Cstride))
 	    / HinvPhiNorm2s[i] / Xnorm2s[m] * (Nused-Cindep);
 	}
+#ifdef BOLT_USE_OPENMP
+      ALIGNED_FREE(statWork);
+      ALIGNED_FREE(statCovCompVecs);
+#endif
     }
     /*
     double phenoNorm2 = computeProjNorm2(rhsCovCompVecs);

@@ -768,6 +768,25 @@ some low-order model-artifact bits, but Stage 2 output generated from every
 model was byte-identical. The scientific summaries and iteration counts also
 matched.
 
+The remaining default CPU marker passes were then made multithreaded without
+changing their per-marker arithmetic. Each thread has private genotype and
+lookup workspaces; variants still write to their original result indices. On a
+bounded target-stride N=500,000 by M=4,096 fixture, the default LINREG pass fell
+from 3.633 seconds to 0.637 seconds on six physical cores (5.70x). The new
+one-thread path took 3.636 seconds, so the parallel-ready implementation added
+no measurable serial overhead. This fixture reads 2.048 billion genotypes but
+is deliberately only 1/244 of the target variant count.
+
+A complete real-LD N=8,192 by M=16,384 control used fixed mixture parameters
+to exercise LINREG, infinitesimal, and final spike-and-slab marker passes in one
+artifact. Against the immediately preceding six-thread executable, LINREG fell
+from 0.223 to 0.044 seconds and the complete infinitesimal phase fell from
+2.881 to 2.709 seconds; a 283-iteration Bayesian fit was neutral at 35.975
+versus 36.057 seconds. The complete Stage 1 model and verbose Stage 2 output,
+including LINREG, INF, and BOLT-LMM columns, were byte-identical to the
+pre-change six-thread control. The long fixed-parameter Bayesian run is a
+parity stress test, not a representative headline workload.
+
 Default-refinement BOLT-REML on the same real-LD shape scaled from 54.333 to
 18.770 seconds (2.89x) on six cores. Every thread count produced the same CG
 convergence sequence and the same printed estimates: h2g 0.512 and sigma2

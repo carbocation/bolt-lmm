@@ -12,3 +12,5 @@ T4	parallel_host_copy_b47cfbb	retained	1	3	4.947946	0.000430	0.052370	baseline
 T4	parallel_host_copy_b47cfbb	retained	4	3	4.753720	0.000430	0.052370	baseline
 T4	async_host_copy_and_h2d	removed	1	1	4.765984	0.000430	0.052370	3.7pct_faster_single_repeat
 T4	async_host_copy_and_h2d	removed	4	1	4.746296	0.000430	0.052370	neutral_single_repeat
+A100	device_bayes_update_single_block	removed	6	3	0.244010	0.000373	0.052370	44.1pct_slower_than_host_roundtrip
+A100	device_bayes_update_block_per_candidate	removed	6	3	0.195092	0.000373	0.052370	15.2pct_slower_than_host_roundtrip

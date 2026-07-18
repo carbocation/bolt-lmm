@@ -256,7 +256,7 @@ short 85-88% device-cached prefix and a long 36-38% host-streamed suffix.
 Parallel copying helps the smaller-batch phases above but does not change this
 CV pattern.
 
-Two follow-ups were measured and removed. A persistent background worker that
+Four follow-ups were measured and removed. A persistent background worker that
 overlapped pageable host copy and H2D with GPU work made the six-thread A100
 streaming microbenchmark 5.4% slower and the four-thread result 8.6% slower.
 Reusable pinned bounce buffers for the small Bayesian products and updates
@@ -264,12 +264,23 @@ changed the six-thread median by only 0.2%. The background-worker prototype
 passed all CUDA tests and produced a byte-identical complete real-LD Stage 1
 model on T4 before removal.
 
+The device-update alternative was also implemented and tested rather than
+inferred. Keeping coefficients and Bayesian factors on the GPU and doing the
+ordered 512-marker spike-and-slab recurrence there was 44.1% slower with one
+CUDA block handling all candidates. Assigning one CUDA block to each of the 18
+independent candidates reduced that penalty, but was still 15.2% slower than
+the retained CPU-update round trip (0.195092 versus 0.169298 seconds per
+iteration). A complete real-LD T4 run was 5.8% slower end to end and introduced
+floating-point differences in the model artifact despite matching printed
+calibration and convergence counts. The prototype was therefore removed.
+
 The remaining CV cost is structural: a 700,000-variant traversal has 1,368
-512-variant blocks, and the spike-and-slab update currently returns products
-to the CPU and sends coefficient updates back for every block. A substantial
-further gain would require moving that update to the device or otherwise
-removing the per-block synchronization; staging changes alone did not do it.
-Raw target timings and rejected staging measurements are in
+512-variant blocks, and the spike-and-slab update returns products to the CPU
+and sends coefficient updates back for every block. The recurrence is ordered
+within each candidate, while the usual batch has only 18 independent
+candidates—too little parallel work for the tested A100 device formulation.
+Staging changes and this direct device port did not improve that path. Raw
+target timings and rejected experiments are in
 [`a100_stage1_target_700k.tsv`](results/a100_stage1_target_700k.tsv) and
 [`a100_cuda_staging_experiments.tsv`](results/a100_cuda_staging_experiments.tsv).
 

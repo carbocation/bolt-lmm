@@ -519,6 +519,15 @@ if(BUILD_TESTING)
     add_test(NAME cuda_step1_host_cache_parity
       COMMAND cuda_step1_parity_test --host-cache)
 
+    add_executable(cuda_step1_stream_benchmark EXCLUDE_FROM_ALL
+      benchmarks/CudaStep1StreamingBenchmark.cpp
+      src/CudaStep1.cu)
+    target_include_directories(cuda_step1_stream_benchmark PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(cuda_step1_stream_benchmark PRIVATE CUDA::cudart CUDA::cublas)
+    set_target_properties(cuda_step1_stream_benchmark PROPERTIES
+      CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
+
     add_executable(cuda_stage2_parity_test
       tests/CudaStage2Parity.cpp
       src/CudaStage2.cu)

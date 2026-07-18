@@ -194,6 +194,19 @@ normal fully cached path stayed within 1.2% of its prior timings. A half-cached
 run exercised the cache-to-stream transition, and all cached, partially cached,
 and uncached runs produced the same byte-identical Stage 1 model artifact.
 
+The optional `cuda_step1_stream_benchmark` build target isolates the steady
+Bayesian block API at the production 500,000-sample stride without fitting a
+model. Its default device-resident run and `--stream` run use the same inputs
+and checksum; `--variants` and `--iterations` bound the matrix and repetition
+counts:
+
+```sh
+cmake --build build/cuda --target cuda_step1_stream_benchmark -j
+build/cuda/cuda_step1_stream_benchmark --variants 8192 --iterations 20
+build/cuda/cuda_step1_stream_benchmark --stream \
+  --variants 8192 --iterations 20
+```
+
 ## File-backed CUDA host cache
 
 At the target 500,000-sample stride, a 131,072-SNP packed matrix occupies

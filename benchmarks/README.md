@@ -2,7 +2,7 @@
 
 ## Current headline snapshot
 
-Last updated 2026-07-18 for the codebase through `b47cfbb`. This is the
+Last updated 2026-07-18 for the codebase through `acbb21c`. This is the
 maintained summary; the remainder of this file is the detailed, chronological
 benchmark log. A commit named in a row is the code actually measured. An older
 measurement is never silently relabeled as "current."
@@ -283,6 +283,24 @@ Staging changes and this direct device port did not improve that path. Raw
 target timings and rejected experiments are in
 [`a100_stage1_target_700k.tsv`](results/a100_stage1_target_700k.tsv) and
 [`a100_cuda_staging_experiments.tsv`](results/a100_cuda_staging_experiments.tsv).
+
+At `acbb21c`, the retained ordinary-RAM genotype cache is page-aligned and
+registered with CUDA. Blocks inside that cache transfer directly to the
+device, avoiding the pageable-to-pinned copy; sources outside it retain the
+existing two-buffer fallback. If a driver or host-memory policy refuses
+registration, execution also falls back to the previous staged path.
+
+On A100, the production-stride Bayesian streaming microbenchmark fell from
+0.169298 to 0.132460 seconds per iteration (21.8%) with identical checksums.
+The matched T4 result was effectively neutral at 4.753720 versus 4.710844
+seconds (0.9% faster). The complete 49.36 GiB target host suffix registered
+successfully. On the N=500,000, M=700,000 PGEN fixture, LINREG fell from
+7.18732 to 6.34372 seconds (11.7%), while initialization was 291.501 versus
+289.578 seconds, max RSS remained about 85.0 GB, and neither run used swap.
+The calibration mean and lambdaGC were identical. The target CV/final and
+end-to-end effect require a new complete run; these phase measurements are not
+used to revise the 4,553-second headline above. Raw measurements are in
+[`a100_cuda_registered_host_cache.tsv`](results/a100_cuda_registered_host_cache.tsv).
 
 ## File-backed CUDA host cache
 

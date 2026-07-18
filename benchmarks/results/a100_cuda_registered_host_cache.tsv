@@ -1,0 +1,7 @@
+workload	accelerator	implementation	commit	host_threads	repetitions	iterations_per_rep	measurement	seconds	baseline_seconds	reduction_pct	residual_checksum	product_checksum	compatibility
+bayes_stream_n500000_m8192_b18	A100	parallel_pageable_to_pinned_copy	b47cfbb	6	3	20	seconds_per_iteration	0.169298	0.169298	0.0	0.000430	0.052370	baseline
+bayes_stream_n500000_m8192_b18	A100	registered_host_cache_direct_transfer	acbb21c	6	3	20	seconds_per_iteration	0.132460	0.169298	21.8	0.000430	0.052370	identical_checksums
+bayes_stream_n500000_m8192_b18	T4	parallel_pageable_to_pinned_copy	b47cfbb	4	3	20	seconds_per_iteration	4.753720	4.753720	0.0	0.000430	0.052370	baseline
+bayes_stream_n500000_m8192_b18	T4	registered_host_cache_direct_transfer	acbb21c	4	1	20	seconds_per_iteration	4.710844	4.753720	0.9	0.000430	0.052370	identical_checksums
+real_ld_derived_pgen_n500000_m700000_b32_h2p3	A100	parallel_pageable_to_pinned_copy	b47cfbb	6	1	1	linreg_phase_seconds	7.18732	7.18732	0.0	NA	NA	identical_mean_and_lambda_gc
+real_ld_derived_pgen_n500000_m700000_b32_h2p3	A100	registered_host_cache_direct_transfer	acbb21c	6	1	1	linreg_phase_seconds	6.34372	7.18732	11.7	NA	NA	identical_mean_and_lambda_gc

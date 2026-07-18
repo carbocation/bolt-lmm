@@ -95,15 +95,19 @@ int main(int argc, char **argv) {
     const double seconds = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - start).count();
 
-    double checksum = 0;
+    double residualChecksum = 0;
     for (uint64 i = 0; i < residuals.size(); i += 4093)
-      checksum += residuals[i];
+      residualChecksum += residuals[i];
+    double productChecksum = 0;
+    for (uint64 i = 0; i < xtrans.size(); i += 17)
+      productChecksum += xtrans[i];
     std::cout << std::fixed << std::setprecision(6)
               << "mode=" << (stream ? "host-streamed" : "device-cached")
               << " N=" << Nstride << " M=" << M << " B=" << B
               << " iterations=" << iterations << " total_seconds=" << seconds
               << " seconds_per_iteration=" << seconds / iterations
-              << " checksum=" << checksum << std::endl;
+              << " residual_checksum=" << residualChecksum
+              << " product_checksum=" << productChecksum << std::endl;
   }
   catch (const std::exception &error) {
     std::cerr << "CUDA Step 1 streaming benchmark failed: " << error.what() << std::endl;

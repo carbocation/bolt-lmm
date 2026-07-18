@@ -23,6 +23,7 @@
 #include <cublas_v2.h>
 
 #include "CudaStep1.hpp"
+#include "ParallelMemCopy.hpp"
 
 namespace LMM {
 
@@ -759,9 +760,11 @@ namespace LMM {
         checkCuda(cudaEventSynchronize(transferDone[slot]),
                   "wait for pinned packed staging buffer");
       const uint64 blockBytes = blockSize * bytesPerSnp;
-      std::memcpy(hostPackedBlocks[slot],
-                  packedHostSource(hostGenotypes, M, bytesPerSnp, m0, blockSize),
-                  blockBytes);
+      // This pageable-to-pinned copy is 61 MiB at the production sample stride.
+      // Use the requested CPU thread team so it does not starve a fast GPU.
+      parallelMemcpy(hostPackedBlocks[slot],
+                     packedHostSource(hostGenotypes, M, bytesPerSnp, m0, blockSize),
+                     blockBytes);
       if (consumedRecorded[slot])
         checkCuda(cudaStreamWaitEvent(transferStream, packedConsumed[slot], 0),
                   "wait before reusing streamed packed device block");

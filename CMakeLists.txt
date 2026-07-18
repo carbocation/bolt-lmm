@@ -402,7 +402,10 @@ set(BOLT_SOURCES
   src/Timer.cpp)
 
 if(BOLT_CUDA)
-  list(APPEND BOLT_SOURCES src/CudaStep1.cu src/CudaStage2.cu)
+  list(APPEND BOLT_SOURCES
+    src/CudaStep1.cu
+    src/CudaStage2.cu
+    src/ParallelMemCopy.cpp)
 endif()
 
 if(BOLT_WRAP_LEGACY_MEMCPY)
@@ -507,10 +510,12 @@ if(BUILD_TESTING)
   if(BOLT_CUDA)
     add_executable(cuda_step1_parity_test
       tests/CudaStep1Parity.cpp
-      src/CudaStep1.cu)
+      src/CudaStep1.cu
+      src/ParallelMemCopy.cpp)
     target_include_directories(cuda_step1_parity_test PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(cuda_step1_parity_test PRIVATE CUDA::cudart CUDA::cublas)
+    target_link_libraries(cuda_step1_parity_test PRIVATE
+      bolt_openmp CUDA::cudart CUDA::cublas)
     set_target_properties(cuda_step1_parity_test PROPERTIES
       CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
     add_test(NAME cuda_step1_matrix_parity COMMAND cuda_step1_parity_test)
@@ -521,10 +526,12 @@ if(BUILD_TESTING)
 
     add_executable(cuda_step1_stream_benchmark EXCLUDE_FROM_ALL
       benchmarks/CudaStep1StreamingBenchmark.cpp
-      src/CudaStep1.cu)
+      src/CudaStep1.cu
+      src/ParallelMemCopy.cpp)
     target_include_directories(cuda_step1_stream_benchmark PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(cuda_step1_stream_benchmark PRIVATE CUDA::cudart CUDA::cublas)
+    target_link_libraries(cuda_step1_stream_benchmark PRIVATE
+      bolt_openmp CUDA::cudart CUDA::cublas)
     set_target_properties(cuda_step1_stream_benchmark PROPERTIES
       CUDA_ARCHITECTURES "${BOLT_CUDA_ARCHITECTURES}")
 

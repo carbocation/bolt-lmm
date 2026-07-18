@@ -219,7 +219,9 @@ Blocks outside the device and retained-host caches are double-buffered through
 two pinned host buffers and two device buffers. A transfer stream preloads the
 next block while the compute stream processes the current block. At 500,000
 samples with the default 512-SNP CUDA block, the pinned host pair is bounded at
-about 122 MiB.
+about 122 MiB. Large pageable-to-pinned staging copies use the CPU team selected
+by `--numThreads`; `--numThreads=1` retains serial staging. This does not change
+the genotype bytes or floating-point operations performed on the GPU.
 
 See [`BUILD.md`](BUILD.md) for CUDA compilation instructions and
 [`benchmarks/README.md`](benchmarks/README.md) for measured performance and

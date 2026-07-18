@@ -14,23 +14,22 @@ itself. Times are seconds and lower is better. Stage 1 and Stage 2 report wall
 time; REML reports BOLT's analysis timer. Dashes mean that no matched
 measurement exists; numbers from different fixtures are deliberately not
 spliced together. Fork cells show time followed by speedup versus that row's
-baseline in parentheses.
+baseline in parentheses. When a row has no upstream measurement, the
+parenthetical explicitly names its comparison point.
 
 | Analysis and representative workload | Upstream-equivalent CPU, 1 thread | Fork CPU, 1 thread (speedup) | Fork CPU, 6 cores (speedup) | Fork CUDA, A100 (speedup) | Measurement status |
 | --- | ---: | ---: | ---: | ---: | --- |
 | Stage 1, synthetic N=32,768, M=16,384, default LINREG | 129.06 | 112.67 (1.15x) | -- | 3.55 (36.35x) | Last matched three-way snapshot at `f337b92`; **not a current-HEAD claim** |
+| Stage 1, real-LD N=8,192, M=16,384, cold-start spike-and-slab, `--noLinreg` | -- | 36.937 | 11.944 (3.09x vs 1 thread) | -- | Current CPU model-fitting path; final Stage 2 output is byte-identical across thread counts |
 | Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.466 | 3.477 (8.19x) | 1.572 (18.11x) | 0.905 (31.45x) | Current scoring paths |
 | Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 48.109 | 9.816 (4.90x) | 2.887 (16.66x) | 1.482 (32.46x) | Current scoring paths |
 | REML, real-LD N=8,192, M=16,384, default refinement | 58.90 | 53.75 (1.10x) | 18.77 (3.14x) | 3.95 (14.91x) | Current REML paths |
 
 The latest Stage 1 CPU scaling audit uses a harder real-LD cold-start
-spike-and-slab fixture at N=8,192 and M=16,384. It takes 36.937 seconds on one
-thread and 11.944 seconds on six physical cores (3.09x), with byte-identical
-final Stage 2 association output across thread counts. That run used
-`--noLinreg` to isolate model fitting. It has no matched upstream and CUDA rows,
-so it is reported here without pretending it updates the older three-way
-comparison. Refreshing the matched Stage 1 headline remains an explicit
-benchmarking task.
+spike-and-slab fixture. It used `--noLinreg` to isolate model fitting and has no
+matched upstream and CUDA rows, so it is a separate headline row rather than a
+purported update to the older three-way comparison. Refreshing the matched
+Stage 1 headline remains an explicit benchmarking task.
 
 For the Stage 2 rows, every optimized CPU and CUDA statistics file was
 byte-identical to its baseline or CPU reference. The one-thread values are the

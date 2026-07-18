@@ -1,0 +1,14 @@
+accelerator	implementation	status	host_threads	repetitions	seconds_per_iteration_median	residual_checksum	product_checksum	comparison
+A100	parallel_host_copy_b47cfbb	retained	1	3	0.319669	0.000430	0.052370	baseline
+A100	parallel_host_copy_b47cfbb	retained	2	3	0.229857	0.000430	0.052370	baseline
+A100	parallel_host_copy_b47cfbb	retained	4	3	0.181536	0.000430	0.052370	baseline
+A100	parallel_host_copy_b47cfbb	retained	6	3	0.169298	0.000430	0.052370	baseline
+A100	async_host_copy_and_h2d	removed	1	3	0.315153	0.000430	0.052370	1.4pct_faster
+A100	async_host_copy_and_h2d	removed	2	3	0.228587	0.000430	0.052370	0.6pct_faster
+A100	async_host_copy_and_h2d	removed	4	3	0.197057	0.000430	0.052370	8.6pct_slower
+A100	async_host_copy_and_h2d	removed	6	3	0.178439	0.000430	0.052370	5.4pct_slower
+A100	pinned_bayesian_bounce_buffers	removed	6	5	0.169021	0.000430	0.052370	0.2pct_faster
+T4	parallel_host_copy_b47cfbb	retained	1	3	4.947946	0.000430	0.052370	baseline
+T4	parallel_host_copy_b47cfbb	retained	4	3	4.753720	0.000430	0.052370	baseline
+T4	async_host_copy_and_h2d	removed	1	1	4.765984	0.000430	0.052370	3.7pct_faster_single_repeat
+T4	async_host_copy_and_h2d	removed	4	1	4.746296	0.000430	0.052370	neutral_single_repeat

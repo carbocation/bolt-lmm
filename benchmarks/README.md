@@ -2,7 +2,7 @@
 
 ## Current headline snapshot
 
-Last updated 2026-07-17 for the codebase through `9d20516`. This is the
+Last updated 2026-07-18 for the codebase through `b47cfbb`. This is the
 maintained summary; the remainder of this file is the detailed, chronological
 benchmark log. A commit named in a row is the code actually measured. An older
 measurement is never silently relabeled as "current."
@@ -14,13 +14,14 @@ itself at `fa732f8`.
 
 CPU runs used all six physical Xeon cores, threaded oneMKL, and
 `--numThreads=6`. CUDA runs used the same six host cores plus the A100. SMT was
-disabled. Values are medians of three external end-to-end wall measurements in
-seconds; lower is better. The two speedup columns use the upstream-equivalent
-six-core time as their denominator.
+disabled. Except for the marked target-scale row, values are medians of three
+external end-to-end wall measurements in seconds; lower is better. The two
+speedup columns use the upstream-equivalent six-core time as their denominator.
 
 | Analysis and representative workload | Upstream-equivalent CPU, 6 cores | Fork CPU, 6 cores | Fork CUDA, A100 | Fork CPU speedup | A100 speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Stage 1, synthetic N=32,768, M=16,384, default LINREG | 38.47 | 28.59 | 3.47 | 1.35x | 11.09x |
+| Stage 1, real-LD-derived direct PGEN, N=500,000, M=700,000 | — | — | 4,553* | — | — |
 | Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.05 | 1.13 | 1.18 | 24.82x | 23.77x |
 | Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 33.08 | 2.94 | 1.78 | 11.25x | 18.58x |
 | REML, real-LD N=8,192, M=16,384, default refinement | 20.38 | 18.67 | 2.33 | 1.09x | 8.75x |
@@ -30,13 +31,19 @@ faster end-to-end than A100 because CUDA context startup dominates; A100 is
 1.65x faster than six-core CPU on the denser 21-basis workload. A100 is 8.24x
 faster than fork CPU for Stage 1 and 8.01x faster for REML on these fixtures.
 These ratios are workload-specific and must not be extrapolated to the target
-N=500,000 by M=1,000,000 analysis.
+row. The starred value is one cold-cache end-to-end run, not a three-run
+median. It used six physical host cores, direct PGEN input, ephemeral scratch,
+default scientific convergence, default LINREG, and no persistent Step 0
+cache. A matched pre-parallel-copy A100 run took 4,846 seconds. The two target
+models were byte-identical. Full target CPU baselines were not run.
 
 All Stage 1 models produced the same byte-identical final Stage 2 statistics.
 All direct and dense Stage 2 output files were also byte-identical. REML used
 the same CG convergence sequence and printed identical variance estimates and
 standard errors in all three configurations. The matched raw repetitions are
 in [`a100_production_headline.tsv`](results/a100_production_headline.tsv).
+The target Stage 1 measurement is in
+[`a100_stage1_target_700k.tsv`](results/a100_stage1_target_700k.tsv).
 Single-thread diagnostics, additional formats, target-stride probes, and
 historical comparison points remain below.
 
@@ -206,6 +213,65 @@ build/cuda/cuda_step1_stream_benchmark --variants 8192 --iterations 20
 build/cuda/cuda_step1_stream_benchmark --stream \
   --variants 8192 --iterations 20
 ```
+
+## Target-scale Stage 1 A100 checkpoint
+
+The target checkpoint used N=500,000 and M=700,000, matching the scale quoted
+for UK Biobank in the upstream manual. Genotypes were block-resampled from the
+1KG Phase 3 DRAGEN-derived panel with 32-variant donor blocks, so the fixture
+retains local LD, allele-frequency variation, missingness, and population
+structure without representing the synthetic individuals as real people. The
+phenotype used h2=0.3 and 8,192 causal variants, and `SUPERPOP` was fitted as a
+categorical covariate.
+
+Both A100 runs read hardcall PGEN directly and built only ephemeral scratch.
+They used six physical Xeon cores, default LINREG, default convergence values,
+`--lmmForceNonInf`, `--LDscoresUseChip`, and no scientific shortcut flags. The
+device cache held 275,968 variants (32.13 GiB); ordinary host RAM retained the
+remaining 424,032 variants (49.36 GiB). No iterative genotype pass reread disk.
+
+| Phase | Before parallel host copy (`c4c5670`) | Parallel host copy (`b47cfbb`) | Reduction |
+| --- | ---: | ---: | ---: |
+| PGEN setup | 176.719 s | 177.173 s | -0.3% |
+| Marker/covariate initialization | 292.510 s | 289.578 s | 1.0% |
+| LINREG | 15.409 s | 7.187 s | 53.4% |
+| Variance fitting | 471.867 s | 271.735 s | 42.4% |
+| Infinitesimal association statistics | 195.370 s | 127.557 s | 34.7% |
+| Chip LD scores | 259.252 s | 246.676 s | 4.9% |
+| Mixture-parameter CV | 1,668.130 s | 1,669.160 s | -0.1% |
+| Final spike-and-slab fit | 1,756.210 s | 1,752.950 s | 0.2% |
+| Complete analysis | 4,841.940 s | 4,548.480 s | 6.1% |
+| External wall time | 4,846 s | 4,553 s | 6.0% |
+
+Both runs used the same 8/15/9 variance-component CG counts, 13 infinitesimal
+CG iterations, 75 CV iterations, 76 final iterations, and selected f2=0.1 and
+p=0.02. Their 205 MiB Stage 1 models were byte-identical, with SHA-256
+`d2cae1cd5b8d50b99e4e4f40aab61a4bba6c2ff6ce14428edbef94d01c58cd73`.
+
+A matched 300-second CV trace explains the intermittent utilization seen in
+`nvidia-smi`. Before parallel host copies, mean/median GPU utilization was
+46.28%/37%, with 239 of 300 samples below 50%. At `b47cfbb` it was
+45.95%/36%, with 240 samples below 50%. Each iteration alternated between a
+short 85-88% device-cached prefix and a long 36-38% host-streamed suffix.
+Parallel copying helps the smaller-batch phases above but does not change this
+CV pattern.
+
+Two follow-ups were measured and removed. A persistent background worker that
+overlapped pageable host copy and H2D with GPU work made the six-thread A100
+streaming microbenchmark 5.4% slower and the four-thread result 8.6% slower.
+Reusable pinned bounce buffers for the small Bayesian products and updates
+changed the six-thread median by only 0.2%. The background-worker prototype
+passed all CUDA tests and produced a byte-identical complete real-LD Stage 1
+model on T4 before removal.
+
+The remaining CV cost is structural: a 700,000-variant traversal has 1,368
+512-variant blocks, and the spike-and-slab update currently returns products
+to the CPU and sends coefficient updates back for every block. A substantial
+further gain would require moving that update to the device or otherwise
+removing the per-block synchronization; staging changes alone did not do it.
+Raw target timings and rejected staging measurements are in
+[`a100_stage1_target_700k.tsv`](results/a100_stage1_target_700k.tsv) and
+[`a100_cuda_staging_experiments.tsv`](results/a100_cuda_staging_experiments.tsv).
 
 ## File-backed CUDA host cache
 

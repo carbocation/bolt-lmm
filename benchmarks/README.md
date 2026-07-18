@@ -10,38 +10,35 @@ measurement is never silently relabeled as "current."
 The Stage 1 and Stage 2 baseline is `a58e7c3`, the first split-stage commit. It
 is essentially upstream/v2.5 with the Stage 1 artifact boundary added, so both
 sides perform the same split workflow. The REML baseline is upstream/v2.5
-itself. Times are seconds and lower is better. Stage 1 and Stage 2 report wall
-time; REML reports BOLT's analysis timer. Dashes mean that no matched
-measurement exists; numbers from different fixtures are deliberately not
-spliced together. Fork cells show time followed by speedup versus that row's
-baseline in parentheses. When a row has no upstream measurement, the
-parenthetical explicitly names its comparison point.
+itself at `fa732f8`.
 
-| Analysis and representative workload | Upstream-equivalent CPU, 1 thread | Fork CPU, 1 thread (speedup) | Fork CPU, 6 cores (speedup) | Fork CUDA, A100 (speedup) | Measurement status |
-| --- | ---: | ---: | ---: | ---: | --- |
-| Stage 1, synthetic N=32,768, M=16,384, default LINREG | 129.06 | 112.67 (1.15x) | -- | 3.55 (36.35x) | Last matched three-way snapshot at `f337b92`; **not a current-HEAD claim** |
-| Stage 1, real-LD N=8,192, M=16,384, cold-start spike-and-slab, `--noLinreg` | -- | 36.937 | 11.944 (3.09x vs 1 thread) | -- | Current CPU model-fitting path; final Stage 2 output is byte-identical across thread counts |
-| Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.466 | 3.477 (8.19x) | 1.572 (18.11x) | 0.905 (31.45x) | Current scoring paths |
-| Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 48.109 | 9.816 (4.90x) | 2.887 (16.66x) | 1.482 (32.46x) | Current scoring paths |
-| REML, real-LD N=8,192, M=16,384, default refinement | 58.90 | 53.75 (1.10x) | 18.77 (3.14x) | 3.95 (14.91x) | Current REML paths |
+The headline is deliberately production-oriented. Each CPU executable uses
+all six physical Xeon cores, threaded oneMKL, `--numThreads=6`, and no SMT. The
+A100 executable uses one pinned host core. Values are medians of three external
+end-to-end wall measurements in seconds; lower is better. The two speedup
+columns use the upstream-equivalent six-core time as their denominator.
 
-The latest Stage 1 CPU scaling audit uses a harder real-LD cold-start
-spike-and-slab fixture. It used `--noLinreg` to isolate model fitting and has no
-matched upstream and CUDA rows, so it is a separate headline row rather than a
-purported update to the older three-way comparison. Refreshing the matched
-Stage 1 headline remains an explicit benchmarking task.
+| Analysis and representative workload | Upstream-equivalent CPU, 6 cores | Fork CPU, 6 cores | Fork CUDA, A100 | Fork CPU speedup | A100 speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Stage 1, synthetic N=32,768, M=16,384, default LINREG | 38.47 | 28.59 | 3.49 | 1.35x | 11.02x |
+| Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.05 | 1.13 | 1.20 | 24.82x | 23.38x |
+| Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 33.08 | 2.94 | 1.79 | 11.25x | 18.48x |
+| REML, real-LD N=8,192, M=16,384, default refinement | 20.38 | 18.67 | 4.23 | 1.09x | 4.82x |
 
-For the Stage 2 rows, every optimized CPU and CUDA statistics file was
-byte-identical to its baseline or CPU reference. The one-thread values are the
-matched CUDA-enabled `--no-cuda` controls, while the six-core values come from
-the production threaded-CPU scaling audit. On REML, the fork followed the same
-CG convergence sequence and printed the same estimates as upstream at every
-reported digit. Detailed provenance and all repetitions are in
-[`a100_stage1_headline.tsv`](results/a100_stage1_headline.tsv),
-[`a100_stage2_cpu.tsv`](results/a100_stage2_cpu.tsv),
-[`a100_stage2_cuda.tsv`](results/a100_stage2_cuda.tsv),
-[`a100_reml.tsv`](results/a100_reml.tsv), and
-[`a100_cpu_threads.tsv`](results/a100_cpu_threads.tsv).
+On the small direct Stage 2 workload, the fork's six-core CPU path is 1.06x
+faster end-to-end than A100 because CUDA context startup dominates; A100 is
+1.64x faster than six-core CPU on the denser 21-basis workload. A100 is 8.19x
+faster than fork CPU for Stage 1 and 4.41x faster for REML on these fixtures.
+These ratios are workload-specific and must not be extrapolated to the target
+N=500,000 by M=1,000,000 analysis.
+
+All Stage 1 models produced the same byte-identical final Stage 2 statistics.
+All direct and dense Stage 2 output files were also byte-identical. REML used
+the same CG convergence sequence and printed identical variance estimates and
+standard errors in all three configurations. The matched raw repetitions are
+in [`a100_production_headline.tsv`](results/a100_production_headline.tsv).
+Single-thread diagnostics, scaling ladders, additional formats, target-stride
+probes, and historical comparison points remain below.
 
 ## Benchmark setup and historical log
 

@@ -309,8 +309,14 @@ python3 benchmarks/generate_real_plink_benchmark.py \
   /data/real-reference /scratch/bolt-real-expanded \
   --source-psam /data/real-reference.psam \
   --samples 131072 --variants 16384 --ld-block-variants 32 \
-  --causal-variants 8192 --heritability 0.3
+  --causal-variants 8192 --heritability 0.3 --threads 6
 ```
+
+Expansion workers gather and pack independent variant blocks concurrently.
+Donor draws, output writes, and phenotype accumulation remain in their original
+order, so one- and multi-threaded fixtures are byte-identical. On the A100
+host, a 500,000-sample by 4,096-variant target-stride slice fell from 35.13 to
+18.75 seconds with five workers (1.87x); the BED and phenotype hashes matched.
 
 The reference used on the A100 was the 1KG Phase 3 DRAGEN-derived HapMap3
 panel: 2,573 samples and 1,107,021 variants. The 16,384-variant native fixture

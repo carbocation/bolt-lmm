@@ -10,6 +10,8 @@ individuals are real people.
 """
 
 import argparse
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +36,8 @@ def parse_args():
     parser.add_argument("--ld-block-variants", type=int, default=32,
                         help="number of consecutive selected variants per donor draw")
     parser.add_argument("--batch-variants", type=int, default=32)
+    parser.add_argument("--threads", type=int, default=1,
+                        help="parallel genotype gather/pack workers")
     parser.add_argument("--causal-variants", type=int, default=1024)
     parser.add_argument("--heritability", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=20260717)
@@ -160,14 +164,29 @@ def standardized_score_genotype(codes):
     return dosage / std
 
 
+def expand_variant_batch(source_matrix, source_indices, donors, samples_padded,
+                         causal_batch):
+    """Expand and pack one batch while leaving ordered writes to the caller."""
+    donor_bytes = donors >> 2
+    donor_shifts = ((donors & 3) << 1)[None, :]
+    source_packed = np.asarray(source_matrix[source_indices])
+    codes = ((source_packed[:, donor_bytes] >> donor_shifts) & 3).astype(np.uint8)
+    packed = pack_bed_codes(codes, samples_padded)
+    score_updates = [
+        effect * standardized_score_genotype(codes[offset])
+        for offset, effect in causal_batch
+    ]
+    return packed, score_updates
+
+
 def main():
     args = parse_args()
     if args.output_prefix.resolve() == args.source_prefix.resolve():
         raise SystemExit("The output prefix must differ from the source prefix")
     if args.variants < 22:
         raise SystemExit("--variants must be at least 22")
-    if args.ld_block_variants < 1 or args.batch_variants < 1:
-        raise SystemExit("block and batch sizes must be positive")
+    if args.ld_block_variants < 1 or args.batch_variants < 1 or args.threads < 1:
+        raise SystemExit("block size, batch size, and thread count must be positive")
     if args.causal_variants < 1 or args.causal_variants > args.variants:
         raise SystemExit("--causal-variants must be between 1 and --variants")
     if not 0 < args.heritability < 1:
@@ -233,6 +252,17 @@ def main():
     output_prefix = args.output_prefix
     output_prefix.parent.mkdir(parents=True, exist_ok=True)
     samples_padded = (output_n + 3) & ~3
+    executor = ThreadPoolExecutor(max_workers=args.threads) if args.threads > 1 else None
+    pending = deque()
+    max_pending = 2 * args.threads
+
+    def consume_oldest(bed):
+        item = pending.popleft()
+        packed, score_updates = item if executor is None else item.result()
+        packed.tofile(bed)
+        for update in score_updates:
+            genetic_score[:] += update
+
     with output_prefix.with_suffix(".bed").open("wb") as bed:
         bed.write(BED_MAGIC)
         for block_first in range(0, args.variants, args.ld_block_variants):
@@ -243,8 +273,6 @@ def main():
                 donors = np.empty(output_n, dtype=np.int64)
                 for members, positions in zip(source_members, output_group_positions):
                     donors[positions] = donor_rng.choice(members, size=positions.size)
-            donor_bytes = donors >> 2
-            donor_shifts = ((donors & 3) << 1)[None, :]
 
             for batch_first in range(block_first, block_first + block_count,
                                      args.batch_variants):
@@ -252,15 +280,27 @@ def main():
                     args.batch_variants, block_first + block_count - batch_first
                 )
                 source_indices = selected_variants[batch_first:batch_first + batch_count]
-                source_packed = np.asarray(source_matrix[source_indices])
-                codes = ((source_packed[:, donor_bytes] >> donor_shifts) & 3).astype(np.uint8)
-                pack_bed_codes(codes, samples_padded).tofile(bed)
-
+                causal_batch = []
                 for offset in range(batch_count):
-                    output_variant = batch_first + offset
-                    effect = causal_lookup.get(output_variant)
+                    effect = causal_lookup.get(batch_first + offset)
                     if effect is not None:
-                        genetic_score += effect * standardized_score_genotype(codes[offset])
+                        causal_batch.append((offset, effect))
+                if executor is None:
+                    pending.append(expand_variant_batch(
+                        source_matrix, source_indices, donors, samples_padded, causal_batch
+                    ))
+                    consume_oldest(bed)
+                else:
+                    pending.append(executor.submit(
+                        expand_variant_batch, source_matrix, source_indices, donors,
+                        samples_padded, causal_batch
+                    ))
+                    if len(pending) >= max_pending:
+                        consume_oldest(bed)
+        while pending:
+            consume_oldest(bed)
+    if executor is not None:
+        executor.shutdown()
 
     with output_prefix.with_suffix(".bim").open("w") as bim:
         for source_index in selected_variants:
@@ -304,7 +344,9 @@ def main():
         mode = "identity"
     else:
         grouping = f"within-{args.group_column}" if args.source_psam else "single-group"
-        mode = f"{grouping} {args.ld_block_variants}-variant block bootstrap"
+        thread_word = "thread" if args.threads == 1 else "threads"
+        mode = (f"{grouping} {args.ld_block_variants}-variant block bootstrap, "
+                f"{args.threads} expansion {thread_word}")
     print(
         f"Wrote {output_prefix} ({output_n} samples, {args.variants} real variants, "
         f"{mode}, {gib:.3f} GiB BED)"

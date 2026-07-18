@@ -208,20 +208,26 @@ size automatically.
 
 When Stage 1 PGEN hardcalls are file-backed and do not all fit in the device
 cache, CUDA can retain a bounded part of the remaining packed matrix in
-ordinary host RAM. The retained range begins after the device cache and is
-populated during marker initialization, avoiding another scratch-disk read.
+host RAM. The retained range begins after the device cache and is populated
+during marker initialization, avoiding another scratch-disk read. CUDA then
+registers the retained allocation when the driver permits it, allowing those
+packed bytes to transfer directly without an intermediate host copy.
 
 Use `--cudaHostCacheGiB N` to set its limit. A value of `0` minimizes memory
-use; the default `-1` uses at most 72% of physical RAM. This cache is not
-page-locked and is temporary to the Stage 1 process.
+use; the default `-1` uses at most 72% of physical RAM. Successful CUDA
+registration pins these pages for the lifetime of the Stage 1 process. The
+cache is temporary and is released on exit. If registration fails, BOLT falls
+back to the staged-copy path.
 
-Blocks outside the device and retained-host caches are double-buffered through
-two pinned host buffers and two device buffers. A transfer stream preloads the
-next block while the compute stream processes the current block. At 500,000
-samples with the default 512-SNP CUDA block, the pinned host pair is bounded at
-about 122 MiB. Large pageable-to-pinned staging copies use the CPU team selected
-by `--numThreads`; `--numThreads=1` retains serial staging. This does not change
-the genotype bytes or floating-point operations performed on the GPU.
+Blocks outside the device and registered retained-host caches are
+double-buffered through two pinned host buffers and two device buffers. The
+same fallback is used for retained memory if registration was unavailable. A
+transfer stream preloads the next block while the compute stream processes the
+current block. At 500,000 samples with the default 512-SNP CUDA block, the
+pinned staging pair is bounded at about 122 MiB. Large pageable-to-pinned
+fallback copies use the CPU team selected by `--numThreads`;
+`--numThreads=1` retains serial staging. This does not change the genotype
+bytes or floating-point operations performed on the GPU.
 
 See [`BUILD.md`](BUILD.md) for CUDA compilation instructions and
 [`benchmarks/README.md`](benchmarks/README.md) for measured performance and

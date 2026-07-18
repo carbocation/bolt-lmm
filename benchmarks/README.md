@@ -21,7 +21,7 @@ speedup columns use the upstream-equivalent six-core time as their denominator.
 | Analysis and representative workload | Upstream-equivalent CPU, 6 cores | Fork CPU, 6 cores | Fork CUDA, A100 | Fork CPU speedup | A100 speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Stage 1, synthetic N=32,768, M=16,384, default LINREG | 38.47 | 28.59 | 3.47 | 1.35x | 11.09x |
-| Stage 1, real-LD-derived direct PGEN, N=500,000, M=700,000 | — | — | 4,553* | — | — |
+| Stage 1, real-LD-derived direct PGEN, N=500,000, M=700,000 | — | — | 2,888* | — | — |
 | Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.05 | 1.13 | 1.18 | 24.82x | 23.77x |
 | Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 33.08 | 2.94 | 1.78 | 11.25x | 18.58x |
 | REML, real-LD N=8,192, M=16,384, default refinement | 20.38 | 18.67 | 2.33 | 1.09x | 8.75x |
@@ -34,11 +34,14 @@ These ratios are workload-specific and must not be extrapolated to the target
 row. The starred value is one cold-cache end-to-end run, not a three-run
 median. It used six physical host cores, direct PGEN input, ephemeral scratch,
 default scientific convergence, default LINREG, and no persistent Step 0
-cache. A matched pre-parallel-copy A100 run took 4,846 seconds. The two target
-models were byte-identical. Full target CPU baselines were not run.
+cache. The previous A100 implementation took 4,553 seconds, and a matched
+pre-parallel-copy run took 4,846 seconds. Full target CPU baselines were not
+run.
 
-All Stage 1 models produced the same byte-identical final Stage 2 statistics.
-All direct and dense Stage 2 output files were also byte-identical. REML used
+For the smaller headline fixtures, all Stage 1 models produced the same
+byte-identical final Stage 2 statistics, and all direct and dense Stage 2
+output files were also byte-identical. The target-scale roundoff comparison is
+reported below. REML used
 the same CG convergence sequence and printed identical variance estimates and
 standard errors in all three configurations. The matched raw repetitions are
 in [`a100_production_headline.tsv`](results/a100_production_headline.tsv).
@@ -224,29 +227,35 @@ structure without representing the synthetic individuals as real people. The
 phenotype used h2=0.3 and 8,192 causal variants, and `SUPERPOP` was fitted as a
 categorical covariate.
 
-Both A100 runs read hardcall PGEN directly and built only ephemeral scratch.
+All A100 runs read hardcall PGEN directly and built only ephemeral scratch.
 They used six physical Xeon cores, default LINREG, default convergence values,
 `--lmmForceNonInf`, `--LDscoresUseChip`, and no scientific shortcut flags. The
 device cache held 275,968 variants (32.13 GiB); ordinary host RAM retained the
 remaining 424,032 variants (49.36 GiB). No iterative genotype pass reread disk.
 
-| Phase | Before parallel host copy (`c4c5670`) | Parallel host copy (`b47cfbb`) | Reduction |
-| --- | ---: | ---: | ---: |
-| PGEN setup | 176.719 s | 177.173 s | -0.3% |
-| Marker/covariate initialization | 292.510 s | 289.578 s | 1.0% |
-| LINREG | 15.409 s | 7.187 s | 53.4% |
-| Variance fitting | 471.867 s | 271.735 s | 42.4% |
-| Infinitesimal association statistics | 195.370 s | 127.557 s | 34.7% |
-| Chip LD scores | 259.252 s | 246.676 s | 4.9% |
-| Mixture-parameter CV | 1,668.130 s | 1,669.160 s | -0.1% |
-| Final spike-and-slab fit | 1,756.210 s | 1,752.950 s | 0.2% |
-| Complete analysis | 4,841.940 s | 4,548.480 s | 6.1% |
-| External wall time | 4,846 s | 4,553 s | 6.0% |
+| Phase | Before parallel host copy (`c4c5670`) | Parallel host copy (`b47cfbb`) | Registered host cache (`acbb21c`) | Reduction vs `b47cfbb` |
+| --- | ---: | ---: | ---: | ---: |
+| PGEN setup | 176.719 s | 177.173 s | 177.278 s | -0.1% |
+| Marker/covariate initialization | 292.510 s | 289.578 s | 288.804 s | 0.3% |
+| LINREG | 15.409 s | 7.187 s | 6.337 s | 11.8% |
+| Variance fitting | 471.867 s | 271.735 s | 268.550 s | 1.2% |
+| Infinitesimal association statistics | 195.370 s | 127.557 s | 126.101 s | 1.1% |
+| Chip LD scores | 259.252 s | 246.676 s | 267.554 s | -8.5% |
+| Mixture-parameter CV | 1,668.130 s | 1,669.160 s | 839.208 s | 49.7% |
+| Final spike-and-slab fit | 1,756.210 s | 1,752.950 s | 901.905 s | 48.5% |
+| Complete analysis | 4,841.940 s | 4,548.480 s | 2,882.140 s | 36.6% |
+| External wall time | 4,846 s | 4,553 s | 2,887.73 s | 36.6% |
 
-Both runs used the same 8/15/9 variance-component CG counts, 13 infinitesimal
-CG iterations, 75 CV iterations, 76 final iterations, and selected f2=0.1 and
-p=0.02. Their 205 MiB Stage 1 models were byte-identical, with SHA-256
-`d2cae1cd5b8d50b99e4e4f40aab61a4bba6c2ff6ce14428edbef94d01c58cd73`.
+All three runs used the same 8/15/9 variance-component CG counts, 13
+infinitesimal CG iterations, 75 CV iterations, 76 final iterations, and
+selected f2=0.1 and p=0.02. The first two 205 MiB Stage 1 models were
+byte-identical. The registered-cache model differed at floating-point
+roundoff: its covariate-basis RMS difference was `5.6e-16`, and final BOLT
+residuals differed by `4.4e-9` RMS. The covariate basis is computed before the
+registered transfer path runs. Scoring all 700,000 variants from both models
+gave identical text output in 699,999 rows; the remaining row changed only the
+last printed BETA digit (`-0.000493594` to `-0.000493595`). Every
+`P_BOLT_LMM_INF` and `P_BOLT_LMM` value was identical.
 
 A matched 300-second CV trace explains the intermittent utilization seen in
 `nvidia-smi`. Before parallel host copies, mean/median GPU utilization was
@@ -254,7 +263,8 @@ A matched 300-second CV trace explains the intermittent utilization seen in
 45.95%/36%, with 240 samples below 50%. Each iteration alternated between a
 short 85-88% device-cached prefix and a long 36-38% host-streamed suffix.
 Parallel copying helps the smaller-batch phases above but does not change this
-CV pattern.
+CV pattern. At `acbb21c`, the matched trace was 89.54% mean and 90% median,
+with none of 300 samples below 50%.
 
 Four follow-ups were measured and removed. A persistent background worker that
 overlapped pageable host copy and H2D with GPU work made the six-thread A100
@@ -297,9 +307,9 @@ seconds (0.9% faster). The complete 49.36 GiB target host suffix registered
 successfully. On the N=500,000, M=700,000 PGEN fixture, LINREG fell from
 7.18732 to 6.34372 seconds (11.7%), while initialization was 291.501 versus
 289.578 seconds, max RSS remained about 85.0 GB, and neither run used swap.
-The calibration mean and lambdaGC were identical. The target CV/final and
-end-to-end effect require a new complete run; these phase measurements are not
-used to revise the 4,553-second headline above. Raw measurements are in
+The calibration mean and lambdaGC were identical. The subsequent complete run
+measured the 49.7% CV, 48.5% final-scoring, and 36.6% end-to-end reductions in
+the target table above. Raw microbenchmarks and the initial phase probe are in
 [`a100_cuda_registered_host_cache.tsv`](results/a100_cuda_registered_host_cache.tsv).
 
 ## File-backed CUDA host cache

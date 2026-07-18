@@ -1,4 +1,56 @@
-# Step 1 single-thread benchmark
+# BOLT-LMM-XL performance benchmark record
+
+## Current headline snapshot
+
+Last updated 2026-07-17 for the codebase through `9d20516`. This is the
+maintained summary; the remainder of this file is the detailed, chronological
+benchmark log. A commit named in a row is the code actually measured. An older
+measurement is never silently relabeled as "current."
+
+The Stage 1 and Stage 2 baseline is `a58e7c3`, the first split-stage commit. It
+is essentially upstream/v2.5 with the Stage 1 artifact boundary added, so both
+sides perform the same split workflow. The REML baseline is upstream/v2.5
+itself. Times are seconds and lower is better. Stage 1 and Stage 2 report wall
+time; REML reports BOLT's analysis timer. Dashes mean that no matched
+measurement exists; numbers from different fixtures are deliberately not
+spliced together. Fork cells show time followed by speedup versus that row's
+baseline in parentheses.
+
+| Analysis and representative workload | Upstream-equivalent CPU, 1 thread | Fork CPU, 1 thread (speedup) | Fork CPU, 6 cores (speedup) | Fork CUDA, A100 (speedup) | Measurement status |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Stage 1, synthetic N=32,768, M=16,384, default LINREG | 129.06 | 112.67 (1.15x) | -- | 3.55 (36.35x) | Last matched three-way snapshot at `f337b92`; **not a current-HEAD claim** |
+| Stage 2, BED, N=131,072, M=16,384, 1 basis + 2 statistics | 28.466 | 3.477 (8.19x) | 1.572 (18.11x) | 0.905 (31.45x) | Current scoring paths |
+| Stage 2, BED, N=131,072, M=16,384, 21 bases + 2 statistics | 48.109 | 9.816 (4.90x) | 2.887 (16.66x) | 1.482 (32.46x) | Current scoring paths |
+| REML, real-LD N=8,192, M=16,384, default refinement | 58.90 | 53.75 (1.10x) | 18.77 (3.14x) | 3.95 (14.91x) | Current REML paths |
+
+The latest Stage 1 CPU scaling audit uses a harder real-LD cold-start
+spike-and-slab fixture at N=8,192 and M=16,384. It takes 36.937 seconds on one
+thread and 11.944 seconds on six physical cores (3.09x), with byte-identical
+final Stage 2 association output across thread counts. That run used
+`--noLinreg` to isolate model fitting. It has no matched upstream and CUDA rows,
+so it is reported here without pretending it updates the older three-way
+comparison. Refreshing the matched Stage 1 headline remains an explicit
+benchmarking task.
+
+For the Stage 2 rows, every optimized CPU and CUDA statistics file was
+byte-identical to its baseline or CPU reference. The one-thread values are the
+matched CUDA-enabled `--no-cuda` controls, while the six-core values come from
+the production threaded-CPU scaling audit. On REML, the fork followed the same
+CG convergence sequence and printed the same estimates as upstream at every
+reported digit. Detailed provenance and all repetitions are in
+[`a100_stage1_headline.tsv`](results/a100_stage1_headline.tsv),
+[`a100_stage2_cpu.tsv`](results/a100_stage2_cpu.tsv),
+[`a100_stage2_cuda.tsv`](results/a100_stage2_cuda.tsv),
+[`a100_reml.tsv`](results/a100_reml.tsv), and
+[`a100_cpu_threads.tsv`](results/a100_cpu_threads.tsv).
+
+## Benchmark setup and historical log
+
+Everything below is retained as a performance notebook: it records individual
+optimization checkpoints, realistic and synthetic fixtures, negative results,
+and target-scale constraints. Within this historical log, words such as
+"current" describe the comparison point at that location; the accompanying
+commit hash and raw result file are authoritative.
 
 `generate_plink_benchmark.py` creates a deterministic PLINK 1 dataset with a
 polygenic quantitative phenotype. It requires Python 3 and NumPy.
@@ -61,16 +113,16 @@ A binary compiled with CUDA as described in [`BUILD.md`](../BUILD.md) uses the
 GPU automatically for Stage 1. Pass `--no-cuda` to benchmark its CPU path
 instead; [`USAGE.md`](../USAGE.md) documents the runtime behavior.
 
-## End-to-end Stage 1 comparison
+## Historical end-to-end Stage 1 comparison at `f337b92`
 
 The first split-Stage-1 commit, `a58e7c3d2f3ca651ba16a39063f25b8e449087e0`,
 provides the original baseline. It is essentially upstream BOLT-LMM v2.5 with
 the Stage 1/2 boundary already present, so its timing includes the same model
 fit and Stage 1 artifact write as the current code.
 
-The original baseline and current CPU-only and CUDA binaries were built with
+The original baseline and fork CPU-only and CUDA binaries at `f337b92` were built with
 GCC 11.4, `-O3 -march=native`, LP64 sequential oneMKL, and one analysis thread.
-The current CPU build disabled OpenMP; the original OpenMP build was restricted
+The fork CPU build disabled OpenMP; the original OpenMP build was restricted
 to one thread. The CUDA build targeted compute capability 8.0 and used the same
 native host settings. Three repetitions of each binary were interleaved and
 pinned to the same vCPU on the Xeon/A100 VM. All used the 32,768-sample by
@@ -80,14 +132,14 @@ LINREG.
 | Stage 1 implementation | Median wall time | Speedup vs original | Time reduction |
 | --- | ---: | ---: | ---: |
 | Original split baseline (`a58e7c3`) | 129.06 s | 1.00x | — |
-| Current CPU-only (`f337b92`) | 112.67 s | 1.15x | 12.7% |
-| Current CUDA (`f337b92`) | 3.55 s | 36.35x | 97.2% |
+| Fork CPU-only (`f337b92`) | 112.67 s | 1.15x | 12.7% |
+| Fork CUDA (`f337b92`) | 3.55 s | 36.35x | 97.2% |
 
 CUDA was 31.74x faster than the optimized CPU-only build. Median phase times
 show where the end-to-end changes came from. The nine raw measurements are in
 `results/a100_stage1_headline.tsv`.
 
-| Phase | Original | Current CPU | Current CUDA |
+| Phase | Original | Fork CPU at `f337b92` | Fork CUDA at `f337b92` |
 | --- | ---: | ---: | ---: |
 | Genotype input/QC | 3.730 s | 0.683 s | 0.654 s |
 | Marker/covariate initialization | 2.921 s | 2.581 s | 0.457 s |

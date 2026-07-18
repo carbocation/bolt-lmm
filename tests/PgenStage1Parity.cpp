@@ -90,11 +90,12 @@ int main(int argc, char **argv) {
                    std::vector<std::string>(1, prefix + ".bed"), "", empty, empty,
                    removeFiles, 1.0, 1.0, false);
   LMM::SnpData pgen(prefix + ".pgen", prefix + ".pvar", prefix + ".psam", "",
-                    empty, empty, removeFiles, 1.0, 1.0, false, empty, true, 22, dir);
+                    empty, empty, removeFiles, 1.0, 1.0, false, empty, true, 22,
+                    dir, "", false, 2);
   {
     LMM::SnpData cacheBuilder(prefix + ".pgen", prefix + ".pvar", prefix + ".psam", "",
                               empty, empty, removeFiles, 1.0, 1.0, false, empty, true, 22,
-                              "", persistentCache, true);
+                              "", persistentCache, true, 2);
   }
   LMM::SnpData cached(prefix + ".pgen", prefix + ".pvar", prefix + ".psam", "",
                       empty, empty, removeFiles, 1.0, 1.0, false, empty, true, 22,
@@ -151,6 +152,36 @@ int main(int argc, char **argv) {
         lhs.allele2 != rhs.allele2 || lhs.MAF != rhs.MAF || lhs.vcNum != rhs.vcNum)
       return fail("persistent-cache variant metadata differs at index " + std::to_string(m));
   }
+
+  // Exercise parallel PGEN reads when most variants are non-GRM scan-only
+  // markers and the stored model matrix must remain compact and ordered.
+  const std::string modelSnpsFile = std::string(argv[2]) + "/pgen-model-snps.txt";
+  {
+    std::ofstream out(modelSnpsFile.c_str());
+    for (int m = 1; m <= 63; m += 2) out << m << '\n';
+  }
+  const std::vector<std::string> modelSnpsFiles(1, modelSnpsFile);
+  LMM::SnpData subsetBed(
+    prefix + ".fam", std::vector<std::string>(1, prefix + ".bim"),
+    std::vector<std::string>(1, prefix + ".bed"), "", empty, modelSnpsFiles,
+    removeFiles, 1.0, 1.0, false, empty, true, 22);
+  LMM::SnpData subsetPgen(
+    prefix + ".pgen", prefix + ".pvar", prefix + ".psam", "", empty,
+    modelSnpsFiles, removeFiles, 1.0, 1.0, false, empty, true, 22,
+    "", "", false, 2);
+  std::remove(modelSnpsFile.c_str());
+  if (subsetBed.getM() != 32 || subsetPgen.getM() != subsetBed.getM() ||
+      subsetPgen.getBedSnpToGrmIndex() != subsetBed.getBedSnpToGrmIndex())
+    return fail("parallel non-GRM scan variant mapping differs");
+  const size_t subsetBytes = subsetBed.getM()*subsetBed.getNstride()/4;
+  if (std::memcmp(subsetBed.getGenotypes(), subsetPgen.getGenotypes(), subsetBytes) != 0)
+    return fail("parallel non-GRM scan packed hardcalls differ");
+  if (subsetBed.getSnpInfo().size() != subsetPgen.getSnpInfo().size())
+    return fail("parallel non-GRM scan metadata size differs");
+  for (size_t m = 0; m < subsetBed.getSnpInfo().size(); m++)
+    if (subsetBed.getSnpInfo()[m].ID != subsetPgen.getSnpInfo()[m].ID ||
+        subsetBed.getSnpInfo()[m].MAF != subsetPgen.getSnpInfo()[m].MAF)
+      return fail("parallel non-GRM scan metadata differs");
 
   std::remove(persistentCache.c_str());
 

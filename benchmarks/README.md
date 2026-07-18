@@ -787,6 +787,27 @@ including LINREG, INF, and BOLT-LMM columns, were byte-identical to the
 pre-change six-thread control. The long fixed-parameter Bayesian run is a
 parity stress test, not a representative headline workload.
 
+Direct PGEN ingestion and persistent Step 0 construction now use independent
+reader state per OpenMP worker. Variants are handled in bounded batches; QC
+survivors are compacted in source order, and thread-local per-sample missingness
+counts are reduced deterministically. This changes neither the packed cache
+format nor its identity, and the same loader is used when Stage 1 reads PGEN
+without a persistent cache.
+
+On the real-LD 131,072-sample by 16,384-variant fixture, complete Step 0 time
+fell from 2.191 to 1.637 seconds (25.3%). The 500,000-sample by 100,000-variant
+target-stride template produced an 11.6 GiB cache. Across an order-reversed
+pair, one thread took 39.607 and 43.539 seconds while six physical cores took
+34.631 and 36.316 seconds: paired medians of 41.573 and 35.473 seconds, a 14.7%
+end-to-end reduction. These totals include PVAR/PSAM processing, source
+fingerprinting, cache metadata, and the final 11.6 GiB flush. Twelve logical
+CPUs took 35.550 seconds and provided no improvement over six physical cores.
+The one- and six-thread 11.6 GiB artifacts were byte-identical; the smaller
+real-LD artifacts were also byte-identical. The target-stride fixture is one
+tenth of the intended variant count and preserves exact storage dimensions,
+but its template genotypes are not a replacement for a full-scale real-data
+scientific run.
+
 Default-refinement BOLT-REML on the same real-LD shape scaled from 54.333 to
 18.770 seconds (2.89x) on six cores. Every thread count produced the same CG
 convergence sequence and the same printed estimates: h2g 0.512 and sigma2

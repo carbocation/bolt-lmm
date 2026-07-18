@@ -364,9 +364,10 @@ int main(int argc, char *argv[]) {
 				 params.geneticMapFile, params.excludeFiles,
 				 params.modelSnpsFiles, params.removeFiles,
 				 params.maxMissingPerSnp, params.maxMissingPerIndiv,
-			 params.noMapCheck, params.remlGuessVCnames,
-			 params.stage == 1 && !params.reml && params.lmmInf, params.Nautosomes,
-			 params.pgenCacheDir, params.pgenCacheFile, params.stage == 0));
+				 params.noMapCheck, params.remlGuessVCnames,
+				 params.stage == 1 && !params.reml && params.lmmInf,
+				 params.Nautosomes, params.pgenCacheDir, params.pgenCacheFile,
+				 params.stage == 0, params.numThreads));
   else
     snpDataPtr.reset(new SnpData(params.famFile, params.bimFiles, params.bedFiles,
 				 params.geneticMapFile, params.excludeFiles,

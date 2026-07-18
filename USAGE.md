@@ -136,6 +136,7 @@ bolt \
   --stage=0 \
   --pfile=data/cohort \
   --pgenCacheFile=/scratch/cohort.bolt-pgen-cache \
+  --numThreads=6 \
   --remove=data/remove.txt \
   --modelSnps=data/model.snps
 
@@ -151,19 +152,25 @@ bolt \
   --lmm
 ```
 
-Stage 0 is CPU-only even when the binary contains CUDA support. It writes the
-post-filter/QC packed hardcalls, variant mapping and MAFs, and sample QC mask
-atomically. Stage 1 parses the named PGEN/PVAR/PSAM files and verifies their
-identity together with the sample/variant selection, packing, and QC settings
-before memory-mapping the cache. Phenotypes and covariates are deliberately
-not part of the cache identity, allowing reuse across traits.
+Stage 0 is CPU-only even when the binary contains CUDA support. OpenMP builds
+use `--numThreads` to read, convert, and QC bounded PGEN variant batches with
+independent reader state; direct PGEN Stage 1 ingestion uses the same path. It
+writes the post-filter/QC packed hardcalls, variant mapping and MAFs, and sample
+QC mask atomically. Stage 1 parses the named PGEN/PVAR/PSAM files and verifies
+their identity together with the sample/variant selection, packing, and QC
+settings before memory-mapping the cache. Phenotypes and covariates are
+deliberately not part of the cache identity, allowing reuse across traits.
 
 The persistent artifact is useful only when it remains on storage local to or
 already shared with the Stage 1 environment. At the target shape it is about
-116.4 GiB. Staging it afresh must sustain more than about 226 MiB/s one-way—or
-453 MiB/s for two sequential copies—just to break even with the measured 8
-minute 46 second direct-PGEN conversion cost. If the cache must be built or
-transferred for each analysis, use direct PGEN ingestion instead.
+116.4 GiB. The exact full-scale one-thread measurement required 8 minutes 46
+seconds, so staging the cache afresh had to sustain more than about 226 MiB/s
+one-way—or 453 MiB/s for two sequential copies—just to break even. Six-core
+ingestion is 14.7% faster on the one-tenth target-stride rung; if that reduction
+holds at one million variants, the corresponding thresholds rise to about 266
+and 532 MiB/s. The full-scale threaded value has not been extrapolated into a
+claimed measurement. If the cache must be built or transferred for each
+analysis, use direct PGEN ingestion instead.
 
 ## CUDA Stage 1, packed Stage 2, and BOLT-REML execution
 

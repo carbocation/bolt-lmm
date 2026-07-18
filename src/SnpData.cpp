@@ -58,6 +58,7 @@
 #include "MemoryUtils.hpp"
 #include "MapInterpolater.hpp"
 #include "LapackConst.hpp"
+#include "OpenMpCompat.hpp"
 #include "PgenUtils.hpp"
 #include "pgenlibr.h"
 
@@ -1612,7 +1613,7 @@ namespace LMM {
 		   double maxMissingPerSnp, double maxMissingPerIndiv, bool noMapCheck,
 		   vector <string> vcNamesIn, bool loadNonModelSnps, int _Nautosomes,
 		   const string &pgenCacheDir, const string &pgenCacheFile,
-		   bool buildPgenCache)
+		   bool buildPgenCache, int threads)
     : Mbed(0), Nbed(0), M(0), N(0), Nstride(0), genotypes(NULL),
       genotypeStorageBytes(0), genotypesFileBacked(false), maskSnps(NULL),
       maskIndivs(NULL), numIndivsQC(0), mapAvailable(false), bedIndivsIdentity(false),
@@ -1661,8 +1662,14 @@ namespace LMM {
 	  subsetIndices1based.push_back(static_cast<int>(nbed+1));
     }
 
+    int readerThreads = std::max(1, threads);
+#ifndef BOLT_USE_OPENMP
+    readerThreads = 1;
+#endif
+    readerThreads = std::min(readerThreads, std::max(1, static_cast<int>(Mbed)));
     ::PgenReader pgenReader;
-    pgenReader.Load(pgenFile, static_cast<uint32_t>(Nbed), subsetIndices1based, 1);
+    pgenReader.Load(pgenFile, static_cast<uint32_t>(Nbed), subsetIndices1based,
+		    readerThreads);
     if (pgenReader.GetRawSampleCt() != Nbed) {
       cerr << "ERROR: Number of samples in pgen file (" << pgenReader.GetRawSampleCt()
 	   << ") does not match psam file (" << Nbed << ")" << endl;
@@ -1683,39 +1690,85 @@ namespace LMM {
 
     cout << "Reading PGEN hardcalls and performing QC filtering on snps and indivs..." << endl;
     const uint64 packedBytes = (N+3)>>2;
-    vector <uchar> pgenLine(packedBytes);
-    vector <uint32_t> missingIndices;
+    const uint64 bedBytes = Nstride>>2;
+    vector <uchar> pgenLines(readerThreads*packedBytes);
+    uchar *nonGrmBedLines = ALIGNED_MALLOC_UCHARS(readerThreads*bedBytes);
+    vector < vector <uint32_t> > missingIndices(readerThreads);
+    vector <int> threadMissingCounts(readerThreads*N);
     vector <int> numMissingPerIndiv(N);
     uchar *bedLineOut = genotypes;
     int numSnpsFailedQC = 0;
-    for (uint64 mbed = 0; mbed < Mbed; mbed++) {
-      if (bedSnpToGrmIndex[mbed] == -2) continue;
+    const uint64 readBatchSize = std::max<uint64>(256, 64ULL*readerThreads);
+    for (uint64 mbed0 = 0; mbed0 < Mbed; mbed0 += readBatchSize) {
+      const uint64 batchSize = std::min<uint64>(readBatchSize, Mbed-mbed0);
+      vector <int> grmSlots(batchSize, -1);
+      vector <double> alleleFreqs(batchSize), snpMissingRates(batchSize);
+      vector <uchar> passesQc(batchSize);
+      int numGrmSlots = 0;
+      for (uint64 plus = 0; plus < batchSize; plus++)
+	if (bedSnpToGrmIndex[mbed0+plus] >= 0)
+	  grmSlots[plus] = numGrmSlots++;
 
-      pgenReader.ReadHardcallsPacked(pgenLine.data(), packedBytes, N, 0, mbed, 1);
-      const PgenUtils::PackedHardcallStats stats =
-	PgenUtils::packedPgenToBedAndCollectMissing(bedLineOut, pgenLine.data(), N,
-						   Nstride, missingIndices);
-      const double snpMissing = static_cast<double>(stats.numMissing) / N;
-      const double alleleFreq = 0.5 * stats.alleleSum / (N-stats.numMissing);
-      if (snpMissing <= maxMissingPerSnp) {
-	if (bedSnpToGrmIndex[mbed] >= 0) {
-	  for (uint32_t n : missingIndices)
-	    numMissingPerIndiv[n]++;
-	  bedLineOut += Nstride>>2;
-	  bedSnpToGrmIndex[mbed] = snps.size();
-	  snps.push_back(bedSnps[mbed]);
-	  snps.back().MAF = std::min(alleleFreq, 1.0-alleleFreq);
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static) num_threads(readerThreads)
+#endif
+      for (uint64 plus = 0; plus < batchSize; plus++) {
+	const uint64 mbed = mbed0+plus;
+	if (bedSnpToGrmIndex[mbed] == -2) continue;
+	const int thread = omp_get_thread_num();
+	uchar *pgenLine = &pgenLines[thread*packedBytes];
+	uchar *bedLine = grmSlots[plus] >= 0 ?
+	  bedLineOut+grmSlots[plus]*bedBytes : nonGrmBedLines+thread*bedBytes;
+	pgenReader.ReadHardcallsPacked(pgenLine, packedBytes, N, thread, mbed, 1);
+	const PgenUtils::PackedHardcallStats stats =
+	  PgenUtils::packedPgenToBedAndCollectMissing(
+	    bedLine, pgenLine, N, Nstride, missingIndices[thread]);
+	snpMissingRates[plus] = static_cast<double>(stats.numMissing)/N;
+	alleleFreqs[plus] = 0.5*stats.alleleSum/(N-stats.numMissing);
+	if (snpMissingRates[plus] <= maxMissingPerSnp) {
+	  passesQc[plus] = 1;
+	  if (grmSlots[plus] >= 0) {
+	    int *missingCounts = &threadMissingCounts[thread*N];
+	    for (uint32_t n : missingIndices[thread]) missingCounts[n]++;
+	  }
 	}
       }
-      else {
-	bedSnpToGrmIndex[mbed] = -2;
-	if (numSnpsFailedQC < 5)
-	  cout << "Filtering snp " << bedSnps[mbed].ID << ": "
-	       << snpMissing << " missing" << endl;
-	numSnpsFailedQC++;
+
+      int numGrmKept = 0;
+      for (uint64 plus = 0; plus < batchSize; plus++) {
+	const uint64 mbed = mbed0+plus;
+	if (bedSnpToGrmIndex[mbed] == -2) continue;
+	if (!passesQc[plus]) {
+	  bedSnpToGrmIndex[mbed] = -2;
+	  if (numSnpsFailedQC < 5)
+	    cout << "Filtering snp " << bedSnps[mbed].ID << ": "
+		 << snpMissingRates[plus] << " missing" << endl;
+	  numSnpsFailedQC++;
+	}
+	else if (grmSlots[plus] >= 0) {
+	  uchar *source = bedLineOut+grmSlots[plus]*bedBytes;
+	  uchar *dest = bedLineOut+numGrmKept*bedBytes;
+	  if (source != dest) memmove(dest, source, bedBytes);
+	  bedSnpToGrmIndex[mbed] = snps.size();
+	  snps.push_back(bedSnps[mbed]);
+	  snps.back().MAF = std::min(alleleFreqs[plus], 1.0-alleleFreqs[plus]);
+	  numGrmKept++;
+	}
       }
+      bedLineOut += numGrmKept*bedBytes;
     }
     pgenReader.Close();
+    ALIGNED_FREE(nonGrmBedLines);
+
+#ifdef BOLT_USE_OPENMP
+#pragma omp parallel for schedule(static) num_threads(readerThreads)
+#endif
+    for (uint64 n = 0; n < N; n++) {
+      int total = 0;
+      for (int thread = 0; thread < readerThreads; thread++)
+	total += threadMissingCounts[thread*N+n];
+      numMissingPerIndiv[n] = total;
+    }
 
     if (numSnpsFailedQC)
       cout << "Filtered " << numSnpsFailedQC << " SNPs with > " << maxMissingPerSnp

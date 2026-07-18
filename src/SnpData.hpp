@@ -144,7 +144,8 @@ namespace LMM {
             std::vector <std::string> vcNamesIn=std::vector <std::string> (),
             bool loadNonModelSnps=true, int _Nautosomes=22,
             const std::string &pgenCacheDir="",
-            const std::string &pgenCacheFile="", bool buildPgenCache=false);
+            const std::string &pgenCacheFile="", bool buildPgenCache=false,
+            int threads=1);
 
     // Stage 2 sample state. If sampleFile is set, also initializes input sample mapping.
     SnpData(const std::vector < std::pair <std::string, std::string> > &_indivIds,

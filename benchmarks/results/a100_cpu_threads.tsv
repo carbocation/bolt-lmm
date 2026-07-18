@@ -1,4 +1,11 @@
 workload	input	N	M	threads	variance_seconds	infinitesimal_seconds	mixture_seconds	bayes_seconds	readout_seconds	total_seconds	compatibility
+pgen_step0_real_ld	real_ld_pgen	131072	16384	1						2.19058	sha256_fbbd2b72140e6bfbb1bdcc99366e509d0df8955af2d90c81b46a63ad8cb79a83
+pgen_step0_real_ld	real_ld_pgen	131072	16384	6						1.63691	sha256_fbbd2b72140e6bfbb1bdcc99366e509d0df8955af2d90c81b46a63ad8cb79a83
+pgen_step0_target_stride_r1	template_pgen	500000	100000	1						39.6071	sha256_e7c6f5777074c2cb3b9aa79880f60780de4dc8a7662af51d0cb602d5ce61f1f5
+pgen_step0_target_stride_r1	template_pgen	500000	100000	6						34.6308	sha256_e7c6f5777074c2cb3b9aa79880f60780de4dc8a7662af51d0cb602d5ce61f1f5
+pgen_step0_target_stride_r2	template_pgen	500000	100000	6						36.3160	sha256_e7c6f5777074c2cb3b9aa79880f60780de4dc8a7662af51d0cb602d5ce61f1f5
+pgen_step0_target_stride_r2	template_pgen	500000	100000	1						43.5388	sha256_e7c6f5777074c2cb3b9aa79880f60780de4dc8a7662af51d0cb602d5ce61f1f5
+pgen_step0_target_stride_smt	template_pgen	500000	100000	12						35.5499	byte_identical_structure_medium_and_six_thread_target_verified
 stage1_linreg_prechange	target_stride_bed	500000	4096	6					3.63268		controlled_pass
 stage1_linreg_parallel	target_stride_bed	500000	4096	1					3.63634		per_marker_arithmetic_unchanged
 stage1_linreg_parallel	target_stride_bed	500000	4096	6					0.636899		per_marker_arithmetic_unchanged
